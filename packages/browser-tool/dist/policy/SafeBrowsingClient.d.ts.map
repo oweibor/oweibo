@@ -1,0 +1,1 @@
+{"version":3,"file":"SafeBrowsingClient.d.ts","sourceRoot":"","sources":["../../src/policy/SafeBrowsingClient.ts"],"names":[],"mappings":"AAOA,qBAAa,kBAAkB;IAGjB,OAAO,CAAC,QAAQ,CAAC,MAAM;IAFnC,OAAO,CAAC,QAAQ,CAAC,KAAK,CAAiC;gBAE1B,MAAM,EAAE,MAAM;IAErC,KAAK,CAAC,GAAG,EAAE,MAAM,GAAG,OAAO,CAAC,MAAM,GAAG,QAAQ,CAAC;CA0BrD"}

@@ -1,0 +1,343 @@
+name: agent-factory
+
+# =============================================================================
+# AUTONOMOUS AGENT FACTORY — Lean Agentic Stack
+# Kilo Pipeline + Crawl4AI + Qdrant + Ollama
+# Single-command deployment: docker compose up -d
+# =============================================================================
+
+services:
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # CORE AI INFERENCE
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    networks:
+      - oweibo
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    environment:
+      - TZ=${TZ}
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-5m}
+      - OLLAMA_NUM_THREADS=${OLLAMA_NUM_THREADS:-4}
+      - OLLAMA_FLASH_ATTENTION=${OLLAMA_FLASH_ATTENTION:-0}
+      - OLLAMA_KV_CACHE_TYPE=${OLLAMA_KV_CACHE_TYPE:-q8_0}
+      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-1}
+      - OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS:-1}
+      - OLLAMA_NUM_GPU=${OLLAMA_NUM_GPU:-0}
+      - OLLAMA_DEFAULT_MODEL=${OLLAMA_DEFAULT_MODEL:-qwen2.5-coder:3b}
+    mem_limit: ${OLLAMA_MEM_LIMIT:-4g}
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q --spider http://localhost:11434 || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # CODE & APP FACTORY
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # Qdrant: Vector Database (persistent memory & self-learning)
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    restart: unless-stopped
+    networks:
+      - oweibo
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__STORAGE__ON_DISK_PAYLOAD=true
+      - TZ=${TZ}
+    mem_limit: 512m
+    healthcheck:
+      test: [ "CMD", "bash", "-c", "</dev/tcp/localhost/6333" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # kilo-pipeline: Node.js orchestration service
+  # Built locally from ./kilo/pipeline — Watchtower excluded
+  kilo-pipeline:
+    build: ./kilo/pipeline
+    container_name: kilo-pipeline
+    restart: unless-stopped
+    networks:
+      - oweibo
+      - kilo-net
+    ports:
+      - "3100:3100"
+    volumes:
+      - /var/kilo:/var/kilo
+      - ./kilo/.kilo:/app/.kilo
+    environment:
+      - HARDWARE_PROFILE=${HARDWARE_PROFILE:-n100_like}
+      - TRUST_MODE=${TRUST_MODE:-supervised}
+      - QDRANT_HOST=${QDRANT_HOST:-http://qdrant:6333}
+      - KILO_PIPELINE_PORT=${KILO_PIPELINE_PORT:-3100}
+      - KILO_API_TOKEN=${KILO_API_TOKEN}
+      - TENANT_TOKENS=${TENANT_TOKENS:-}
+      # SANDBOX_IMAGE: use kilo-sandbox:latest (hardened) in production.
+      # Build it first: docker build -t kilo-sandbox:latest infra/sandbox/
+      - SANDBOX_IMAGE=${SANDBOX_IMAGE:-kilo-sandbox:latest}
+      - DOCKER_HOST=tcp://kilo-proxy:2375
+      - CRAWL4AI_URL=http://crawl4ai:8000
+      - SEARXNG_URL=${SEARXNG_URL:-http://searxng:8080}
+      - TZ=${TZ}
+      # CHECKPOINT_MASTER_KEY: required for at-rest checkpoint encryption (Phase 2).
+      # Generate with: openssl rand -hex 32
+      - CHECKPOINT_MASTER_KEY=${CHECKPOINT_MASTER_KEY:-}
+    mem_limit: 1.5g
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q --spider http://localhost:3100 || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      kilo-proxy:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    labels:
+      # Exclude from Watchtower — locally built image
+      - "com.centurylinklabs.watchtower.enable=false"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # kilo-proxy: Secure Docker Socket Proxy for kilo-pipeline sandbox
+  # SECURITY: kilo-net ONLY (internal: true) — never exposed to the oweibo network.
+  # Sandboxes themselves run with NetworkMode=none, so they cannot reach this proxy.
+  #
+  # EXEC=1 is required for kilo-pipeline to run 'kilo architect/orchestrate' inside
+  # sandbox containers via docker exec.  The residual risk (pipeline process compromise
+  # → exec into any container on this proxy) is accepted and tracked in the Phase 2
+  # remediation plan (item 1.7: migrate to stdio-based container driving so EXEC can
+  # be set to 0).  Mitigation: kilo-net is internal, sandbox has NetworkMode=none,
+  # pipeline runs as non-root (USER kilo in its own Dockerfile).
+  kilo-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: kilo-proxy
+    restart: unless-stopped
+    networks:
+      - kilo-net
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - CONTAINERS=1
+      - SERVICES=1
+      - NETWORKS=1
+      - TASKS=1
+      - IMAGES=1
+      - LOGS=1
+      - POST=1
+      - EXEC=1   # Required — see comment above; Phase 2 will eliminate this
+      - BUILD=0
+    mem_limit: 256m
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q --spider http://localhost:2375 || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # DEEP RESEARCH & WEB INTELLIGENCE
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  crawl4ai:
+    image: public.ecr.aws/crawl4ai/crawl4ai:latest
+    container_name: crawl4ai
+    restart: unless-stopped
+    networks:
+      - oweibo
+    ports:
+      - "8000:8000"
+    environment:
+      - CRAWL4AI_API_TOKEN=${CRAWL4AI_API_TOKEN:-}
+      - CRAWL4AI_MAX_CONCURRENT=${CRAWL4AI_MAX_CONCURRENT:-5}
+      - CRAWL4AI_TIMEOUT=${CRAWL4AI_TIMEOUT:-30000}
+      - TZ=${TZ}
+    mem_limit: ${CRAWL4AI_MEMORY_LIMIT:-800m}
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:8000/health || wget -q --spider http://localhost:8000/health || exit 0" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # SEARCH INTELLIGENCE & CACHING
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # Redis: Caching backend for SearXNG + future pipeline use
+  redis:
+    image: redis:alpine
+    container_name: redis
+    restart: unless-stopped
+    networks:
+      - oweibo
+      - kilo-net
+    volumes:
+      - redis_data:/data
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # SearXNG: Privacy-respecting metasearch engine (API-only)
+  # Discovery layer for Active Perception — finds URLs for Crawl4AI to deep-read
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    networks:
+      - oweibo
+      - kilo-net
+    volumes:
+      - ./config/searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080/
+      - SEARXNG_SECRET=${SEARXNG_SECRET_KEY:-searxng_kilo_factory_key}
+    mem_limit: 512m
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:8080 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # INFRASTRUCTURE — Security & Self-Healing
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # Docker Socket Proxy — Zero-trust Docker API gateway
+  # Watchtower connects here instead of the raw Docker socket
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: docker-proxy
+    restart: unless-stopped
+    networks:
+      - oweibo
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      # Read + write for Watchtower updates
+      - CONTAINERS=1
+      - SERVICES=1
+      - NETWORKS=1
+      - TASKS=1
+      - IMAGES=1
+      - POST=1
+      - LOGS=1
+      - EXEC=0
+      - BUILD=0
+    mem_limit: 128m
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q --spider http://localhost:2375 || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # Watchtower: Automated container updates (self-healing)
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    restart: unless-stopped
+    networks:
+      - oweibo
+    depends_on:
+      docker-proxy:
+        condition: service_healthy
+    environment:
+      - DOCKER_HOST=tcp://docker-proxy:2375
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_SCHEDULE=0 0 3 * * SUN
+      - TZ=${TZ}
+    mem_limit: 256m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# PERSISTENCE
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+volumes:
+  ollama_models:
+  qdrant_data:
+  redis_data:
+
+networks:
+  oweibo:
+    driver: bridge
+  kilo-net:
+    driver: bridge
+    internal: true

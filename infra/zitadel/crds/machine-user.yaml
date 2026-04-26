@@ -1,0 +1,36 @@
+# infra/zitadel/crds/machine-user.yaml
+# Zitadel operator CRD for the oweibo service account.
+# The Zitadel operator (zitadel.io/v1) provisions a machine user (service account)
+# that the oweibo factory uses to manage tenants, OIDC clients, and API tokens.
+#
+# After bootstrap.sh runs, the generated client_id and private_key_pem are
+# written to Vault at: oweibo/infra/zitadel (keys: ZITADEL_CLIENT_ID, ZITADEL_PRIVATE_KEY_PEM)
+#
+# Note: this CRD is applied AFTER the Zitadel operator is running.
+# See scripts/bootstrap.sh for the correct apply order.
+
+apiVersion: zitadel.io/v1
+kind: MachineUser
+metadata:
+  name: oweibo-service-account
+  namespace: identity
+spec:
+  # Human-readable name shown in the Zitadel console
+  userName: oweibo-service-account
+  # Machine user description
+  description: "oweibo App Factory — service account for tenant management and OIDC client provisioning"
+  # JWT Profile key pair — oweibo authenticates to the Zitadel API using a signed JWT
+  keyType: JWT
+  # Scopes the service account needs to manage tenants and issue OIDC clients
+  scopes:
+    - openid
+    - profile
+    - email
+    - urn:zitadel:iam:org:project:id:zitadel:aud
+  # Grant the service account IAM owner permissions so it can create projects and OIDC clients
+  iamRoles:
+    - IAM_OWNER
+  # Write the generated client_id + key_pem to a K8s secret for Vault sync
+  credentialsOutputSecret:
+    name: zitadel-oweibo-sa-credentials
+    namespace: identity

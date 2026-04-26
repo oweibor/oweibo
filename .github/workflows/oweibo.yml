@@ -1,0 +1,125 @@
+# .github/workflows/oweibo.yml
+# CI integration for remote skills — verifies skills.lock is up-to-date.
+# Run on every PR and push to main.
+name: oweibo CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  skills-lock-check:
+    name: Remote Skills Lock Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check remote skills lock is current
+        run: |
+          pnpm --filter @oweibo/cli skills pull --lock-check
+        env:
+          OWEIBO_API_URL: ${{ secrets.OWEIBO_API_URL || 'http://localhost:3000' }}
+        continue-on-error: true
+
+  boundary-enforcement:
+    name: Import Boundary Enforcement
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run dependency-cruiser
+        run: npx dependency-cruiser --validate .dependency-cruiser.js packages/
+
+  typecheck:
+    name: TypeScript Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build core-contracts
+        run: pnpm --filter @oweibo/core-contracts build
+
+      - name: TypeScript typecheck
+        run: pnpm -r typecheck
+
+  lint:
+    name: ESLint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm -r lint
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build core-contracts
+        run: pnpm --filter @oweibo/core-contracts build
+
+      - name: Run tests
+        run: pnpm -r test --if-present

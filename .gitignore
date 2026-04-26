@@ -1,0 +1,59 @@
+# System
+.DS_Store
+Thumbs.db
+
+# Environment Variables
+.env
+*.env
+!config.env.template
+config.env.bak
+.kilocodemodes
+*.bak
+*.swp
+*~
+
+# Docker
+docker-compose.override.yml
+
+# Application Data (Exclude heavy/sensitive folders)
+homelab/
+qdrant/
+kilo/workspace/
+kilo/signals/
+kilo/queue/
+kilo/history/
+kilo/system/
+
+# Kilo
+.kilocodemodes
+
+# Logs & Audit
+audit/
+watchtower/
+
+# Node.js
+node_modules/
+kilo/pipeline/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Logs
+logs
+*.log
+dev-debug.log
+# Dependency directories
+# Environment variables
+# Editor directories and files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+# OS specific
+
+# Task files
+# tasks.json
+# tasks/ 

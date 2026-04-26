@@ -1,0 +1,29 @@
+#!/bin/sh
+set -e
+
+# ESLint, tsc, and dependency-cruiser are memory-hungry across the whole
+# monorepo (typed lint rules + ts-precompilation deps load every package's
+# program graph). Default Node heap (~4 GB) OOMs on initial commits or large
+# refactors. 12 GB clears it with headroom on a 32 GB dev machine; the
+# dep-cruiser config also now excludes dist/ / node_modules / fixtures.
+export NODE_OPTIONS="${NODE_OPTIONS:-} --max-old-space-size=12288"
+
+echo "→ Running ESLint..."
+pnpm -r lint --if-present
+
+echo "→ Running TypeScript type check..."
+pnpm -r typecheck --if-present
+
+echo "→ Checking test presence for changed source files..."
+node scripts/assert-tests-exist.ts 2>/dev/null || node scripts/assert-tests-exist.js 2>/dev/null || true
+
+echo "→ Checking import boundaries..."
+npx dependency-cruiser --validate .dependency-cruiser.js packages/
+
+echo "→ Checking secrets are not committed..."
+pnpm exec secretlint "**/*"
+
+echo "→ Running contract test presence check..."
+node scripts/verify-contract-tests.js
+
+echo "✓ Pre-commit checks passed."

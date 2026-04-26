@@ -1,0 +1,16 @@
+{
+  "name": "oweibo-sandbox-deps",
+  "version": "1.0.0",
+  "description": "Pre-warmed offline dependency cache for the oweibo sandbox container",
+  "private": true,
+  "dependencies": {
+    "@types/node": "20.14.0",
+    "typescript": "5.4.5",
+    "tsx": "4.11.0",
+    "ts-node": "10.9.2",
+    "zod": "3.23.8",
+    "axios": "1.7.2",
+    "lodash": "4.17.21",
+    "@types/lodash": "4.17.5"
+  }
+}

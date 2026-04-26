@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Oweibo Bridge</title>
+    <style>
+      :root { color-scheme: dark light; }
+      body  { font-family: -apple-system, system-ui, sans-serif; width: 320px; margin: 0;
+              background: #0f1218; color: #eef1f8; }
+      .wrap { padding: 16px; }
+      h1 { font-size: 14px; margin: 0 0 4px; }
+      .sub { font-size: 11px; color: #9fb0d6; margin-bottom: 12px; }
+
+      .section { margin-top: 14px; padding-top: 12px; border-top: 1px solid #2a3144; }
+      .section h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+                    color: #9fb0d6; margin: 0 0 8px; font-weight: 600; }
+
+      .gates { display: flex; flex-direction: column; gap: 8px; }
+      .empty { font-size: 12px; color: #6d7691; font-style: italic; }
+      .gate {
+        background: #1f2330; border: 1px solid #3a4256; border-radius: 8px;
+        padding: 10px 12px;
+      }
+      .gate .msg { font-size: 13px; line-height: 1.4; margin-bottom: 8px; }
+      .gate .row { display: flex; gap: 6px; justify-content: flex-end; }
+      .gate button { font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 5px;
+                     border: 0; cursor: pointer; }
+      .gate .accept  { background: #3b82f6; color: #fff; }
+      .gate .dismiss { background: #2d3444; color: #d9dfef; }
+
+      .pair input[type=text] {
+        width: 100%; padding: 8px; font-size: 14px; box-sizing: border-box;
+        font-family: monospace; letter-spacing: 2px; text-transform: uppercase;
+        background: #0f1218; color: #eef1f8; border: 1px solid #2a3144; border-radius: 5px;
+      }
+      .pair button {
+        margin-top: 10px; width: 100%; padding: 8px; font-size: 13px; cursor: pointer;
+        background: #2563eb; color: white; border: 0; border-radius: 5px;
+      }
+      .status { margin-top: 10px; font-size: 12px; color: #9fb0d6; min-height: 14px; }
+      label { display: block; font-size: 11px; margin-bottom: 4px; color: #9fb0d6; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Oweibo Browser Bridge</h1>
+      <div class="sub">v9.5.9 — native messaging + unified HITL</div>
+
+      <div class="section">
+        <h2>Pending approvals</h2>
+        <div class="gates" id="gates"><div class="empty">No pending gates.</div></div>
+      </div>
+
+      <div class="section pair">
+        <h2>Manual pairing</h2>
+        <label for="code">Code from <code>oweibo browser pair</code></label>
+        <input id="code" type="text" maxlength="6" placeholder="A3F9K2" />
+        <button id="connect">Connect</button>
+        <div class="status" id="status"></div>
+      </div>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>

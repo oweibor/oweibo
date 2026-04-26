@@ -1,0 +1,97 @@
+# infra/zitadel/helm/values.yaml — Production values for self-hosted Zitadel
+# Consumed by: helm install zitadel infra/zitadel/helm/ -f infra/zitadel/helm/values.yaml
+# Secrets (masterkey, DB password) are injected at deploy time from Vault — never stored here.
+
+zitadel:
+  # ── Core config ─────────────────────────────────────────────────────────────
+  replicaCount: 2
+
+  image:
+    repository: ghcr.io/zitadel/zitadel
+    tag: "v2.54.0"
+    pullPolicy: IfNotPresent
+
+  # ── External domain — set to the actual domain before deploying ─────────────
+  # ZITADEL_EXTERNALDOMAIN is read from Vault at bootstrap time (see scripts/bootstrap.sh)
+  # and patched into the running ConfigMap. Do not hard-code a domain here.
+  zitadel:
+    masterKey: ""   # injected from Vault: oweibo/infra/zitadel → ZITADEL_MASTERKEY
+    configmapConfig:
+      ExternalSecure: true
+      ExternalPort: 443
+      TLS:
+        Enabled: false   # TLS terminated at ingress (cert-manager)
+      Database:
+        Postgres:
+          Host: "zitadel-postgresql"
+          Port: 5432
+          Database: zitadel
+          MaxOpenConns: 20
+          MaxConnLifetime: "30m"
+          MaxConnIdleTime: "5m"
+          User:
+            SSL:
+              Mode: disable
+          Admin:
+            SSL:
+              Mode: disable
+
+  # ── Service ─────────────────────────────────────────────────────────────────
+  service:
+    type: ClusterIP
+    port: 8080
+    protocol: http2
+
+  # ── Resources ───────────────────────────────────────────────────────────────
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+
+  # ── Pod disruption ───────────────────────────────────────────────────────────
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+  # ── Readiness / liveness ────────────────────────────────────────────────────
+  readinessProbe:
+    enabled: true
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    failureThreshold: 3
+
+  livenessProbe:
+    enabled: true
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    failureThreshold: 5
+
+  # ── Persistence (Zitadel is stateless — DB is the persistence layer) ────────
+  # No PVCs needed for Zitadel itself.
+
+# ── PostgreSQL subchart ──────────────────────────────────────────────────────
+postgresql:
+  enabled: true
+  auth:
+    database: zitadel
+    username: zitadel
+    # password injected from Vault at deploy time via --set postgresql.auth.password=...
+    password: ""
+  primary:
+    persistence:
+      enabled: true
+      storageClass: "local-path"
+      size: "20Gi"
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "256Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+
+# ── Namespace (namespace created by kustomization.yaml, not by Helm) ─────────
+namespaceOverride: "identity"

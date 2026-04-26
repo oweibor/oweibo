@@ -1,0 +1,1 @@
+{"version":3,"file":"BrowserSkillActionParser.d.ts","sourceRoot":"","sources":["../../src/skill/BrowserSkillActionParser.ts"],"names":[],"mappings":"AAKA,OAAO,KAAK,EAAE,aAAa,EAAE,MAAM,wBAAwB,CAAC;AAE5D,MAAM,WAAW,kBAAkB;IACjC,OAAO,EAAE,aAAa,EAAE,CAAC;IACzB,MAAM,EAAG,MAAM,EAAE,CAAC;CACnB;AAED,qBAAa,wBAAwB;IACnC,KAAK,CAAC,MAAM,EAAE,MAAM,GAAG,kBAAkB;CAgB1C"}

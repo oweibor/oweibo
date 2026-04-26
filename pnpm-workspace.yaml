@@ -1,0 +1,5 @@
+packages:
+  - "packages/*"
+  - "kilo/pipeline"
+  - "packages/browser-tool"
+  - "packages/browser-extension"

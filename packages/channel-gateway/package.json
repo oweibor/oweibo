@@ -1,0 +1,45 @@
+{
+  "name": "@oweibo/channel-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multi-Tenant Social Channel Gateway — 9 platform adapters (Telegram, Discord, Slack, WhatsApp, Signal, iMessage, Google Chat, IRC, WebChat) plus REST/CLI (v9.3).",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "type-check": "tsc --noEmit",
+    "clean": "rimraf dist",
+    "test": "jest --passWithNoTests"
+  },
+  "dependencies": {
+    "@oweibo/core-contracts": "workspace:*",
+    "@oweibo/channel-contracts": "workspace:*",
+    "grammy": "^1.32.0",
+    "discord.js": "^14.16.3",
+    "@slack/bolt": "^4.2.0",
+    "ioredis": "^5.4.1",
+    "uuid": "^10.0.0",
+    "winston": "^3.14.2",
+    "ws": "^8.18.0",
+    "jsonwebtoken": "^9.0.2",
+    "irc-framework": "^4.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.5.13",
+    "@types/jsonwebtoken": "^9.0.7",
+    "typescript": "^5.5.4",
+    "jest": "^29.0.0",
+    "@types/jest": "^29.0.0",
+    "ts-jest": "^29.0.0",
+    "rimraf": "^5.0.0"
+  }
+}

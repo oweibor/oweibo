@@ -1,0 +1,54 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - ../../services/traefik
+  - ../../services/ollama
+  - ../../services/qdrant
+
+patches:
+  - patch: |-
+      # Ollama: Hardware-aware limits for N100.
+      # Rationale: Spiky memory usage during model loading.
+      # - Requests (2Gi): Sufficient for baseline/idle state + small models.
+      # - Limits (4Gi): Allows for transient spikes during KV cache allocation/model switching.
+      # Gap prevents overcommitment on N100 nodes while ensuring scheduling stability.
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: "4Gi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: "2Gi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/cpu
+        value: "2"
+    target:
+      kind: Deployment
+      name: ollama
+  # Qdrant: Reduced memory for N100
+  - patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/limits/memory
+        value: "1Gi"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: "512Mi"
+    target:
+      kind: Deployment
+      name: qdrant
+  # PVC: Reduced storage for N100
+  - patch: |-
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: "5Gi"
+    target:
+      kind: PersistentVolumeClaim
+      name: ollama-data
+  - patch: |-
+      - op: replace
+        path: /spec/resources/requests/storage
+        value: "3Gi"
+    target:
+      kind: PersistentVolumeClaim
+      name: qdrant-data

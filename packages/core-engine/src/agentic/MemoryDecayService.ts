@@ -1,0 +1,238 @@
+/**
+ * MemoryDecayService — scheduled background job for LTM confidence decay and eviction.
+ *
+ * runDecayCycle() is the only public entry point. It scrolls every tenant's Qdrant
+ * collection in bounded batches, applies exponential confidence decay, archives
+ * entries below the eviction threshold to Postgres, and deletes them from Qdrant.
+ *
+ * Decay model:
+ *   λ = ln(2) / tierHalfLife[entry.tier]   (tier-specific decay constant)
+ *   newConfidence = entry.confidence * exp(-λ * daysSinceLastReinforced)
+ *
+ * Entries whose newConfidence drops below decayEvictionThreshold are evicted:
+ *   1. Archived to ltm_archive via parameterised bulk INSERT (never string-interpolated).
+ *   2. Deleted from Qdrant.
+ *
+ * Entries above the threshold have their confidence updated in-place via setPayload().
+ *
+ * Concurrency: up to config.maxConcurrentTenants tenants run in parallel (p-limit v3).
+ * Archive failures are logged at warn level and must not abort the decay cycle.
+ */
+
+import type { Pool } from 'pg';
+import pLimit from 'p-limit';
+import type { MemoryEntry, MemoryTier } from './LongTermMemoryStore.js';
+import { TenantKeyBuilder } from '../infra/TenantKeyBuilder.js';
+
+// @qdrant/js-client-rest is ESM-only; same alias pattern as LongTermMemoryStore.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type QdrantClient = any;
+
+// ─── Config ───────────────────────────────────────────────────────────────────
+
+export interface DecayConfig {
+  tierHalfLife:               Record<MemoryTier, number>;  // days
+  decayEvictionThreshold:     number;   // default: 0.05
+  maxPointsPerCyclePerTenant: number;   // default: 1_000
+  interBatchDelayMs:          number;   // default: 200
+  maxConcurrentTenants:       number;   // default: 10
+}
+
+export const DEFAULT_DECAY_CONFIG: DecayConfig = {
+  tierHalfLife:               { episodic: 7, semantic: 90, procedural: 180 },
+  decayEvictionThreshold:     0.05,
+  maxPointsPerCyclePerTenant: 1_000,
+  interBatchDelayMs:          200,
+  maxConcurrentTenants:       10,
+};
+
+// ─── Logger interface ─────────────────────────────────────────────────────────
+
+export interface Logger {
+  info(...a:  unknown[]): void;
+  warn(...a:  unknown[]): void;
+  error(...a: unknown[]): void;
+  debug(...a: unknown[]): void;
+}
+
+// ─── Internal helpers ─────────────────────────────────────────────────────────
+
+/** One item in the toUpdate list: the point id and the new confidence value. */
+interface ConfidenceUpdate {
+  id:            string;
+  newConfidence: number;
+}
+
+// ─── Service ──────────────────────────────────────────────────────────────────
+
+export class MemoryDecayService {
+  constructor(
+    private readonly qdrant:     QdrantClient,
+    private readonly pg:         Pool,
+    private readonly config:     DecayConfig,
+    /** Async factory that returns the current list of tenant IDs to process. */
+    private readonly tenantIds:  () => Promise<string[]>,
+    private readonly logger:     Logger,
+  ) {}
+
+  // ── Public API ─────────────────────────────────────────────────────────────
+
+  /**
+   * runDecayCycle — iterate over all tenants and decay each one's LTM collection.
+   *
+   * Uses p-limit to cap concurrency at config.maxConcurrentTenants so a large
+   * tenant roster does not flood Qdrant with parallel scroll requests.
+   */
+  async runDecayCycle(): Promise<void> {
+    const tenants = await this.tenantIds();
+    this.logger.info('[MemoryDecayService] starting decay cycle', { tenantCount: tenants.length });
+
+    const limit = pLimit(this.config.maxConcurrentTenants);
+
+    await Promise.all(
+      tenants.map(tenantId =>
+        limit(() => this.decayTenant(tenantId)),
+      ),
+    );
+
+    this.logger.info('[MemoryDecayService] decay cycle complete');
+  }
+
+  // ── Private implementation ─────────────────────────────────────────────────
+
+  /**
+   * decayTenant — scroll a tenant's collection in 100-point batches and apply
+   * the exponential confidence decay formula to each entry.
+   *
+   * Evicted entries are archived first (best-effort) then deleted from Qdrant.
+   * Updates are written with setPayload() so the vector is never re-embedded.
+   */
+  private async decayTenant(tenantId: string): Promise<void> {
+    const collection = TenantKeyBuilder.ltmCollection(tenantId);
+    const BATCH_SIZE = 100;
+    const now = Date.now();
+
+    let totalProcessed = 0;
+    let nextPageOffset: string | number | null = null;
+
+    do {
+      // ── Scroll one page ────────────────────────────────────────────────────
+      const page = await this.qdrant.scroll(collection, {
+        limit:        BATCH_SIZE,
+        with_payload: true,
+        with_vector:  false,
+        ...(nextPageOffset !== null ? { offset: nextPageOffset } : {}),
+      }) as { points: Array<{ id: string; payload: unknown }>; next_page_offset: string | number | null };
+
+      const { points, next_page_offset } = page;
+      nextPageOffset = next_page_offset ?? null;
+
+      // ── Classify each point ────────────────────────────────────────────────
+      const toUpdate:  ConfidenceUpdate[] = [];
+      const toEvict:   MemoryEntry[]      = [];
+
+      for (const point of points) {
+        const entry = point.payload as MemoryEntry;
+
+        // Tier-specific decay constant: λ = ln(2) / halfLifeDays
+        const halfLife    = this.config.tierHalfLife[entry.tier] ?? DEFAULT_DECAY_CONFIG.tierHalfLife[entry.tier];
+        const λ           = Math.LN2 / halfLife;
+        const daysSince   = (now - entry.lastReinforcedAt) / 86_400_000;
+        const newConfidence = entry.confidence * Math.exp(-λ * daysSince);
+
+        if (newConfidence < this.config.decayEvictionThreshold) {
+          toEvict.push(entry);
+        } else {
+          toUpdate.push({ id: point.id, newConfidence });
+        }
+      }
+
+      // ── Apply updates ──────────────────────────────────────────────────────
+      // Update surviving entries in-place — no re-embedding needed.
+      for (const { id, newConfidence } of toUpdate) {
+        await this.qdrant.setPayload(collection, {
+          payload: { confidence: newConfidence },
+          points:  [id],
+        });
+      }
+
+      // ── Evict entries below threshold ──────────────────────────────────────
+      if (toEvict.length > 0) {
+        // 1. Archive first (best-effort — failure must not abort the eviction).
+        await this.archiveEntries(toEvict, tenantId);
+
+        // 2. Delete from Qdrant.
+        await this.qdrant.delete(collection, {
+          points: toEvict.map(e => e.id),
+        });
+      }
+
+      this.logger.debug('[MemoryDecayService] batch processed', {
+        tenantId,
+        batchSize:  points.length,
+        updated:    toUpdate.length,
+        evicted:    toEvict.length,
+      });
+
+      totalProcessed += points.length;
+
+      // Back-pressure between batches to avoid flooding Qdrant.
+      if (nextPageOffset !== null && totalProcessed < this.config.maxPointsPerCyclePerTenant) {
+        await new Promise(r => setTimeout(r, this.config.interBatchDelayMs));
+      }
+
+    } while (
+      nextPageOffset !== null &&
+      totalProcessed < this.config.maxPointsPerCyclePerTenant
+    );
+
+    this.logger.info('[MemoryDecayService] tenant decay complete', { tenantId, totalProcessed });
+  }
+
+  /**
+   * archiveEntries — bulk INSERT evicted entries into ltm_archive.
+   *
+   * Uses $1…$(7n) parameterised placeholders — entry fields are NEVER
+   * string-interpolated into SQL. Errors are swallowed at warn level so
+   * archive failure never aborts the decay cycle (entries still get deleted
+   * from Qdrant — a missing archive row is preferable to a stuck decay job).
+   *
+   * Columns archived: id, tenant_id, scope, type, tier, summary, confidence
+   */
+  private async archiveEntries(entries: MemoryEntry[], tenantId: string): Promise<void> {
+    if (entries.length === 0) return;
+
+    try {
+      const COLS = 7;  // id, tenant_id, scope, type, tier, summary, confidence
+      const evictedAt = new Date();
+
+      // Build: ($1,$2,$3,$4,$5,$6,$7), ($8,$9,$10,$11,$12,$13,$14), …
+      const placeholders = entries
+        .map((_, rowIdx) => {
+          const base = rowIdx * COLS;
+          const cols = Array.from({ length: COLS }, (_, i) => `$${base + i + 1}`);
+          return `(${cols.join(',')})`;
+        })
+        .join(',');
+
+      const values: unknown[] = [];
+      for (const e of entries) {
+        values.push(e.id, tenantId, e.scope, e.type, e.tier, e.summary, e.confidence);
+      }
+
+      await this.pg.query(
+        `INSERT INTO ltm_archive
+           (id, tenant_id, scope, type, tier, summary, confidence)
+         VALUES ${placeholders}
+         ON CONFLICT (id) DO NOTHING`,
+        values,
+      );
+    } catch (err) {
+      // Archive failure is non-fatal — log and continue so Qdrant eviction still runs.
+      this.logger.warn(
+        '[MemoryDecayService] archiveEntries failed — entries will be evicted without archive record',
+        { tenantId, count: entries.length, error: (err as Error).message },
+      );
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "$schema": "https://oweibo.dev/schemas/skills-lock-v1.json",
+  "version": 1,
+  "lockfileVersion": 1,
+  "skills": {}
+}

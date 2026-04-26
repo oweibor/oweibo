@@ -1,0 +1,94 @@
+# SearXNG Settings — oweibo Agent Factory
+# API-only configuration for autonomous agent perception chain
+# Docs: https://docs.searxng.org/admin/settings/
+
+use_default_settings: true
+
+server:
+  port: 8080
+  bind_address: "0.0.0.0"
+  secret_key: "searxng_kilo_factory_key"
+  base_url: "http://searxng:8080/"
+  image_proxy: false
+  # Limit workers to conserve memory on local hardware
+  method: "GET"
+
+ui:
+  default_theme: simple
+  default_locale: "en"
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+  formats:
+    - json
+
+# Redis caching — shared with kilo pipeline
+redis:
+  url: "redis://redis:6379/0"
+
+# Rate limiter — protects against runaway agent loops
+server.limiter: true
+
+outgoing:
+  request_timeout: 10
+  max_request_timeout: 15
+  # Pool connections for efficiency on constrained hardware
+  pool_connections: 50
+  pool_maxsize: 20
+
+# Engine selection — curated for developer/technical search
+engines:
+  # Fast text search engines (enabled)
+  - name: google
+    engine: google
+    shortcut: g
+    disabled: false
+
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    disabled: false
+
+  - name: brave
+    engine: brave
+    shortcut: br
+    disabled: false
+
+  - name: stackoverflow
+    engine: stackoverflow
+    shortcut: so
+    disabled: false
+
+  - name: github
+    engine: github
+    shortcut: gh
+    disabled: false
+
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: w
+    disabled: false
+
+  # Heavy/unstable engines (disabled)
+  - name: bing
+    engine: bing
+    disabled: true
+
+  - name: yahoo
+    engine: yahoo
+    disabled: true
+
+  - name: qwant
+    engine: qwant
+    disabled: true
+
+  # Disable all non-text categories
+  - name: google images
+    engine: google_images
+    disabled: true
+
+  - name: google videos
+    engine: google_videos
+    disabled: true

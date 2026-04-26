@@ -1,0 +1,265 @@
+# Feedback Validation: `document_generator_plan_analysis_feedback.md`
+
+> Cross-referencing each concern against the actual oweibo codebase to determine validity.
+
+---
+
+## Verdict Summary
+
+| # | Concern | Valid? | Severity Accurate? | Notes |
+|---|---------|--------|---------------------|-------|
+| 1 | Vault repo-path validation stub | ✅ **Valid** | ✅ Correctly rated Critical | Confirmed — `assertRepoAccess()` is a stub |
+| 2 | Qdrant dependency implicit | ✅ **Valid** | ⚠️ Overstated — Medium, not Critical | Plan doesn't mandate `GeneralRepoIndexer` — it's listed as optional reuse |
+| 3 | LLM budget enforcement missing | ✅ **Valid** | ✅ Correctly rated Critical | `PromptBudgetEnforcer` exists but plan doesn't integrate it |
+| 4 | CLI `docs` command not wired | ⚠️ **Partially Valid** | ⚠️ Overstated — Low, not Critical | Plan §4.3.3 describes the CLI in detail; it's a Phase 6 deliverable, not missing |
+| 5 | Incremental analysis edge case | ✅ **Valid** | ✅ Correctly rated Critical | `AstMetadataCache` is single-language; multi-language keying unaddressed |
+| 6 | Circular self-documentation | ✅ **Valid** | ⚠️ Overstated — Low risk | Plan §11 Q3 already calls this out; `--self` flag is proposed |
+| 7 | Cross-reference disambiguation | ✅ **Valid** | ✅ Correctly rated Serious | Real problem for monorepos with duplicate names |
+| 8 | Pattern detector false positives | ⚠️ **Partially Valid** | ⚠️ Overstated — Low | Confidence scores already address this; configurable threshold is a refinement |
+| 9 | Secret leak scanning missing | ⚠️ **Partially Valid** | ✅ Correctly rated Serious | Plan mentions it in §9; implementation detail gap is real |
+| 10 | License extraction fragility | ✅ **Valid** | ⚠️ Overstated — Low | Edge case for offline installs; lockfile fallback is sensible |
+| 11 | `AstMetadataCache` backward compat | ❌ **Invalid** | N/A | Feedback misreads the plan — see detailed analysis below |
+| 12 | Test fixtures absent | ✅ **Valid** | ✅ Correctly rated Serious | Plan has no fixture strategy |
+
+**Score: 9/12 concerns are fully or partially valid. 1 is outright wrong. 2 are overstated in severity.**
+
+---
+
+## Detailed Analysis Per Concern
+
+### 🔴 Gap 1: Vault repo-path validation stub — ✅ VALID
+
+**Feedback claim:** `assertRepoAccess()` only checks `repo:read` permission, not `allowedRepoPaths` from Vault.
+
+**Codebase evidence:**
+```typescript
+// GeneralCodingOrchestrator.ts:477-481
+private async assertRepoAccess(repoPath: string, tenantId: string, secCtx: ISecurityContext): Promise<void> {
+  if (!secCtx.permissions.includes('repo:read')) {
+    throw new Error(`[GeneralCodingOrchestrator] Tenant ${tenantId} does not have repo:read permission`);
+  }
+}
+```
+
+**Verdict:** This is indeed a stub. It checks the permission token but never validates the actual `repoPath` against an allowlist. The feedback is correct — this is a **real security gap** that exists in the current codebase (not just the plan), and the doc-generator plan inherits it.
+
+However, this is a **pre-existing codebase issue**, not a plan-specific flaw. The plan's `assertRepoAccess()` reference in §9 correctly identifies the security concern. The fix belongs in `GeneralCodingOrchestrator` too.
+
+---
+
+### 🔴 Gap 2: Qdrant dependency implicit — ✅ VALID but OVERSTATED
+
+**Feedback claim:** `GeneralRepoIndexer` requires Qdrant; doc-generator inherits hard dependency.
+
+**Codebase evidence:** `GeneralRepoIndexer` constructor takes `qdrant: QdrantClient` (typed as `any` — line 3 of the file). It's a hard constructor dependency.
+
+**Verdict:** The concern is architecturally valid — if the doc-generator reuses `GeneralRepoIndexer`, it inherits Qdrant. **However**, the plan lists `GeneralRepoIndexer` in §8 as *optional* reuse ("Qdrant semantic search for context retrieval during LLM enrichment"). The `SemanticAnnotator` could use `RepoMapBuilder` output alone for context, making Qdrant genuinely optional.
+
+**Severity override:** Medium, not Critical. The plan doesn't mandate Qdrant — it just doesn't explicitly say "make it optional." A one-line clarification resolves this.
+
+---
+
+### 🔴 Gap 3: LLM budget enforcement missing — ✅ VALID
+
+**Feedback claim:** No `PromptBudgetEnforcer`-style guard → unbounded token spend.
+
+**Codebase evidence:** `PromptBudgetEnforcer` exists at two locations:
+- `infrastructure/PromptBudgetEnforcer.ts` (the full §22.26 implementation with trim chain)
+- `agentic/PromptBudgetEnforcer.ts` (a simpler variant)
+
+`ConversationalLoop` already injects `PromptBudgetEnforcer` as a constructor dependency (line 107). The doc-generator plan's `SemanticAnnotator` does **not** reference this.
+
+**Verdict:** Fully valid. The plan defines token budgets in §6.2 and §7 but never integrates the existing `PromptBudgetEnforcer`. The `SemanticAnnotator` should either:
+- Accept `PromptBudgetEnforcer` as a constructor dependency, or
+- Implement its own lightweight per-call cap using the same `enforce()` pattern
+
+---
+
+### 🔴 Gap 4: CLI `docs` command not wired — ⚠️ PARTIALLY VALID, OVERSTATED
+
+**Feedback claim:** Plan lists CLI options but no integration points.
+
+**Verdict:** The feedback overstates this. Plan §4.3.3 provides:
+- Full command syntax (`oweibo docs <path> [options]`)
+- All flags (`--incremental`, `--format`, `--self`, `--watch`, `--only`)
+- Explicit file reference: "Add `docs` subcommand to `packages/cli/src/commands/`"
+- Phase 6 task list entry: "[NEW] packages/cli/src/commands/docs.ts"
+
+The CLI command is **designed but not yet implemented** — which is expected for Plan Phase 6. The feedback treats a future deliverable as a "missing" item. The only valid sub-point is the suggestion to scaffold the CLI command early (before writing analyzers) for faster iteration — that's just a sequencing preference.
+
+---
+
+### 🔴 Gap 5: Incremental analysis edge case (multi-language) — ✅ VALID
+
+**Feedback claim:** `AstMetadataCache` doesn't handle multi-language repos.
+
+**Codebase evidence:**
+```typescript
+// AstMetadataCache.ts
+export interface CacheEntry {
+  fileHash:    string;
+  exports:     string[];   // serialised export signatures
+  symbols:     string[];   // top-level symbol names
+  importedBy:  string[];   // direct importers
+  lastIndexed: string;
+}
+```
+
+The cache is keyed by `filePath` (line 47: `this.cache.get(filePath)`). There's no language discriminator.
+
+**Verdict:** Valid. If a Python file and a TypeScript file produce different `FileAnalysis` shapes, the cache needs per-language awareness. The fix is straightforward — namespace cache keys by `${filePath}:${language}` or use separate cache instances per analyzer. The feedback's suggestion of per-language cache entries is the right approach.
+
+---
+
+### 🔴 Gap 6: Circular self-documentation — ✅ VALID but OVERSTATED
+
+**Feedback claim:** Analyzing oweibo would include `doc-generator/` itself → recursive dependency.
+
+**Verdict:** The concern is technically correct but the plan already addresses it. §11 Open Question Q3 explicitly states:
+
+> "Should self-documentation be gated behind a `--self` flag that requires explicit opt-in? Recommendation: yes."
+
+The feedback's recommendation to add `exclude: ['**/doc-generator/**']` is a reasonable implementation detail for the `--self` mode, but calling this a "Critical Gap" when the plan already flags it as an open question is overstated. **Low severity** — it's a known design consideration, not an oversight.
+
+---
+
+### 🟡 Gap 7: Cross-reference disambiguation — ✅ VALID
+
+**Feedback claim:** Duplicate class names across modules → broken links.
+
+**Codebase evidence:** The oweibo monorepo has 14 packages. Checking for name collisions:
+- Multiple packages could export `EventDoc`, `ArtifactFile`, etc.
+- `core-contracts` re-exports types that individual packages also reference
+
+**Verdict:** Valid and well-observed. The plan's `CrossRefLinker` description (§4.2.3) mentions "Duplicate symbol names → disambiguated with file path prefix" — so the *concept* is acknowledged, but the implementation strategy (how to compute unique anchors, how to handle re-exports) is underspecified. The feedback's `ClassName_{fileHash}` suggestion is a workable anchor strategy.
+
+---
+
+### 🟡 Gap 8: Pattern detector false positives — ⚠️ PARTIALLY VALID, OVERSTATED
+
+**Feedback claim:** Heuristic-only detection may misclassify; needs configurable threshold.
+
+**Verdict:** The plan already includes confidence scores (0.0–1.0) on every `ArchitecturalPattern`. The feedback's suggestion for a `minConfidence` threshold is a refinement, not a gap. Patterns below threshold can be filtered at render time. This is a **nice-to-have configuration option**, not a quality/reliability concern.
+
+---
+
+### 🟡 Gap 9: Secret leak scanning missing — ⚠️ PARTIALLY VALID
+
+**Feedback claim:** `DocValidator` mentions high-entropy scan but no implementation details.
+
+**Verdict:** The plan mentions secret scanning in §9 (Security): "DocValidator scans output for high-entropy strings, `.env` patterns, API key formats." This is a design intent statement without implementation detail. The feedback correctly identifies the gap — the plan should include the regex patterns (like the Stripe key patterns the feedback provides). However, calling this an implementation detail gap is fair; calling it a "Serious Gap" is slightly overstated since the intent is documented.
+
+---
+
+### 🟡 Gap 10: License extraction fragility — ✅ VALID but LOW severity
+
+**Feedback claim:** Reading `node_modules/*/package.json` fails for offline/partial installs.
+
+**Verdict:** Valid edge case. The feedback's suggestion to use lockfiles (`pnpm-lock.yaml`, `package-lock.json`) as the primary source is correct and a better approach. This is a minor refinement, not a serious gap — if `node_modules` is missing, the dependency mapper should gracefully degrade to `package.json` ranges with a warning.
+
+---
+
+### 🟡 Gap 11: `AstMetadataCache` backward compatibility — ❌ INVALID
+
+**Feedback claim:** "Plan extends `CacheEntry` with a new `symbols: SymbolInfo[]` field while `CodeIntelligenceLayer` still expects only `exports: string[]` and `importedBy: string[]`"
+
+**Codebase evidence:**
+```typescript
+// Current CacheEntry (AstMetadataCache.ts:7-13)
+export interface CacheEntry {
+  fileHash:    string;
+  exports:     string[];    // string array
+  symbols:     string[];    // string array ← ALREADY EXISTS
+  importedBy:  string[];
+  lastIndexed: string;
+}
+```
+
+**Verdict:** The feedback is **factually wrong** on two counts:
+
+1. `CacheEntry` already has `symbols: string[]` — it's not a new field being added
+2. The plan proposes a richer `SymbolInfo[]` type for the **new** `CodebaseKnowledge` schema, **not** for modifying the existing `CacheEntry`
+
+The plan's §8 table says: "Extended with richer `CacheEntry` (full `SymbolInfo[]` per file)" — this refers to creating an `ExtendedCacheEntry` or a new cache alongside the existing one, not mutating the existing interface. The feedback misreads the plan as proposing a breaking change to the existing `CacheEntry`, which it doesn't.
+
+No backward compatibility issue exists here.
+
+---
+
+### 🟡 Gap 12: Test fixtures absent — ✅ VALID
+
+**Feedback claim:** No plan for fixture codebases to validate analyzers.
+
+**Verdict:** Valid. The plan's §10 (Testing Strategy) lists integration tests ("Run full pipeline on `packages/core-contracts/`") but doesn't describe **purpose-built fixture repos** — small, controlled codebases with known structures for deterministic testing of each analyzer. The feedback is correct that these should be created before writing analyzers.
+
+---
+
+## Assessment of Refinement Suggestions
+
+### Suggestions Worth Adopting
+
+| # | Suggestion | Verdict |
+|---|-----------|---------|
+| 3 | Rename `SymbolInfo.jsdoc` → `rawDocumentation` | ✅ Good — language-agnostic naming |
+| 7 | Lazy registration for `LanguageAnalyzerRegistry` | ✅ Good — avoids loading Python analyzer when not needed |
+| 12 | Use lockfiles as primary source for `DependencyMapper` | ✅ Good — more accurate versions |
+| 13 | `SemanticAnnotator` LLM circuit breaker | ✅ Good — critical for resilience |
+| 15 | `PromptBudgetEnforcer` integration | ✅ **Essential** — must be added |
+| 16 | `CrossRefLinker` symbol disambiguation | ✅ Good — needs concrete strategy |
+| 17 | `DocValidator` secret scanning patterns | ✅ Good — concrete implementation needed |
+| 20 | Register as `doc:generate` tool in `ToolRegistry` | ✅ **Excellent idea** — enables invocation from general-coding tasks |
+| 25 | Dependency-cruiser boundary rule for `doc-generator/` | ✅ **Essential** — must be added to `.dependency-cruiser.js` |
+
+### Suggestions That Are Overengineered or Premature
+
+| # | Suggestion | Verdict |
+|---|-----------|---------|
+| 2 | Rename `jsdoc` field | ⚠️ Premature — Phase 1 is TypeScript-only; rename when Python support matures |
+| 4 | Add `analyzeDirectory()` to `ILanguageAnalyzer` | ⚠️ Overengineered — batch analysis can be done by the orchestrator calling `analyzeFile()` in parallel |
+| 6 | Add `'doc-generation'` as third `taskMode` | ⚠️ Overengineered — doc generation can run as a CLI command without entering the `CognitiveEngine` task pipeline. Adding a third mode increases routing complexity for a feature that doesn't need the full agent task lifecycle |
+| 9 | Use Python `ast` via child process | ⚠️ Fragile — spawning Python as a child process creates a runtime dependency. Regex-based analysis with lower confidence scores is the right tradeoff for Phase 1 |
+| 22 | Add `doc-generator` metrics to `AnomalyDetector` | ⚠️ Premature — add after the feature is stable, not during initial implementation |
+
+---
+
+## Architecture Inconsistencies Assessment
+
+### `GeneralRepoIndexer` coupling — ✅ VALID, easy fix
+
+The feedback correctly identifies that `GeneralRepoIndexer` brings Qdrant as a hard dependency. The fix is to make Qdrant usage optional in the doc-generator:
+
+```typescript
+// In CodebaseAnalyzer constructor:
+constructor(
+  // ...
+  private readonly indexer?: GeneralRepoIndexer,  // optional — used for richer semantic context
+)
+```
+
+If `indexer` is null, `SemanticAnnotator` falls back to `RepoMapBuilder` output for LLM context. This is already how `AstMetadataCache` works — it's injected as `null` when caching is not desired.
+
+### `ILLMClient` injection pattern — ⚠️ OVERSTATED
+
+The feedback claims `SemanticAnnotator` doesn't account for Langfuse tracing. However, `ILLMClient` is a contract — any implementation can be injected, including `InstrumentedLLMClient`. The `SemanticAnnotator` correctly depends on the interface, not the implementation. The caller (`DocGeneratorPipeline`) would construct the appropriate `ILLMClient` variant.
+
+This is not a design flaw — it's standard dependency injection. The feedback confuses "using an interface" with "missing integration."
+
+---
+
+## Final Assessment
+
+The feedback document is **largely competent but has accuracy issues** in 3 of its 12 concerns:
+
+| Category | Count |
+|----------|-------|
+| Fully valid and useful | **7** (Gaps 1, 3, 5, 7, 10, 12, + Qdrant coupling) |
+| Partially valid / overstated | **4** (Gaps 4, 6, 8, 9) |
+| Invalid / factually wrong | **1** (Gap 11 — `AstMetadataCache` backward compat) |
+
+The **75% feasibility score** is reasonable but slightly pessimistic. The plan already addresses several concerns the feedback treats as missing (self-documentation in §11 Q3, cross-ref disambiguation in §4.2.3, CLI design in §4.3.3). With the valid refinements applied — particularly `PromptBudgetEnforcer` integration, dependency-cruiser rules, and test fixtures — the plan is closer to **85% ready**.
+
+### Top 3 Actions to Take from Feedback
+
+1. **Integrate `PromptBudgetEnforcer`** into `SemanticAnnotator` — this is the most impactful gap
+2. **Add dependency-cruiser rule** for `doc-generator/ → factory/` boundary
+3. **Create test fixture repos** under `__tests__/fixtures/` before writing analyzers

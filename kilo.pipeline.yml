@@ -1,0 +1,98 @@
+# kilo.pipeline.yml — CI/CD gate definitions for the Oweibo core engine
+# Referenced by kilo/pipeline/src/services/gates/*
+version: 1
+
+pipeline:
+  name: oweibo-core
+  description: >
+    Deterministic gate pipeline enforcing architectural invariants,
+    test-driven development, and compliance posture before a task can
+    be promoted out of staging.
+
+gates:
+  - id: boundary-enforcement
+    name: Boundary Enforcement
+    type: static
+    required: true
+    fail-fast: true
+    command: npx dependency-cruiser --validate .dependency-cruiser.js packages/
+    blocks: [build, test, generate]
+    description: >
+      Enforces module boundary rules declared in .dependency-cruiser.js.
+      Fails the task on any forbidden cross-package import.
+
+  - id: secret-scan
+    name: Secret Scan
+    type: static
+    required: true
+    fail-fast: true
+    command: npx secretlint "**/*" && trivy fs --exit-code 1 --severity HIGH,CRITICAL .
+    blocks: [build, test, generate]
+    description: >
+      Scans all files for committed secrets (secretlint) and for known
+      HIGH/CRITICAL CVEs in the dependency tree (trivy).
+
+  - id: contract-test-presence
+    name: Contract Test Presence
+    type: static
+    required: true
+    fail-fast: true
+    command: node scripts/verify-contract-tests.js
+    blocks: [build, test, generate]
+    description: >
+      Verifies that every public interface in core-contracts has at least
+      one corresponding contract test. Fails if any interface is untested.
+
+  - id: tdd-gate
+    name: TDD Gate
+    type: test
+    required: true
+    fail-fast: true
+    command: |
+      node scripts/assert-tests-exist.js
+      pnpm -r test -- --reporter=json
+    expects:
+      newCodeHasTests: true
+      minCoverageDelta: 0
+    blocks: [semantic-gate, promote]
+    description: >
+      Ensures every changed source file has an accompanying test change
+      and that coverage does not regress. Tests must pass before semantic
+      evaluation or promotion can begin.
+
+  - id: dependency-audit
+    name: Dependency Audit
+    type: policy
+    required: false
+    fail-fast: false
+    command: npm audit --audit-level=high && snyk test
+    blocks: []
+    description: >
+      Audits npm dependencies for known vulnerabilities. Warning only —
+      blocking handled by policy when audit-level=high violations are found.
+
+  - id: compliance-check
+    name: Compliance Check
+    type: policy
+    required: true
+    fail-fast: false
+    command: node kilo/pipeline/src/services/gates/staticGates.js --mode=compliance
+    policies:
+      - license-allowlist
+      - secrets-scan
+      - sbom-diff
+    description: >
+      Runs license allowlist, secrets scanning, and SBOM diff against
+      the baseline recorded in kilo/.kilo/invariants.yaml.
+
+ordering:
+  - boundary-enforcement
+  - secret-scan
+  - contract-test-presence
+  - tdd-gate
+  - dependency-audit
+  - compliance-check
+
+on_failure:
+  action: quarantine
+  route: /quarantine

@@ -1,0 +1,13 @@
+[Unit]
+Description=oweibo Guest Agent — vsock script executor
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/guest-agent
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

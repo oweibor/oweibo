@@ -1,0 +1,17 @@
+apiVersion: v2
+name: zitadel
+description: >
+  Self-hosted Zitadel Identity Provider for the oweibo platform.
+  Deployed once per oweibo instance; serves as the IdP for all
+  'zitadel-native' generated apps.
+type: application
+version: 0.1.0
+appVersion: "2.54.0"
+dependencies:
+  - name: zitadel
+    version: "7.6.0"
+    repository: "https://charts.zitadel.com"
+  - name: postgresql
+    version: "13.4.4"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: postgresql.enabled

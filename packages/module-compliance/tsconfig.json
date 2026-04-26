@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "typeRoots": [
+      "../../node_modules/.pnpm/@types+node@20.19.39/node_modules/@types",
+      "../../node_modules/.pnpm/@types+jest@29.5.14/node_modules/@types"
+    ],
+    "paths": {
+      "@oweibo/core-contracts": ["../core-contracts/dist/index.d.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["dist", "node_modules"]
+}

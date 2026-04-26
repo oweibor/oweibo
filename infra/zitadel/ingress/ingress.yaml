@@ -1,0 +1,39 @@
+# infra/zitadel/ingress/ingress.yaml
+# NGINX ingress + cert-manager TLS for the Zitadel identity provider.
+# Prerequisites:
+#   - ingress-nginx installed (helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx)
+#   - cert-manager installed with a ClusterIssuer named 'letsencrypt-prod'
+#   - ZITADEL_EXTERNALDOMAIN set in Vault and substituted by bootstrap.sh
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: zitadel
+  namespace: identity
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "GRPC"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # gRPC-Web support — required for Zitadel JS/TS SDKs in browsers
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      grpc_set_header Host $host;
+      grpc_set_header X-Real-IP $remote_addr;
+spec:
+  tls:
+    - hosts:
+        - "${ZITADEL_EXTERNALDOMAIN}"
+      secretName: zitadel-tls
+  rules:
+    - host: "${ZITADEL_EXTERNALDOMAIN}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: zitadel
+                port:
+                  number: 8080

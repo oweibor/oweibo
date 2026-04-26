@@ -1,0 +1,36 @@
+{
+  "name": "oweibo-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Oweibo — Autonomous Multi-Tenant App Factory (pnpm workspace root)",
+  "scripts": {
+    "build": "pnpm -r --filter './packages/*' build",
+    "type-check": "pnpm -r --filter './packages/*' type-check",
+    "lint": "pnpm -r --filter './packages/*' lint",
+    "test": "pnpm -r test",
+    "clean": "pnpm -r --filter './packages/*' clean",
+    "check-boundaries": "npx dependency-cruiser --validate .dependency-cruiser.js packages/",
+    "assert-tests": "tsx scripts/assert-tests-exist.ts",
+    "verify-contract-tests": "tsx scripts/verify-contract-tests.ts",
+    "type-check:scripts": "tsc --noEmit --project tsconfig.scripts.json",
+    "ci": "pnpm build && pnpm type-check && pnpm type-check:scripts && pnpm assert-tests && pnpm test",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "@secretlint/secretlint-rule-preset-recommend": "^12.3.0",
+    "@types/node": "^20.14.0",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "dependency-cruiser": "^16.3.10",
+    "eslint": "^9.9.0",
+    "husky": "^9.1.5",
+    "secretlint": "^12.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.4"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@9.12.0"
+}

@@ -1,5 +1,6 @@
 packages:
   - "packages/*"
+  - "apps/*"
   - "kilo/pipeline"
   - "packages/browser-tool"
   - "packages/browser-extension"

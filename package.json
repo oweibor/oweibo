@@ -12,8 +12,9 @@
     "check-boundaries": "npx dependency-cruiser --validate .dependency-cruiser.js packages/",
     "assert-tests": "tsx scripts/assert-tests-exist.ts",
     "verify-contract-tests": "tsx scripts/verify-contract-tests.ts",
+    "check-rls": "tsx scripts/check-rls.ts",
     "type-check:scripts": "tsc --noEmit --project tsconfig.scripts.json",
-    "ci": "pnpm build && pnpm type-check && pnpm type-check:scripts && pnpm assert-tests && pnpm test",
+    "ci": "pnpm build && pnpm type-check && pnpm type-check:scripts && pnpm assert-tests && pnpm check-rls && pnpm test",
     "prepare": "husky"
   },
   "devDependencies": {

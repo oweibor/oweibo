@@ -1,0 +1,236 @@
+// oweibo Prisma schema
+//
+// Two schemas in one database:
+//   betterauth.*  — managed by BetterAuth; no RLS applied here.
+//   oweibo.*      — all tables have RLS enforced via withTenantContext.
+//
+// RLS is applied through raw SQL migrations (see migrations/).
+// Prisma is used only for type-safe access; policy enforcement is at the DB layer.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["betterauth", "oweibo"]
+}
+
+// ── betterauth schema (managed by BetterAuth library) ──────────────────────
+
+model BaUser {
+  id            String   @id @default(cuid())
+  name          String
+  email         String   @unique
+  emailVerified Boolean
+  image         String?
+  createdAt     DateTime
+  updatedAt     DateTime
+
+  sessions BaSession[]
+  accounts BaAccount[]
+
+  @@map("users")
+  @@schema("betterauth")
+}
+
+model BaSession {
+  id        String   @id @default(cuid())
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime
+  updatedAt DateTime
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      BaUser   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+  @@schema("betterauth")
+}
+
+model BaAccount {
+  id                    String    @id @default(cuid())
+  accountId             String
+  providerId            String
+  userId                String
+  user                  BaUser    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime
+  updatedAt             DateTime
+
+  @@map("accounts")
+  @@schema("betterauth")
+}
+
+model BaVerification {
+  id         String    @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime?
+  updatedAt  DateTime?
+
+  @@map("verifications")
+  @@schema("betterauth")
+}
+
+// BetterAuth multiOrganization plugin tables
+model BaOrganization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String?  @unique
+  logo      String?
+  createdAt DateTime
+  metadata  String?
+
+  members BaMember[]
+  invitations BaInvitation[]
+
+  @@map("organizations")
+  @@schema("betterauth")
+}
+
+model BaMember {
+  id             String         @id @default(cuid())
+  organizationId String
+  organization   BaOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String
+  role           String
+  createdAt      DateTime
+
+  @@map("members")
+  @@schema("betterauth")
+}
+
+model BaInvitation {
+  id             String         @id @default(cuid())
+  organizationId String
+  organization   BaOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  email          String
+  role           String?
+  status         String
+  expiresAt      DateTime
+  inviterId      String
+
+  @@map("invitations")
+  @@schema("betterauth")
+}
+
+// ── oweibo schema (RLS enforced on all tenant-data tables) ─────────────────
+
+// Cross-tenant: no tenant_id; RLS keyed off app.is_platform_admin
+model Tenant {
+  id               String   @id @default(uuid()) @db.Uuid
+  name             String
+  slug             String   @unique
+  status           String   @default("active")
+  trustModeDefault String   @default("supervised") @map("trust_mode_default")
+  features         Json     @default("{}")
+  quotas           Json
+  homeRegion       String   @default("us-east-1") @map("home_region")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
+  createdBy        String?  @map("created_by") @db.Uuid
+
+  memberships TenantMembership[]
+  apiKeys     ApiKey[]
+
+  @@map("tenants")
+  @@schema("oweibo")
+}
+
+// Mirror of betterauth.users; kept in sync via Postgres trigger (see migrations/)
+model User {
+  id             String   @id @db.Uuid
+  email          String   @unique
+  status         String   @default("active")
+  platformRoles  String[] @default([]) @map("platform_roles")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  memberships TenantMembership[]
+  apiKeys     ApiKey[]
+
+  @@map("users")
+  @@schema("oweibo")
+}
+
+// Tenant-scoped; RLS on tenant_id
+model TenantMembership {
+  userId    String   @map("user_id") @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  roles     String[]
+  invitedAt DateTime @default(now()) @map("invited_at") @db.Timestamptz
+  invitedBy String?  @map("invited_by") @db.Uuid
+
+  user   User   @relation(fields: [userId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@id([userId, tenantId])
+  @@map("tenant_memberships")
+  @@schema("oweibo")
+}
+
+// Tenant-scoped; RLS on tenant_id
+model ApiKey {
+  id              String    @id @default(uuid()) @db.Uuid
+  tenantId        String    @map("tenant_id") @db.Uuid
+  createdByUserId String    @map("created_by_user_id") @db.Uuid
+  name            String
+  prefix          String
+  hashedSecret    String    @map("hashed_secret")
+  scopes          String[]
+  expiresAt       DateTime? @map("expires_at") @db.Timestamptz
+  revokedAt       DateTime? @map("revoked_at") @db.Timestamptz
+  lastUsedAt      DateTime? @map("last_used_at") @db.Timestamptz
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  user   User   @relation(fields: [createdByUserId], references: [id])
+
+  @@map("api_keys")
+  @@schema("oweibo")
+}
+
+// Audit log: append-only, partitioned by month; RLS on tenant_id
+// Inserts go through oweibo.append_audit() SECURITY DEFINER function only.
+model AuditLog {
+  id               String    @id @db.Uuid
+  ts               DateTime  @db.Timestamptz
+  actorPrincipal   String    @map("actor_principal")
+  onBehalfOfUserId String?   @map("on_behalf_of_user_id") @db.Uuid
+  source           String
+  requestId        String?   @map("request_id")
+  ip               String?
+  tenantId         String?   @map("tenant_id") @db.Uuid
+  scopeUsed        String[]  @map("scope_used")
+  action           String
+  resourceType     String?   @map("resource_type")
+  resourceId       String?   @map("resource_id")
+  beforeHash       String?   @map("before_hash")
+  afterHash        String?   @map("after_hash")
+  outcome          String
+  details          Json?
+
+  @@map("audit_log")
+  @@schema("oweibo")
+}
+
+// Outbox: atomic state-mutation + bus publish
+model Outbox {
+  id          String    @id @default(uuid()) @db.Uuid
+  ts          DateTime  @default(now()) @db.Timestamptz
+  subject     String
+  payload     Json
+  publishedAt DateTime? @map("published_at") @db.Timestamptz
+
+  @@map("outbox")
+  @@schema("oweibo")
+}

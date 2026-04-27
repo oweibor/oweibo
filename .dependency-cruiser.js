@@ -160,6 +160,46 @@ module.exports = {
       from: { path: '.' },
       to:   { path: '^packages/core-engine/src/agentic/PromptBudgetEnforcer' },
     },
+
+    // ── Phase 1: identity / db boundary rules ─────────────────────────────
+
+    {
+      name: 'no-direct-prisma-outside-db-package',
+      severity: 'error',
+      comment: 'All database access must flow through withTenantContext() in packages/db. ' +
+               'Direct PrismaClient imports outside packages/db bypass RLS session parameters.',
+      from: {
+        path: '.',
+        pathNot: [
+          '^packages/db/src/',
+          '/__tests__/',
+        ],
+      },
+      to: { path: '^node_modules/@prisma/client' },
+    },
+    {
+      name: 'identity-service-cannot-import-core-engine',
+      severity: 'error',
+      comment: 'apps/identity is a standalone auth service. ' +
+               'It must not import core-engine internals — only core-contracts and packages/db.',
+      from: { path: '^apps/identity' },
+      to:   { path: '^packages/core-engine' },
+    },
+    {
+      name: 'identity-service-cannot-import-kilo-pipeline',
+      severity: 'error',
+      comment: 'apps/identity is auth-only; it must not import kilo/pipeline internals.',
+      from: { path: '^apps/identity' },
+      to:   { path: '^kilo/pipeline' },
+    },
+    {
+      name: 'db-package-cannot-import-identity',
+      severity: 'error',
+      comment: 'packages/db is a zero-dependency data layer. ' +
+               'It must not import from apps/identity (no circular identity↔db dependency).',
+      from: { path: '^packages/db' },
+      to:   { path: '^apps/identity' },
+    },
   ],
   options: {
     doNotFollow: {

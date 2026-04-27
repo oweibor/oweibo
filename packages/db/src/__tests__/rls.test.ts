@@ -1,0 +1,101 @@
+/**
+ * RLS belt-and-suspenders test suite.
+ *
+ * These tests verify that Postgres RLS alone (with application-layer tenant
+ * checks bypassed via test flag) correctly blocks cross-tenant access.
+ *
+ * Prerequisites:
+ *   - TEST_DATABASE_URL points to a Postgres instance with migrations applied
+ *   - oweibo_app role exists and matches DATABASE_URL credentials
+ *
+ * Run: pnpm --filter @oweibo/db test
+ */
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { PrismaClient } from '@prisma/client';
+
+const TEST_DB_URL = process.env['TEST_DATABASE_URL'];
+
+// Skip the whole suite if no test database is configured (CI without Postgres)
+const describeOrSkip = TEST_DB_URL ? describe : describe.skip;
+
+describeOrSkip('RLS belt-and-suspenders', () => {
+  let db: PrismaClient;
+  let tenantAId: string;
+  let tenantBId: string;
+
+  beforeAll(async () => {
+    db = new PrismaClient({ datasources: { db: { url: TEST_DB_URL } } });
+
+    // Seed two tenants directly as superuser (bypasses RLS)
+    const a = await db.$queryRaw<[{ id: string }]>`
+      INSERT INTO oweibo.tenants (name, slug, quotas)
+      VALUES ('Tenant A', 'tenant-a-rls-test', '{}')
+      RETURNING id
+    `;
+    const b = await db.$queryRaw<[{ id: string }]>`
+      INSERT INTO oweibo.tenants (name, slug, quotas)
+      VALUES ('Tenant B', 'tenant-b-rls-test', '{}')
+      RETURNING id
+    `;
+    tenantAId = (a[0] as { id: string }).id;
+    tenantBId = (b[0] as { id: string }).id;
+  });
+
+  afterAll(async () => {
+    // Clean up test tenants
+    await db.$executeRaw`DELETE FROM oweibo.tenants WHERE slug IN ('tenant-a-rls-test','tenant-b-rls-test')`;
+    await db.$disconnect();
+  });
+
+  it('cross-tenant SELECT is blocked by RLS when app.is_platform_admin is not set', async () => {
+    // Set app.tenant_id to tenant A — should not see tenant B rows
+    const rows = await db.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL app.tenant_id = '${tenantAId}'`);
+      return tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM oweibo.tenants WHERE id = ${tenantBId}::uuid
+      `;
+    });
+    expect(rows).toHaveLength(0);
+  });
+
+  it('platform_admin_bypass allows cross-tenant SELECT', async () => {
+    const rows = await db.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL app.is_platform_admin = 'true'`);
+      return tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM oweibo.tenants WHERE id = ${tenantBId}::uuid
+      `;
+    });
+    expect(rows).toHaveLength(1);
+  });
+
+  it('audit_log UPDATE is rejected regardless of RLS settings', async () => {
+    await expect(
+      db.$executeRaw`
+        UPDATE oweibo.audit_log SET action = 'tampered' WHERE 1=1
+      `,
+    ).rejects.toThrow();
+  });
+
+  it('audit_log DELETE is rejected regardless of RLS settings', async () => {
+    await expect(
+      db.$executeRaw`
+        DELETE FROM oweibo.audit_log WHERE 1=1
+      `,
+    ).rejects.toThrow();
+  });
+
+  it('app.tenant_id does not leak across transaction boundaries (SET LOCAL)', async () => {
+    // First transaction sets tenant A
+    await db.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL app.tenant_id = '${tenantAId}'`);
+    });
+    // Second transaction — no SET LOCAL — should see no tenant_id
+    const rows = await db.$transaction(async (tx) => {
+      return tx.$queryRaw<{ current_setting: string }[]>`
+        SELECT current_setting('app.tenant_id', true) AS current_setting
+      `;
+    });
+    const value = (rows[0] as { current_setting: string } | undefined)?.current_setting ?? '';
+    expect(value).not.toBe(tenantAId);
+  });
+});

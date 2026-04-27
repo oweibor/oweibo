@@ -26,4 +26,7 @@ pnpm exec secretlint "**/*"
 echo "→ Running contract test presence check..."
 node scripts/verify-contract-tests.js
 
+echo "→ Checking RLS migration coverage..."
+tsx scripts/check-rls.ts
+
 echo "✓ Pre-commit checks passed."

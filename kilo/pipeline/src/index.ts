@@ -65,6 +65,11 @@ const scrapeRoutes = require('./routes/scrape');
 // Shared middleware from @oweibo/api-middleware
 const { ipLimiter, requestId, buildLegacyTokenMap, legacyDeprecationHeaders, authenticate } = require('@oweibo/api-middleware');
 
+// Phase 3: NATS + outbox + quota + Redis
+const { initNats, drainNats } = require('./services/nats');
+const { startOutboxPublisher, stopOutboxPublisher } = require('./services/outboxPublisher');
+const { initQuota } = require('./services/quota');
+
 // Build the legacy token map once at startup from TENANT_TOKENS / KILO_API_TOKEN
 const legacyTokenMap = buildLegacyTokenMap();
 
@@ -515,6 +520,20 @@ async function main() {
         port: config.PORT,
     });
 
+    // Initialize Phase 3 services (NATS, Redis quota)
+    try {
+        const Redis = require('ioredis');
+        const redis = new Redis(config.REDIS_URL, { lazyConnect: true, enableOfflineQueue: false });
+        redis.on('error', (err) => logger.warn('[redis] connection error', { error: err.message }));
+        await redis.connect().catch(() => logger.warn('[redis] connect failed — quota service degraded'));
+        initQuota(redis);
+
+        await initNats().catch(err => logger.warn('[nats] connect failed — event bus degraded', { error: err.message }));
+        startOutboxPublisher();
+    } catch (err) {
+        logger.warn('Phase 3 service init failed — continuing in degraded mode', { error: err.message });
+    }
+
     // Initialize services
     try {
         logger.info('Initializing Qdrant client...');
@@ -584,6 +603,8 @@ async function main() {
     const shutdown = async (signal) => {
         logger.info(`${signal} received — shutting down gracefully`);
 
+        stopOutboxPublisher();
+        await drainNats().catch(() => {});
         watcher.stop();
 
         server.close(() => {

@@ -500,6 +500,15 @@ curl -X POST http://localhost:3100/task \
 | `OPENAI_API_KEY` | Optional OpenAI API key |
 | `ANTHROPIC_API_KEY` | Optional Anthropic API key |
 
+### Message bus and cache (Phase 3)
+
+| Variable | Description | Default |
+|---|---|---|
+| `NATS_URL` | NATS JetStream server URL | `nats://localhost:4222` |
+| `REDIS_URL` | Redis connection URL (idempotency, RL, quotas) | `redis://localhost:6379` |
+| `AGENT_TOKEN_ENDPOINT` | Identity service internal agent-token mint URL | `http://localhost:3110/internal/agent-token` |
+| `INTERNAL_SERVICE_KEY` | Shared secret for machine-to-machine calls (≥32 chars) | — |
+
 ### Observability
 
 | Variable | Description |
@@ -586,6 +595,9 @@ Enforced by dep-cruiser (`.dependency-cruiser.js`). The build fails on any viola
 | `no-direct-prisma-outside-db-package` | All DB access flows through `withTenantContext()` in `packages/db` |
 | `identity-service-cannot-import-core-engine` | `apps/identity` is auth-only; no engine internals |
 | `db-package-cannot-import-identity` | No circular identity↔db dependency |
+| `api-middleware-cannot-import-core-engine` | `packages/api-middleware` is HTTP-layer only |
+| `api-middleware-cannot-import-identity` | JWT verification via JWKS endpoint — no direct service coupling |
+| `kilo-pipeline-cannot-import-identity` | Auth delegated to `packages/api-middleware`; no direct identity import |
 | _(+ 7 more)_ | Specialist agent isolation, SynthesisAgent isolation, browser-tool boundaries |
 
 ---
@@ -596,8 +608,8 @@ Enforced by dep-cruiser (`.dependency-cruiser.js`). The build fails on any viola
 |---|---|---|
 | **Phase 0** | P0 security hardening: path traversal defence, SSRF guard, rate limiting, sandbox hardening (CapDrop/ReadonlyRootfs), constant-time auth, Qdrant circuit breaker | **Done** |
 | **Phase 1** | Identity foundation: BetterAuth IdP, RS256 JWKS, Postgres RLS schema, `withTenantContext` chokepoint, platform/tenant management API, `check-rls` lint gate | **Done** |
-| Phase 2 | Unified auth/authz middleware (`packages/api-middleware`); both gateways migrated; legacy token bridge; `requestId` + `traceparent` propagation | Pending |
-| Phase 3 | Endpoint refactor; NATS JetStream replaces in-memory queue; outbox saga; agent token wiring; quota service; idempotency keys | Pending |
+| **Phase 2** | Unified auth/authz middleware (`packages/api-middleware`); both gateways migrated; legacy token bridge; `requestId` + `traceparent` propagation | **Done** |
+| **Phase 3** | NATS JetStream event bus + file-based outbox publisher; agent JWT wiring in sandbox; Redis-backed quota service; `requireScopes` on every route; `assertSafeTarget` SSRF guard in shared middleware; internal agent-token mint endpoint | **Done** |
 | Phase 4 | Robust CLI: all operationIds, device-code login, `~/.oweibo/credentials`, bidirectional parity CI gate | Pending |
 | Phase 5 | Web admin UI: `apps/admin-web` Next.js 15 RSC, RBAC route groups, tenant switcher, Playwright e2e | Pending |
 | Phase 6 | Audit middleware on all privileged routes; GDPR erasure; OTel GenAI semantic conventions; Langfuse/Tempo/Loki/Prometheus | Pending |

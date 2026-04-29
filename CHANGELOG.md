@@ -9,19 +9,96 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Pending (Phase 2–8)
+### Pending (Phase 4–8)
 
-- `packages/api-middleware` — shared `authenticate`, `requireScopes`, `requireTenantMatch`, `audit`, `idempotent`, `rateLimit` middleware consumed by both gateways
-- NATS JetStream replaces in-memory `queue.ts`; outbox-publisher process for saga atomicity
-- Agent JWT wiring: sandbox processes receive short-lived scoped tokens at task launch
-- Quota service: Redis-backed per-tenant token and agent-run counters
-- Robust CLI (`packages/cli` expansion): all operationIds, device-code login, credentials file
-- `apps/admin-web`: Next.js 15 RSC platform + tenant management UI
+- Robust CLI (`packages/cli` expansion): all operationIds, device-code login, credentials file, bidirectional parity CI gate
+- `apps/admin-web`: Next.js 15 RSC platform + tenant management UI; Playwright e2e
 - Audit middleware on all privileged routes; GDPR erasure endpoint
 - OpenTelemetry GenAI semantic conventions across all LLM/agent/tool spans
 - Self-hosted observability: OTel collector → Tempo + Loki + Prometheus; Grafana dashboards
 - Launch hardening: k6 load test (500 RPS), chaos testing, DR rehearsal, external pentest
 - Legacy `TENANT_TOKENS` sunset: 60-day migration window
+
+---
+
+## [0.3.0] — 2026-04-29
+
+### Phase 3: NATS event bus, agent JWT, quota service, scope middleware
+
+**`kilo/pipeline/src/services/nats.ts`** — new NATS JetStream client
+
+- Connects to NATS server at `NATS_URL` (default `nats://localhost:4222`)
+- `ensureStream()` creates the `tasks` stream (`subjects: tasks.>`) on first connect if it does not exist
+- `publish(subject, payload)` — publishes JSON payload to JetStream; degrades to a no-op warn when disconnected
+- `drainNats()` — flushes pending messages and closes the connection on graceful shutdown
+- Wrapped with `initNats()` which is called in `main()` with a non-fatal catch (fails open so NATS being down does not block startup)
+
+**`kilo/pipeline/src/services/outboxPublisher.ts`** — new file-based outbox publisher
+
+- `writeOutboxEvent(subject, payload)` — writes a JSON outbox record to `OUTBOX_DIR` synchronously with the in-memory state change (atomic within the process)
+- `startOutboxPublisher()` — polls OUTBOX_DIR every 1 s; publishes pending records to NATS via `publish()`, then unlinks the file on success
+- Survives process crash: records written before the crash are replayed on the next startup — at-least-once delivery to NATS; consumers use `jti` / subject key for deduplication
+- `services/queue.ts` now calls `writeOutboxEvent` on enqueue, complete, and fail transitions
+
+**`kilo/pipeline/src/services/quota.ts`** — new Redis-backed quota service
+
+- Exposes `consume(tenantId, kind, amount)`, `isAllowed(tenantId, kind, cap)`, `checkAndConsume(tenantId, kind, amount, cap)`, `getUsage(tenantId)`
+- Quota kinds: `tasks_day` (50), `tokens_day` (1 M), `scrapes_day` (10), `agent_min_day` (60)
+- Daily rolling window keyed by `quota:<tenantId>:<kind>:<YYYY-MM-DD>`; 25-hour TTL on every key
+- Fails open when Redis is unavailable — quota enforcement is best-effort in v1
+- `initQuota(redisClient)` called at startup with the shared ioredis instance
+- `POST /task` enforces `tasks_day` quota; returns 429 `quota_exceeded` on breach
+
+**`packages/api-middleware/src/ssrfGuard.ts`** — new shared SSRF guard
+
+- Exported from `@oweibo/api-middleware` as `assertSafeTarget(url)` and `SafeTarget` type
+- Rejects non-HTTP(S) schemes, userinfo in URLs, literal private/loopback/link-local IPs, and hostnames that resolve to any private IP
+- DNS resolved once with both A and AAAA lookups; any private result blocks the request (defeats DNS rebinding)
+- Block ranges: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.0/8`, `169.254.0.0/16`, `::1`, `fc00::/7`, `fe80::/10`, IPv4-mapped IPv6
+
+**`apps/identity/src/routes/agentToken.ts`** — new internal agent-token mint endpoint
+
+- `POST /internal/agent-token` — guarded by `x-internal-service-key` header (shared secret in `INTERNAL_SERVICE_KEY` env)
+- Calls `mintAgentToken(opts)` with: `taskId`, `runId`, `userId`, `tenantId`, `parentScopes`, profile-derived `agentScopes`, `taskBudgetRemainingMs`
+- `agentScopesForProfile(profile)` maps `architect | orchestrate | writer-* | reflection | recovery` to their permitted scope sets
+- Returns `{ token: string }` — the caller passes the JWT as `OWEIBO_AGENT_TOKEN` env var in the sandbox container
+- Not routed via Caddy/Traefik; the `INTERNAL_SERVICE_KEY` check is the application-layer guard
+
+**`kilo/pipeline/src/services/sandbox.ts`** — agent JWT wiring
+
+- `fetchAgentToken(opts)` — calls `AGENT_TOKEN_ENDPOINT` with `x-internal-service-key`; 5 s timeout; falls back to empty string (dev/degraded mode)
+- `spawnSandbox()` accepts `taskContext` parameter `{ userId, tenantId, scopes, agentProfile, budgetMs }`; mints an agent JWT before creating the container
+- `OWEIBO_AGENT_TOKEN` env var injected into sandbox; replaces static `KILO_API_TOKEN` for credential-passing
+- `RUN_ID` env var added (`<taskId>-<timestamp>`); used in agent audit attribution
+
+**Route scope guards (`requireScopes` on every mutating route)**
+
+- `POST /task` — requires `tasks:write`; daily quota check via quota service
+- `POST /task/clear` — requires `tasks:write`
+- `GET  /staging` — requires `staging:read`
+- `POST /staging/:id/approve` — requires `staging:approve`
+- `POST /staging/:id/reject` — requires `staging:reject`
+- `GET  /quarantine` — requires `quarantine:read`
+- `POST /quarantine/:id/override` — requires `quarantine:override`
+- All routes use `authenticate(jwksCfg, legacyTokenMap)` from `@oweibo/api-middleware`; tenant ID sourced from `principal.ctx.tenantId`
+
+**Config additions**
+
+- `kilo/pipeline/src/config.ts`: `NATS_URL`, `REDIS_URL`, `AGENT_TOKEN_ENDPOINT`, `INTERNAL_SERVICE_KEY`
+- `apps/identity/src/config.ts`: `INTERNAL_SERVICE_KEY` (optional, min 32 chars)
+- `kilo/pipeline/package.json`: added `nats ^2.28.0`, `ioredis ^5.3.2`
+
+**dep-cruiser boundary rules (Phase 2, added same commit)**
+
+- `api-middleware-cannot-import-core-engine` — middleware package is HTTP-layer only
+- `api-middleware-cannot-import-identity` — JWT verified via JWKS endpoint, no direct coupling
+- `kilo-pipeline-cannot-import-identity` — auth delegated to `packages/api-middleware`
+
+**Tests**
+
+- `kilo/pipeline/src/services/__tests__/quota.test.ts` — in-memory Redis mock; tests consume, isAllowed, checkAndConsume, and fail-open behaviour
+- `kilo/pipeline/src/services/__tests__/nats.test.ts` — smoke tests; publish is a no-op when disconnected
+- `packages/api-middleware/src/__tests__/ssrfGuard.test.ts` — 9 cases covering all rejection codes and the happy path
 
 ---
 

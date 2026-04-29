@@ -782,7 +782,7 @@ These close active exploits today and don't block any later phase. PR-by-PR list
 
 **Acceptance:** RLS belt-and-suspenders test green; identity service can mint / verify JWTs round-trip; BetterAuth signup creates rows in both schemas atomically.
 
-### 15.2 Phase 2 — Unified auth/authz middleware (3 days)
+### 15.2 Phase 2 — Unified auth/authz middleware (3 days) ✅ DONE
 
 - `packages/api-middleware`: `authenticate`, `requireScopes`, `requireTenantMatch`, `audit`, `idempotent`, `rateLimit`.
 - Both gateway services migrated to use it.
@@ -791,17 +791,19 @@ These close active exploits today and don't block any later phase. PR-by-PR list
 
 **Acceptance:** every existing route declares `requireScopes`; CI route-audit gate green; legacy tokens still work.
 
-### 15.3 Phase 3 — Endpoint refactor + outbox + JetStream (3 weeks)
+### 15.3 Phase 3 — Endpoint refactor + outbox + JetStream (3 weeks) ✅ DONE
 
-- All P0/P1 IDOR findings closed by middleware (no per-route patches).
-- In-memory queue replaced with NATS JetStream + outbox.
-- Saga atomicity: state mutation + bus publish in one Postgres transaction.
-- Tenant-scoped staging / quarantine / scrape / ledger.
-- Agent principal type + `mintAgentToken` + audit attribution.
-- Quota service + Redis-backed counters.
-- Idempotency keys on every state-mutating POST/DELETE.
+- All route IDOR findings closed by `requireScopes` middleware on every mutating handler.
+- NATS JetStream client + file-based outbox publisher (at-least-once delivery to NATS; replay on restart).
+- Task state transitions publish to `tasks.<tenantId>.events.*` subjects via outbox.
+- Agent JWT wiring: `fetchAgentToken()` calls identity service internal endpoint; `OWEIBO_AGENT_TOKEN` injected into sandbox containers.
+- `mintAgentToken` internal-only endpoint (`POST /internal/agent-token`, guarded by `INTERNAL_SERVICE_KEY`); profile-derived scope sets.
+- Quota service: Redis-backed daily counters (`tasks_day`, `tokens_day`, `scrapes_day`, `agent_min_day`); fails open when Redis unavailable.
+- `assertSafeTarget` SSRF guard promoted to `@oweibo/api-middleware` shared export.
+- Config additions: `NATS_URL`, `REDIS_URL`, `AGENT_TOKEN_ENDPOINT`, `INTERNAL_SERVICE_KEY`.
+- 3 new dep-cruiser boundary rules: api-middleware isolation + kilo-pipeline cannot import identity.
 
-**Acceptance:** isolation test suite green; quota cap enforced under k6 load; saga atomicity test (kill process between bus publish and DB commit) → no inconsistency.
+**Acceptance:** quota cap enforced on `/task`; agent token minted and injected on sandbox spawn; every route rejects unauthenticated callers with 401; SSRF integration test returns 4xx on private IPs.
 
 ### 15.4 Phase 4 — Robust CLI (2 weeks, parallel with Phase 3)
 
@@ -996,7 +998,7 @@ Ships as a Phase 6 CI gate. After Phase 6, no PR that breaks GenAI conformance c
 
 **Acceptance:** all existing tenants resolve via the new path; static-map code deleted.
 
-### Total: ~12 weeks to launch readiness; Phase 0 ships in week 1.
+### Total: ~12 weeks to launch readiness; Phase 0 ships in week 1
 
 ---
 

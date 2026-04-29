@@ -22,8 +22,8 @@ const config = require('../config');
 const logger = require('../services/logger');
 const promotionEngine = require('../services/promotion/engine');
 const qdrant = require('../services/qdrant');
-const auth = require('../middleware/auth');
 const { safeJoin, sanitizeSegment } = require('../services/safePath');
+const { authenticate, requireScopes, buildLegacyTokenMap } = require('@oweibo/api-middleware');
 
 const router = express.Router();
 
@@ -54,8 +54,10 @@ function tenantKiloDir(tenantId, subdir) {
  * Invariants come from Qdrant project_invariants with status:'staging' AND
  * tenant_id matching the JWT's tenantId.
  */
-router.get('/', auth, async (req, res) => {
-    const tenantId = (req as any).tenantId;
+const _auth = authenticate({ jwksUri: config.IDENTITY_JWKS_URI, issuer: config.JWT_ISSUER, audience: config.JWT_AUDIENCE }, buildLegacyTokenMap());
+
+router.get('/', _auth, requireScopes('staging:read'), async (req, res) => {
+    const tenantId = (req as any).principal?.ctx?.tenantId || (req as any).tenantId;
     const items = [];
 
     // ── Decisions from filesystem (tenant-scoped) ──────────────────────────────
@@ -117,8 +119,8 @@ router.get('/', auth, async (req, res) => {
  * Promote a staging item to active memory.  Tenant-scoped: looks up the item
  * in <tenant>/.kilo/staging/ first, then Qdrant with a tenant filter.
  */
-router.post('/:id/approve', auth, async (req, res) => {
-    const tenantId = (req as any).tenantId;
+router.post('/:id/approve', _auth, requireScopes('staging:approve'), async (req, res) => {
+    const tenantId = (req as any).principal?.ctx?.tenantId || (req as any).tenantId;
 
     let id;
     let stagingPath;
@@ -193,8 +195,8 @@ router.post('/:id/approve', auth, async (req, res) => {
  * POST /staging/:id/reject
  * Move item from staging to rejected.  Tenant-scoped.
  */
-router.post('/:id/reject', auth, async (req, res) => {
-    const tenantId = (req as any).tenantId;
+router.post('/:id/reject', _auth, requireScopes('staging:reject'), async (req, res) => {
+    const tenantId = (req as any).principal?.ctx?.tenantId || (req as any).tenantId;
     const { reason = 'Manual rejection' } = req.body || {};
 
     let id;

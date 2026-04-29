@@ -291,6 +291,16 @@ const config = Object.freeze({
     JWT_ISSUER: process.env.JWT_ISSUER || 'https://identity.oweibo.io',
     /** JWT audience claim expected in access tokens */
     JWT_AUDIENCE: process.env.JWT_AUDIENCE || 'oweibo-api',
+
+    // ── Phase 3: NATS JetStream + quota + agent token ───────────────────────
+    /** NATS server URL for task event bus */
+    NATS_URL: process.env.NATS_URL || 'nats://localhost:4222',
+    /** Redis connection URL for idempotency, rate-limiting, quota counters */
+    REDIS_URL: process.env.REDIS_URL || 'redis://localhost:6379',
+    /** Identity service internal endpoint for agent token minting */
+    AGENT_TOKEN_ENDPOINT: process.env.AGENT_TOKEN_ENDPOINT || 'http://localhost:3110/internal/agent-token',
+    /** Shared secret for machine-to-machine internal calls */
+    INTERNAL_SERVICE_KEY: process.env.INTERNAL_SERVICE_KEY || '',
 });
 
 module.exports = config;

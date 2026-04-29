@@ -9,6 +9,8 @@
 const Docker = require('dockerode');
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
+const http = require('http');
 const config = require('../config');
 const logger = require('./logger');
 const { safeJoin, sanitizeSegment } = require('./safePath');
@@ -34,16 +36,77 @@ function initialize() {
 }
 
 /**
+ * Fetch a scoped agent JWT from the identity service for use inside the sandbox.
+ * Falls back to empty string if identity service is unavailable or not configured.
+ */
+async function fetchAgentToken(opts: {
+    taskId: string;
+    runId: string;
+    userId: string;
+    tenantId: string;
+    parentScopes: string[];
+    agentProfile: string;
+    taskBudgetRemainingMs: number;
+}): Promise<string> {
+    const endpoint = config.AGENT_TOKEN_ENDPOINT;
+    const key      = config.INTERNAL_SERVICE_KEY;
+
+    if (!endpoint || !key) {
+        logger.debug('[sandbox] agent token endpoint not configured — skipping');
+        return '';
+    }
+
+    return new Promise((resolve) => {
+        const body = Buffer.from(JSON.stringify(opts));
+        const url  = new URL(endpoint);
+        const mod  = url.protocol === 'https:' ? https : http;
+
+        const req = mod.request({
+            hostname: url.hostname,
+            port:     url.port || (url.protocol === 'https:' ? 443 : 80),
+            path:     url.pathname,
+            method:   'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': body.length,
+                'x-internal-service-key': key,
+            },
+            timeout: 5_000,
+        }, (res) => {
+            let raw = '';
+            res.on('data', (c) => { raw += c; });
+            res.on('end', () => {
+                try {
+                    const { token } = JSON.parse(raw);
+                    resolve(token || '');
+                } catch {
+                    resolve('');
+                }
+            });
+        });
+
+        req.on('error', (err) => {
+            logger.warn('[sandbox] agent token fetch failed', { error: err.message });
+            resolve('');
+        });
+        req.on('timeout', () => { req.destroy(); resolve(''); });
+        req.write(body);
+        req.end();
+    });
+}
+
+/**
  * Spawn a sandboxed container for Kilo CLI execution.
  *
  * @paramtaskId - Task identifier
  * @paramworkspacePath - Host path to workspace (mounted :ro)
  * @paraminstruction - Task instruction
  * @parammemoryContext - Memory context block
+ * @paramtaskContext - Optional principal/task context for agent JWT minting
  * @returns
  * @throwsIf sandbox is already running (409)
  */
-async function spawnSandbox(taskId, workspacePath, instruction, memoryContext) {
+async function spawnSandbox(taskId, workspacePath, instruction, memoryContext, taskContext: any = {}) {
     // Sequential enforcement
     if (activeSandbox) {
         const err = new Error('A sandbox is already running. Sequential execution only.');
@@ -57,6 +120,18 @@ async function spawnSandbox(taskId, workspacePath, instruction, memoryContext) {
     // Write memory context to temp file inside checkpoint dir
     const contextPath = path.join(checkpointDir, 'memory_context.md');
     fs.writeFileSync(contextPath, memoryContext);
+
+    // Mint a scoped agent JWT for this sandbox run
+    const runId = `${taskId}-${Date.now()}`;
+    const agentToken = await fetchAgentToken({
+        taskId,
+        runId,
+        userId:               taskContext.userId    || 'system',
+        tenantId:             taskContext.tenantId  || 'default',
+        parentScopes:         taskContext.scopes    || [],
+        agentProfile:         taskContext.agentProfile || 'orchestrate',
+        taskBudgetRemainingMs: taskContext.budgetMs || 60 * 60 * 1000,
+    });
 
     const containerName = `kilo-sandbox-${taskId}`;
 
@@ -111,9 +186,13 @@ async function spawnSandbox(taskId, workspacePath, instruction, memoryContext) {
             },
             Env: [
                 `TASK_ID=${taskId}`,
+                `RUN_ID=${runId}`,
                 // Strip control characters; instruction is also passed as a direct argv
                 // token in execInSandbox, so this env var is a convenience alias only.
                 `INSTRUCTION=${instruction.replace(/[\r\n\0]/g, ' ')}`,
+                // Scoped agent JWT — replaces static KILO_API_TOKEN inside the sandbox.
+                // Empty string when identity service is not configured (dev mode).
+                ...(agentToken ? [`OWEIBO_AGENT_TOKEN=${agentToken}`] : []),
             ],
             WorkingDir: '/workspace',
         });

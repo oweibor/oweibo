@@ -200,6 +200,33 @@ module.exports = {
       from: { path: '^packages/db' },
       to:   { path: '^apps/identity' },
     },
+
+    // ── Phase 2: api-middleware isolation rules ───────────────────────────
+
+    {
+      name: 'api-middleware-cannot-import-core-engine',
+      severity: 'error',
+      comment: 'packages/api-middleware is a pure HTTP-layer package. ' +
+               'It must not import core-engine internals — only core-contracts and packages/db.',
+      from: { path: '^packages/api-middleware' },
+      to:   { path: '^packages/core-engine' },
+    },
+    {
+      name: 'api-middleware-cannot-import-identity',
+      severity: 'error',
+      comment: 'packages/api-middleware must not import apps/identity. ' +
+               'JWT verification is done via JWKS endpoint — no direct service coupling.',
+      from: { path: '^packages/api-middleware' },
+      to:   { path: '^apps/identity' },
+    },
+    {
+      name: 'kilo-pipeline-cannot-import-identity',
+      severity: 'error',
+      comment: 'kilo/pipeline must not import apps/identity directly. ' +
+               'Auth is delegated to packages/api-middleware (authenticate middleware).',
+      from: { path: '^kilo/pipeline', pathNot: '/__tests__/' },
+      to:   { path: '^apps/identity' },
+    },
   ],
   options: {
     doNotFollow: {

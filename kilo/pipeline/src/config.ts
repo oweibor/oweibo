@@ -283,6 +283,14 @@ const config = Object.freeze({
 
     /** Curriculum Learning: max packages to check per run (rate-limit for low-power nodes) */
     CURRICULUM_MAX_PKGS: parseInt(process.env.CURRICULUM_MAX_PKGS, 10) || 20,
+
+    // ── Phase 2: identity / JWT config ──────────────────────────────────────
+    /** URL to the identity service JWKS endpoint for JWT verification */
+    IDENTITY_JWKS_URI: process.env.IDENTITY_JWKS_URI || 'http://localhost:3110/.well-known/jwks.json',
+    /** JWT issuer claim expected in access tokens */
+    JWT_ISSUER: process.env.JWT_ISSUER || 'https://identity.oweibo.io',
+    /** JWT audience claim expected in access tokens */
+    JWT_AUDIENCE: process.env.JWT_AUDIENCE || 'oweibo-api',
 });
 
 module.exports = config;

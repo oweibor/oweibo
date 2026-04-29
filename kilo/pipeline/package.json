@@ -16,6 +16,7 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
+    "@oweibo/api-middleware": "workspace:*",
     "@oweibo/core-contracts": "workspace:*",
     "@oweibo/core-engine": "workspace:*",
     "@qdrant/js-client-rest": "^1.12.0",

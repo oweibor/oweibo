@@ -181,6 +181,39 @@ router.get('/api/v1/auth/me', async (req, res) => {
   }
 });
 
+// POST /api/v1/auth/switch-tenant  — re-mint JWT for a different tenant
+router.post('/api/v1/auth/switch-tenant', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith('Bearer ')) {
+    res.status(401).json({ error: 'unauthorized' });
+    return;
+  }
+  const { tenantId } = req.body as { tenantId?: string };
+  if (!tenantId) {
+    res.status(400).json({ error: 'tenantId required' });
+    return;
+  }
+  try {
+    const claims   = await verifyAccessToken(authHeader.slice(7));
+    const userId   = claims.sub ?? '';
+    const principal = await buildPrincipal(userId, tenantId);
+    if (!principal.ctx.tenantId) {
+      res.status(403).json({ error: 'not_a_member' });
+      return;
+    }
+    const access_token = await mintAccessToken(principal);
+    res.json({
+      access_token,
+      expires_at: new Date(Date.now() + config.ACCESS_TOKEN_TTL * 1000).toISOString(),
+      token_type: 'Bearer',
+      tenant_id:  principal.ctx.tenantId,
+      scopes:     principal.scopes,
+    });
+  } catch {
+    res.status(401).json({ error: 'invalid_token' });
+  }
+});
+
 // POST /api/v1/auth/logout  (JWT is stateless — client must clear credentials)
 router.post('/api/v1/auth/logout', (_req, res) => {
   res.status(204).send();

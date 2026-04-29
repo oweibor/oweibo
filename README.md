@@ -552,6 +552,16 @@ oweibo ledger list [--date 2026-04-29]
 | `OPENAI_API_KEY` | Optional OpenAI API key |
 | `ANTHROPIC_API_KEY` | Optional Anthropic API key |
 
+### Admin web (`apps/admin-web`)
+
+| Variable | Description | Default |
+|---|---|---|
+| `IDENTITY_URL` | Identity service base URL | `http://localhost:3110` |
+| `PIPELINE_URL` | Pipeline API base URL | `http://localhost:3100` |
+| `NODE_ENV` | `production` sets `Secure` flag on session cookies | `development` |
+
+Session cookies: `oweibo_session` (access token, 15 min, httpOnly + sameSite=strict) and `oweibo_refresh` (30 days).
+
 ### CLI (Phase 4)
 
 | Variable | Description | Default |
@@ -674,7 +684,7 @@ Enforced by dep-cruiser (`.dependency-cruiser.js`). The build fails on any viola
 | **Phase 2** | Unified auth/authz middleware (`packages/api-middleware`); both gateways migrated; legacy token bridge; `requestId` + `traceparent` propagation | **Done** |
 | **Phase 3** | NATS JetStream event bus + file-based outbox publisher; agent JWT wiring in sandbox; Redis-backed quota service; `requireScopes` on every route; `assertSafeTarget` SSRF guard in shared middleware; internal agent-token mint endpoint | **Done** |
 | **Phase 4** | Robust CLI: all resource-family subcommands; `login`/`logout`/`whoami`; `~/.oweibo/credentials` refresh-token cache; bidirectional parity CI gate; 40+ integration tests | **Done** |
-| Phase 5 | Web admin UI: `apps/admin-web` Next.js 15 RSC, RBAC route groups, tenant switcher, Playwright e2e | Pending |
+| **Phase 5** | Web admin UI: `apps/admin-web` Next.js 15 RSC, edge-runtime RBAC middleware, tenant switcher with JWT re-issue, Playwright e2e for platform_admin + tenant_admin journeys | **Done** |
 | Phase 6 | Audit middleware on all privileged routes; GDPR erasure; OTel GenAI semantic conventions; Langfuse/Tempo/Loki/Prometheus | Pending |
 | Phase 7 | Launch hardening: k6 load test (500 RPS sustained), chaos testing, DR rehearsal, external pentest | Pending |
 | Phase 8 | Legacy `TENANT_TOKENS` sunset: 60-day migration window, import as real `api_keys` rows | Pending |

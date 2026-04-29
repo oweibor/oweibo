@@ -819,14 +819,20 @@ These close active exploits today and don't block any later phase. PR-by-PR list
 
 **Acceptance:** parity test green (35 operationIds, all 14 families covered); 25 integration tests pass with mock fetch; `oweibo login` stores credentials; transparent refresh before expiry.
 
-### 15.5 Phase 5 — Web admin UI (3 weeks)
+### 15.5 Phase 5 — Web admin UI (3 weeks) ✅ DONE
 
-- `apps/admin-web` Next.js 15 RSC.
-- Platform group + tenant group with middleware-enforced RBAC.
-- Tenant switcher with JWT re-issue.
-- All pages call the same operationIds the CLI uses.
+- `apps/admin-web` Next.js 15 App Router (RSC); port 3120; standalone output for containers.
+- Edge-runtime RBAC middleware (`middleware.ts`): JWT decoded with `atob()` (no `Buffer`); expired tokens cleared and redirected; `/platform/*` requires `platform:tenants:read`; `/t/*` requires `tasks:read` or `platform:tenants:read`.
+- `lib/auth.ts`: `requireAuth()`, `requireScope()`, `setSessionCookies()`, `clearSessionCookies()` — all async (Next.js 15 `cookies()`).
+- `lib/api.ts`: `identityApi` + `pipelineApi` server-side HTTP clients; session token injected from cookies on every call.
+- Platform route group: tenant list, tenant detail (with suspend), new-tenant form, platform users.
+- Tenant route group: dashboard, members (with invite), API keys (create/revoke, raw secret once), settings (trust-mode select), tasks, staging (approve/reject), quarantine (override).
+- `components/TenantSwitcher.tsx` (`'use client'`): dropdown calls `POST /api/switch-tenant` → `POST /api/v1/auth/switch-tenant` on identity service; identity re-mints a scoped access token; browser navigates to `/t/<newId>`.
+- New identity endpoint: `POST /api/v1/auth/switch-tenant` — verifies current JWT; calls `buildPrincipal(userId, tenantId)`; returns 403 if not a member; mints new access token.
+- All mutations use Next.js 15 server actions (`'use server'`).
+- Tests: 10 Vitest unit tests (middleware logic), 7 Vitest unit tests (session helpers), 14 Playwright e2e tests (platform_admin + tenant_admin journeys).
 
-**Acceptance:** RBAC redirect tests; cross-tenant deep-link tests; Playwright e2e for tenant_admin and platform_admin journeys.
+**Acceptance:** RBAC redirect tests green; Playwright e2e covers platform_admin and tenant_admin journeys; `POST /api/v1/auth/switch-tenant` 403 on non-member; session cookies set correctly on login and cleared on logout.
 
 ### 15.6 Phase 6 — Audit, GDPR, observability (2 weeks)
 

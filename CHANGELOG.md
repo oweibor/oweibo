@@ -9,15 +9,91 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Pending (Phase 5–8)
+### Pending (Phase 6–8)
 
-- `apps/admin-web`: Next.js 15 RSC platform + tenant management UI; Playwright e2e
-- `apps/admin-web`: Next.js 15 RSC platform + tenant management UI; Playwright e2e
 - Audit middleware on all privileged routes; GDPR erasure endpoint
 - OpenTelemetry GenAI semantic conventions across all LLM/agent/tool spans
 - Self-hosted observability: OTel collector → Tempo + Loki + Prometheus; Grafana dashboards
 - Launch hardening: k6 load test (500 RPS), chaos testing, DR rehearsal, external pentest
 - Legacy `TENANT_TOKENS` sunset: 60-day migration window
+
+---
+
+## [0.5.0] — 2026-04-29
+
+### Phase 5: Web admin UI — Next.js 15 RSC, RBAC middleware, tenant switcher, Playwright e2e
+
+**`apps/admin-web`** — new package (port 3120)
+
+- Next.js 15 App Router, React 19, `jose ^5.9.6`; standalone output for container deployment
+- `IDENTITY_URL` + `PIPELINE_URL` env vars control upstream service addresses
+
+**`apps/admin-web/middleware.ts`** — edge-runtime RBAC route guard
+
+- JWT payload decoded with `atob()` (no `Buffer`; Edge Runtime safe); no signature verification at the edge — API layer is the security boundary
+- Public routes: `/login`, `/logout`, `/unauthorized`, `/api/*`; all others require a valid, non-expired session cookie
+- Expired token: clears `oweibo_session` cookie and redirects to `/login?reason=expired`
+- `/platform/*` — requires `platform:tenants:read` scope; 403 → `/unauthorized`
+- `/t/*` — requires `tasks:read` or `platform:tenants:read` scope
+
+**`apps/admin-web/lib/auth.ts`** — server-side session helpers
+
+- `SessionUser` interface: `{ user_id, email, tenant_id, scopes, trust }`
+- `getSessionToken()` — reads `oweibo_session` cookie (async; Next.js 15)
+- `requireAuth()` — redirects to `/login` if no valid token; returns `SessionUser`
+- `requireScope(scope)` — redirects to `/unauthorized` if scope is missing
+- `setSessionCookies(accessToken, refreshToken)` — writes `oweibo_session` (httpOnly, sameSite=strict, 15 min) and `oweibo_refresh` (30 days)
+- `clearSessionCookies()` — deletes both cookies
+
+**`apps/admin-web/lib/api.ts`** — server-side HTTP clients
+
+- `identityApi` — base URL from `IDENTITY_URL`; reads session token from cookies on each call
+- `pipelineApi` — base URL from `PIPELINE_URL`; same auth injection
+- Both clients: `get`, `post`, `patch`, `delete` with typed generics
+
+**Auth routes**
+
+- `app/(auth)/login/page.tsx` — server component; `loginAction` server action calls `POST /api/v1/auth/token` on the identity service, sets cookies via `setSessionCookies()`, and redirects platform admins to `/platform/tenants` and tenant admins to `/t/<tenantId>`
+- `app/(auth)/logout/route.ts` — GET + POST handler; calls identity logout endpoint, clears cookies, redirects to `/login`
+
+**Platform route group** (`/platform/*`)
+
+- `app/(platform)/layout.tsx` — calls `requireScope('platform:tenants:read')`; renders top NavBar
+- `app/(platform)/tenants/page.tsx` — RSC; `identityApi.get('/api/v1/platform/tenants')` → table with name / slug / status / created-at + "Open →" link
+- `app/(platform)/tenants/new/page.tsx` — form + `createTenantAction` → `POST /api/v1/platform/tenants`; redirects to tenant detail on success
+- `app/(platform)/tenants/[id]/page.tsx` — tenant `<dl>` with `suspendAction` server action; "Manage tenant →" link to `/t/<id>`
+- `app/(platform)/users/page.tsx` — RSC; `identityApi.get('/api/v1/platform/users')` → table
+
+**Tenant route group** (`/t/:tenantId/*`)
+
+- `app/(tenant)/[tenantId]/layout.tsx` — sidebar nav; renders `<TenantSwitcher />`; links to all tenant sub-pages
+- `app/(tenant)/[tenantId]/page.tsx` — dashboard with recent task summary
+- `app/(tenant)/[tenantId]/members/page.tsx` — member list; `inviteAction` server action
+- `app/(tenant)/[tenantId]/keys/page.tsx` — API key list; `createKeyAction` + `revokeKeyAction` server actions; raw secret shown once on creation
+- `app/(tenant)/[tenantId]/settings/page.tsx` — trust mode select + `updateSettingsAction` → `PATCH /api/v1/tenants/:id/settings`
+- `app/(tenant)/[tenantId]/tasks/page.tsx` — task list table; status badges
+- `app/(tenant)/[tenantId]/staging/page.tsx` — staging queue; `approveAction` / `rejectAction` → `POST /staging/:id/approve|reject`
+- `app/(tenant)/[tenantId]/quarantine/page.tsx` — quarantine list; `overrideAction` → `POST /quarantine/:id/override`
+
+**Shared components**
+
+- `components/NavBar.tsx` — top bar with sign-out link
+- `components/TenantSwitcher.tsx` — `'use client'`; dropdown of user's tenants; calls `POST /api/switch-tenant` then navigates to the new tenant route
+- `components/PageHeader.tsx` — consistent `<h1>` + breadcrumb wrapper
+
+**`apps/admin-web/app/api/switch-tenant/route.ts`** — tenant switching API route
+
+- `POST` handler; reads current `oweibo_session` cookie; forwards to `POST /api/v1/auth/switch-tenant` on identity service; re-writes `oweibo_session` cookie with the new scoped token
+
+**`apps/identity/src/routes/authToken.ts`** — added `switch-tenant` endpoint
+
+- `POST /api/v1/auth/switch-tenant` — verifies existing access JWT; calls `buildPrincipal(userId, tenantId)`; returns 403 `not_a_member` if the user has no active membership; mints and returns a new access token scoped to the requested tenant
+
+**Tests**
+
+- `apps/admin-web/__tests__/middleware.test.ts` — 10 Vitest tests for `decodePayload`, `isExpired`, `hasScope`; RBAC scenarios for `platform_admin`, `tenant_viewer`, and expired tokens
+- `apps/admin-web/__tests__/session.test.ts` — 7 Vitest tests for `parseJwtPayload`, `payloadToSessionUser`, round-trip losslessness
+- `apps/admin-web/e2e/journeys.spec.ts` — 14 Playwright tests covering: login page renders, unauthenticated redirect, wrong-password error, platform admin journey (tenant list / new tenant / users / sign-out / RBAC), tenant admin journey (dashboard / members / API keys / settings / tasks / staging / quarantine / RBAC)
 
 ---
 

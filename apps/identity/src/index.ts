@@ -18,6 +18,7 @@ import jwksRouter       from './routes/jwks.js';
 import platformRouter   from './routes/platform.js';
 import tenantRouter     from './routes/tenant.js';
 import agentTokenRouter from './routes/agentToken.js';
+import authTokenRouter  from './routes/authToken.js';
 
 const app = express();
 app.use(express.json({ limit: '256kb' }));
@@ -33,6 +34,9 @@ app.use(platformRouter);
 
 // Tenant management
 app.use('/api/v1/tenants', tenantRouter);
+
+// CLI authentication: token mint, refresh, me, logout
+app.use(authTokenRouter);
 
 // Internal machine-to-machine: agent token minting (not exposed via external proxy)
 app.use(agentTokenRouter);

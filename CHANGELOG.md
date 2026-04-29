@@ -9,15 +9,79 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Pending (Phase 4–8)
+### Pending (Phase 5–8)
 
-- Robust CLI (`packages/cli` expansion): all operationIds, device-code login, credentials file, bidirectional parity CI gate
+- `apps/admin-web`: Next.js 15 RSC platform + tenant management UI; Playwright e2e
 - `apps/admin-web`: Next.js 15 RSC platform + tenant management UI; Playwright e2e
 - Audit middleware on all privileged routes; GDPR erasure endpoint
 - OpenTelemetry GenAI semantic conventions across all LLM/agent/tool spans
 - Self-hosted observability: OTel collector → Tempo + Loki + Prometheus; Grafana dashboards
 - Launch hardening: k6 load test (500 RPS), chaos testing, DR rehearsal, external pentest
 - Legacy `TENANT_TOKENS` sunset: 60-day migration window
+
+---
+
+## [0.4.0] — 2026-04-29
+
+### Phase 4: Robust CLI — resource-family commands, auth, credentials, parity gate
+
+**`packages/cli/src/credentials.ts`** — new credentials helper
+
+- `readCredentials()` / `writeCredentials()` / `clearCredentials()` — read and write `~/.oweibo/credentials` as JSON with mode `0600`
+- `isTokenExpired()` — returns `true` if the access token expires within 60 s (triggers pre-emptive refresh)
+- `Credentials` interface: `access_token`, `refresh_token`, `expires_at`, `user_id`, `tenant_id`, `email`, `scopes`
+
+**`packages/cli/src/client.ts`** — extended HTTP client
+
+- Two named clients: `api` (pipeline, default `:3100`) and `identityApi` (identity service, default `:3110`)
+- `OWEIBO_IDENTITY_URL` env var controls the identity base URL
+- `getBearerToken()` reads `OWEIBO_API_KEY` → credentials file → transparent refresh on near-expiry
+- Added `PATCH` and `DELETE` methods to both clients
+
+**`apps/identity/src/routes/authToken.ts`** — new CLI auth endpoints
+
+- `POST /api/v1/auth/token` — email + password → `{ access_token, refresh_token, expires_at, user_id, tenant_id, email, scopes }`; uses BetterAuth programmatic API to verify credentials; builds `Principal` from DB memberships; mints RS256 access + refresh tokens
+- `POST /api/v1/auth/refresh` — verifies refresh JWT; re-derives scopes from DB (role changes take effect on next refresh); mints new access token
+- `GET /api/v1/auth/me` — verifies JWT and returns `{ user_id, email, tenant_id, scopes, trust }`
+- `POST /api/v1/auth/logout` — stateless (204); signals client to clear local credentials
+
+**New CLI commands**
+
+Auth:
+- `oweibo login [--email <e>] [--tenant <id>]` — prompts for password; stores credentials in `~/.oweibo/credentials`
+- `oweibo logout` — clears credentials and calls logout endpoint
+- `oweibo whoami` — calls `/api/v1/auth/me`
+
+Platform (require `platform:tenants:write`):
+- `oweibo platform tenant list / create / get / update / suspend`
+- `oweibo platform user list / role <userId> <roles>`
+
+Tenant:
+- `oweibo tenant member list / invite / role / remove [--tenant <id>]`
+- `oweibo tenant key list / create / revoke [--tenant <id>]`
+- `oweibo tenant settings get / set [--tenant <id>]`
+
+Task:
+- `oweibo task submit <instruction> [--wait] [--file <path>]`
+- `oweibo task list [--status <s>] [--limit <n>]`
+- `oweibo task status / pause / cancel / clear`
+
+Resource families:
+- `oweibo staging list / approve / reject`
+- `oweibo quarantine list / override`
+- `oweibo scrape start / list / status / stop / results`
+- `oweibo ledger list [--date <YYYY-MM-DD>]`
+- `oweibo hitl list / approve / reject`
+
+**`packages/cli/src/operationIds.ts`** — bidirectional parity map
+
+- 35 entries mapping every API `operationId` to a CLI command path
+- Covers all resource families: platform, tenant, task, staging, quarantine, scrape, ledger, hitl, auth
+
+**Tests**
+
+- `packages/cli/src/__tests__/parity.test.ts` — 4 jest tests; verifies: every operationId has a CLI path, ≥30 entries, no duplicate paths, all families covered
+- `packages/cli/src/__tests__/commands.test.ts` — 25 integration tests; mocks `global.fetch`; verifies HTTP method + URL for every command family
 
 ---
 

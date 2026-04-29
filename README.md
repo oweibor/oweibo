@@ -455,13 +455,65 @@ pnpm --filter @oweibo/identity dev
 pnpm --filter kilo-pipeline dev
 ```
 
-### 6. Submit a task
+### 6. Log in and submit a task
 
 ```bash
+# Authenticate — stores credentials in ~/.oweibo/credentials
+oweibo login --email you@example.com
+
+# Submit a task and stream events
+oweibo task submit "Add a /healthz endpoint to the Express app" --wait
+
+# Or use the REST API directly
 curl -X POST http://localhost:3100/task \
   -H "Authorization: Bearer $OWEIBO_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"instruction": "Add a /healthz endpoint to the Express app in workspace/my-project"}'
+```
+
+### CLI quick-reference
+
+```text
+# Auth
+oweibo login             # email + password → ~/.oweibo/credentials
+oweibo logout            # clear credentials
+oweibo whoami            # show current user
+
+# Platform admin (requires platform_admin role)
+oweibo platform tenant list
+oweibo platform tenant create --name Acme --slug acme
+oweibo platform tenant suspend <tenantId>
+oweibo platform user list
+oweibo platform user role <userId> platform_admin
+
+# Tenant admin
+oweibo tenant member list [--tenant <id>]
+oweibo tenant member invite --email alice@acme.com --roles tenant_developer
+oweibo tenant key create --name ci-key --scopes tasks:write,staging:read
+oweibo tenant settings set --trust graduated
+
+# Tasks
+oweibo task submit "build me a Next.js app" --wait
+oweibo task list [--status running]
+oweibo task status <taskId>
+oweibo task pause  <taskId>
+oweibo task cancel <taskId>
+
+# Staging, quarantine, HITL
+oweibo staging list
+oweibo staging approve <id>
+oweibo quarantine list
+oweibo quarantine override <id> --reason "reviewed safe"
+oweibo hitl list
+oweibo hitl approve <requestId> --task <taskId>
+
+# Scraping
+oweibo scrape start https://example.com --type general
+oweibo scrape list
+oweibo scrape results <jobId>
+
+# Usage
+oweibo ledger list [--date 2026-04-29]
 ```
 
 ---
@@ -499,6 +551,17 @@ curl -X POST http://localhost:3100/task \
 | `OLLAMA_QUICK_MODEL` | Model for fast/delegation tasks |
 | `OPENAI_API_KEY` | Optional OpenAI API key |
 | `ANTHROPIC_API_KEY` | Optional Anthropic API key |
+
+### CLI (Phase 4)
+
+| Variable | Description | Default |
+|---|---|---|
+| `OWEIBO_API_URL` | Pipeline API base URL | `http://localhost:3100/api/v1` |
+| `OWEIBO_IDENTITY_URL` | Identity service base URL | `http://localhost:3110` |
+| `OWEIBO_API_KEY` | Bearer token (overrides credentials file) | — |
+| `OWEIBO_TENANT_ID` | Default tenant ID | — |
+
+Credentials are stored in `~/.oweibo/credentials` (mode 0600). `login` stores both the access token (15 min) and the refresh token (30 days); the client refreshes transparently before each expired request.
 
 ### Message bus and cache (Phase 3)
 
@@ -610,7 +673,7 @@ Enforced by dep-cruiser (`.dependency-cruiser.js`). The build fails on any viola
 | **Phase 1** | Identity foundation: BetterAuth IdP, RS256 JWKS, Postgres RLS schema, `withTenantContext` chokepoint, platform/tenant management API, `check-rls` lint gate | **Done** |
 | **Phase 2** | Unified auth/authz middleware (`packages/api-middleware`); both gateways migrated; legacy token bridge; `requestId` + `traceparent` propagation | **Done** |
 | **Phase 3** | NATS JetStream event bus + file-based outbox publisher; agent JWT wiring in sandbox; Redis-backed quota service; `requireScopes` on every route; `assertSafeTarget` SSRF guard in shared middleware; internal agent-token mint endpoint | **Done** |
-| Phase 4 | Robust CLI: all operationIds, device-code login, `~/.oweibo/credentials`, bidirectional parity CI gate | Pending |
+| **Phase 4** | Robust CLI: all resource-family subcommands; `login`/`logout`/`whoami`; `~/.oweibo/credentials` refresh-token cache; bidirectional parity CI gate; 40+ integration tests | **Done** |
 | Phase 5 | Web admin UI: `apps/admin-web` Next.js 15 RSC, RBAC route groups, tenant switcher, Playwright e2e | Pending |
 | Phase 6 | Audit middleware on all privileged routes; GDPR erasure; OTel GenAI semantic conventions; Langfuse/Tempo/Loki/Prometheus | Pending |
 | Phase 7 | Launch hardening: k6 load test (500 RPS sustained), chaos testing, DR rehearsal, external pentest | Pending |

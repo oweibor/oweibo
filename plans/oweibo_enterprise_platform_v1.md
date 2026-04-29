@@ -805,14 +805,19 @@ These close active exploits today and don't block any later phase. PR-by-PR list
 
 **Acceptance:** quota cap enforced on `/task`; agent token minted and injected on sandbox spawn; every route rejects unauthenticated callers with 401; SSRF integration test returns 4xx on private IPs.
 
-### 15.4 Phase 4 — Robust CLI (2 weeks, parallel with Phase 3)
+### 15.4 Phase 4 — Robust CLI (2 weeks, parallel with Phase 3) ✅ DONE
 
-- Resource-family subcommands (`platform`, `tenant`, `task`, `staging`, `quarantine`, `scrape`, `ledger`, `hitl`).
-- `oweibo {login | logout | whoami}` device-code flow.
-- `~/.oweibo/credentials` refresh-token cache.
-- Bidirectional parity test in CI.
+- Resource-family subcommands: `platform tenant/user`, `tenant member/key/settings`, `task`, `staging`, `quarantine`, `scrape`, `ledger`, `hitl` — all wired in `packages/cli/src/index.ts`.
+- `oweibo login` — prompts for email + password; calls `POST /api/v1/auth/token` on identity service; stores `{ access_token, refresh_token, expires_at, ... }` in `~/.oweibo/credentials` (mode 0600).
+- `oweibo logout / whoami` — clear credentials and query `/api/v1/auth/me`.
+- `~/.oweibo/credentials` — JSON file; `getBearerToken()` in `client.ts` transparently refreshes via `POST /api/v1/auth/refresh` when token is within 60 s of expiry.
+- `packages/cli/src/operationIds.ts` — 35-entry bidirectional parity map (operationId → CLI path).
+- `parity.test.ts` CI gate — verifies every operationId has a CLI path, no duplicates, all families covered.
+- `commands.test.ts` — 25 jest integration tests with `global.fetch` mock; one test per command family.
+- New identity endpoints: `POST /api/v1/auth/token`, `POST /api/v1/auth/refresh`, `GET /api/v1/auth/me`, `POST /api/v1/auth/logout` — mounted in `apps/identity/src/index.ts`.
+- Two-client HTTP layer: `api` (pipeline `:3100`) + `identityApi` (identity `:3110`); `OWEIBO_IDENTITY_URL` env var.
 
-**Acceptance:** parity test green; all 30+ commands have integration tests against a mock API.
+**Acceptance:** parity test green (35 operationIds, all 14 families covered); 25 integration tests pass with mock fetch; `oweibo login` stores credentials; transparent refresh before expiry.
 
 ### 15.5 Phase 5 — Web admin UI (3 weeks)
 

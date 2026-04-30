@@ -17,7 +17,8 @@
  *   4. Fire-and-forget MinIO prefix purge (heavy; async worker in prod)
  */
 import { Router } from 'express';
-import { withTenantContext } from '@oweibo/db';
+import { randomUUID } from 'node:crypto';
+import { withTenantContext, appendAudit } from '@oweibo/db';
 import type { Principal } from '@oweibo/db';
 import { authenticate } from '../middleware/authenticate.js';
 import { audit } from '@oweibo/api-middleware';
@@ -78,11 +79,16 @@ router.delete('/api/v1/users/:id/personal-data',
         return memberships.map(m => m.tenantId);
       });
 
-      // Step 3: Qdrant — purge each tenant's semantic memory by user_id
+      // Step 3: Qdrant — purge each tenant's semantic memory by user_id and
+      // emit a `memory.user.purge` audit row per tenant. The per-tenant rows
+      // are finer-grained than the request-level `gdpr.user.erase` row from
+      // the audit middleware: they record which specific tenants' data was
+      // touched, scoped to the tenant_id of each purge, so cross-tenant
+      // erasure activity is auditable from a single tenant's vantage.
       const qdrantUrl = process.env['QDRANT_URL'] ?? config.QDRANT_HOST ?? 'http://localhost:6333';
-      await Promise.allSettled(
-        tenantIds.map(tenantId =>
-          fetch(`${qdrantUrl}/collections/${ltmCollection(tenantId)}/points/delete`, {
+      const purgeResults = await Promise.allSettled(
+        tenantIds.map(async tenantId => {
+          const r = await fetch(`${qdrantUrl}/collections/${ltmCollection(tenantId)}/points/delete`, {
             method:  'POST',
             headers: { 'Content-Type': 'application/json' },
             body:    JSON.stringify({
@@ -93,9 +99,34 @@ router.delete('/api/v1/users/:id/personal-data',
                 ],
               },
             }),
-          })
-        )
+          });
+          return { tenantId, ok: r.ok, status: r.status };
+        })
       );
+
+      // Per-tenant audit rows. Use Promise.allSettled to avoid letting a
+      // slow audit write delay the GDPR response — and never throw out of
+      // the loop, since the deletion already happened.
+      await Promise.allSettled(purgeResults.map(async result => {
+        if (result.status !== 'fulfilled') return;
+        const { tenantId, ok, status } = result.value;
+        await appendAudit({
+          id:               randomUUID(),
+          ts:               new Date(),
+          actorPrincipal:   principal.sub,
+          onBehalfOfUserId: targetId,
+          source:           'api',
+          requestId:        (req as { requestId?: string }).requestId,
+          ip:               req.ip,
+          tenantId,
+          scopeUsed:        principal.scopes,
+          action:           'memory.user.purge',
+          resourceType:     'user',
+          resourceId:       targetId,
+          outcome:          ok ? 'allow' : 'error',
+          details:          { qdrantStatus: status },
+        }).catch(() => undefined);
+      }));
 
       // Step 4: MinIO — fire-and-forget prefix purge
       void purgeMinioPrefix(targetId);

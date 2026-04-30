@@ -63,7 +63,7 @@ describe('audit middleware', () => {
     await Promise.resolve();
 
     expect(appendAudit).toHaveBeenCalledOnce();
-    const row = (appendAudit as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const row = (appendAudit as ReturnType<typeof vi.fn>).mock.calls[0]![0];
     expect(row.action).toBe('task.create');
     expect(row.resourceType).toBe('task');
     expect(row.outcome).toBe('allow');
@@ -77,7 +77,7 @@ describe('audit middleware', () => {
     audit('staging.approve')(req, res, vi.fn());
     res.emit('finish');
     await Promise.resolve();
-    const row = (appendAudit as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const row = (appendAudit as ReturnType<typeof vi.fn>).mock.calls[0]![0];
     expect(row.outcome).toBe('deny');
   });
 
@@ -87,7 +87,7 @@ describe('audit middleware', () => {
     audit('quarantine.override')(req, res, vi.fn());
     res.emit('finish');
     await Promise.resolve();
-    const row = (appendAudit as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    const row = (appendAudit as ReturnType<typeof vi.fn>).mock.calls[0]![0];
     expect(row.outcome).toBe('error');
   });
 
@@ -133,10 +133,15 @@ describe('audit middleware', () => {
       'tenant.settings.update',
       // identity/gdpr
       'gdpr.user.erase',
+      // memory tier — emitted from QdrantSemanticStore's purge audit hook
+      // (gap #8) and from identity's GDPR endpoint per touched tenant.
+      'memory.tenant.purge',
+      'memory.project.purge',
+      'memory.user.purge',
     ];
 
     for (const action of allActions) {
-      expect(action).toMatch(/^[\w.]+$/, `malformed action string: "${action}"`);
+      expect(action, `malformed action string: "${action}"`).toMatch(/^[\w.]+$/);
     }
     // Ensure no duplicates
     const unique = new Set(allActions);

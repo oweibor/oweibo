@@ -17,7 +17,7 @@ import { CognitiveEngine }         from './agentic/CognitiveEngine.js';
 import { SwarmCoordinator }        from './agentic/SwarmCoordinator.js';
 import { GoalDecomposer }          from './agentic/GoalDecomposer.js';
 import { MultiStrategyPlanner }    from './agentic/MultiStrategyPlanner.js';
-import { LongTermMemoryStore }     from './agentic/LongTermMemoryStore.js';
+import { QdrantSemanticStore }      from './agentic/memory/QdrantSemanticStore.js';
 import { ContextPruner }           from './agentic/ContextPruner.js';
 import { TaskHeartbeat }           from './agentic/TaskHeartbeat.js';
 import { HeartbeatScanner }        from './agentic/HeartbeatScanner.js';
@@ -110,7 +110,7 @@ async function main(): Promise<void> {
   warmPool.start();
 
   // ── Agentic core ─────────────────────────────────────────────────────────
-  const memory     = new LongTermMemoryStore(null as never, null as never);
+  const memory     = new QdrantSemanticStore({ qdrant: null as never, embedder: null as never });
   const planner    = new MultiStrategyPlanner(makeLLM());
   const decomposer = new GoalDecomposer(makeLLM());
   const pruner     = new ContextPruner(contextStore);

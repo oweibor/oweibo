@@ -66,6 +66,8 @@ export interface MemoryEntry {
     readonly updatedAt: string;
     /** Monotonic counter incremented on every successful recall. */
     readonly recallCount: number;
+    /** Free-form tags for clustering, filtering, and consolidation. */
+    readonly tags?: readonly string[];
 }
 /** A retrieved memory with ranking metadata attached. */
 export interface RankedMemoryEntry extends MemoryEntry {
@@ -176,6 +178,8 @@ export interface StoreMemoryInput {
     readonly body?: string;
     readonly detail?: Readonly<Record<string, unknown>>;
     readonly importance: number;
+    /** Optional tags for the consolidator's cluster-by-tag logic. */
+    readonly tags?: readonly string[];
 }
 export interface RecallQuery {
     readonly tenantId: TenantId;

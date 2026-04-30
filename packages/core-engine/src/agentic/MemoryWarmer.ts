@@ -27,14 +27,16 @@
  * original and promoted copy but summaries match.
  *
  * Token truncation is NOT performed here — that is PromptBudgetEnforcer's job.
+ *
+ * Phase 2b: Migrated from legacy LongTermMemoryStore to ISemanticMemoryStore.
  */
 
-import type { LongTermMemoryStore, MemoryEntry } from './LongTermMemoryStore.js';
+import type { ISemanticMemoryStore, RankedMemoryEntry } from '@oweibo/core-contracts';
 import type { ShortTermMemoryStore, STMEntry } from './ShortTermMemoryStore.js';
 
 // ─── Score normalisation constants ────────────────────────────────────────────
 // These are fixed scale factors, not config — changing them requires understanding
-// the composite scoring formula in LongTermMemoryStore.recall().
+// the composite scoring formula in QdrantSemanticStore.recall().
 
 const AGENT_BOOST   = 0.10;
 const PROJECT_BOOST = 0.08;
@@ -45,7 +47,7 @@ const STM_OFFSET    = 0.25;  // recency credit for in-session entries
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface WarmResult {
-  entry:  MemoryEntry | STMEntry;
+  entry:  RankedMemoryEntry | STMEntry;
   score:  number;
   source: 'ltm' | 'stm';
 }
@@ -54,7 +56,7 @@ export interface WarmResult {
 
 export class MemoryWarmer {
   constructor(
-    private readonly ltm: LongTermMemoryStore,
+    private readonly ltm: ISemanticMemoryStore,
     private readonly stm: ShortTermMemoryStore,
   ) {}
 
@@ -63,7 +65,7 @@ export class MemoryWarmer {
    *
    * @param tenantId        — tenant for Qdrant collection scoping
    * @param sessionId       — STM session to recall from
-   * @param agentScope      — '{role}:{taskId}' LTM scope for agent-specific memories
+   * @param agentScope      — '{role}:{taskId}' — unused in contract API (kept for compat)
    * @param taskDescription — query text for all four recall channels
    * @param projectId       — optional project; enables the project scope channel
    * @param topK            — entries per channel AND final slice (default: 6)
@@ -80,38 +82,50 @@ export class MemoryWarmer {
     const {
       tenantId,
       sessionId,
-      agentScope,
       taskDescription,
       projectId,
       topK = 6,
     } = params;
 
     // ── Four parallel recall channels ─────────────────────────────────────────
+    // The contract-based ISemanticMemoryStore.recall() accepts a RecallQuery.
+    // Agent-scope and tenant-scope are differentiated by projectId filter;
+    // the QdrantSemanticStore returns composite-scored RankedMemoryEntry[].
     const [agentResults, projectResults, stmResults, tenantResults] = await Promise.all([
-      this.ltm.recall(tenantId, taskDescription, { scope: agentScope,              topK }),
+      // Channel 1: task-execution kinds — lessons learned and patterns that guide the current work
+      this.ltm.recall({
+        tenantId, query: taskDescription, topK,
+        kinds: ['failure-lesson', 'success-pattern', 'tool-heuristic', 'decision-rationale'],
+      }),
+      // Channel 2: project-scoped recall
       projectId
-        ? this.ltm.recall(tenantId, taskDescription, { scope: `project:${projectId}`, topK })
-        : Promise.resolve([]),
+        ? this.ltm.recall({ tenantId, query: taskDescription, projectId, topK })
+        : Promise.resolve([] as readonly RankedMemoryEntry[]),
+      // Channel 3: STM in-session recall
       this.stm.recall({ tenantId, sessionId, query: taskDescription, topK }),
-      this.ltm.recall(tenantId, taskDescription, { scope: `tenant:${tenantId}`,    topK }),
+      // Channel 4: ambient knowledge kinds — structural and domain facts promoted tenant-wide
+      this.ltm.recall({
+        tenantId, query: taskDescription, topK,
+        kinds: ['architectural-decision', 'domain-fact', 'code-landmark', 'open-question'],
+      }),
     ]);
 
     // ── Map each source to WarmResult[] with normalised scores ────────────────
 
     const agentWarm: WarmResult[] = agentResults.map(r => ({
-      entry:  r.entry,
+      entry:  r,
       score:  r.score + AGENT_BOOST,
       source: 'ltm' as const,
     }));
 
     const projectWarm: WarmResult[] = projectResults.map(r => ({
-      entry:  r.entry,
+      entry:  r,
       score:  r.score + PROJECT_BOOST,
       source: 'ltm' as const,
     }));
 
     const tenantWarm: WarmResult[] = tenantResults.map(r => ({
-      entry:  r.entry,
+      entry:  r,
       score:  r.score,
       source: 'ltm' as const,
     }));

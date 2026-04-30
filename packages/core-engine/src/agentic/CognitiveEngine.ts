@@ -6,7 +6,7 @@ import type {
 } from '@oweibo/core-contracts';
 import { MultiStrategyPlanner } from './MultiStrategyPlanner.js';
 import { GoalDecomposer } from './GoalDecomposer.js';
-import { LongTermMemoryStore } from './LongTermMemoryStore.js';
+import type { ISemanticMemoryStore } from '@oweibo/core-contracts';
 import { InstrumentedLLMClient } from './InstrumentedLLMClient.js';
 import { ImmutableAuditLogger } from '../governance/ImmutableAuditLogger.js';
 import { PolicyEngine } from '../governance/PolicyEngine.js';
@@ -28,7 +28,7 @@ export class CognitiveEngine {
     private readonly baseLlm:                 { baseUrl: string; model: string },
     private readonly planner:                 MultiStrategyPlanner,
     private readonly decomposer:              GoalDecomposer,
-    private readonly memory:                  LongTermMemoryStore,
+    private readonly memory:                  ISemanticMemoryStore,
     private readonly policy:                  PolicyEngine,
     private readonly anomaly:                 AnomalyDetector,
     private readonly contextStore:            DistributedContextStore,
@@ -87,18 +87,18 @@ export class CognitiveEngine {
 
       // 1. Recall memories
       await this.eventBus.publish(sessionId, { taskId: task.id, type: 'stage-started', message: 'Analysing your requirements...', progress: 5 });
-      const recalled = await this.memory.recall(
-        task.tenantId,
-        task.goal.description,
-        { types: ['successful-strategy', 'tool-heuristic'] },
-      );
+      const recalled = await this.memory.recall({
+        tenantId: task.tenantId,
+        query:    task.goal.description,
+        kinds:    ['success-pattern', 'tool-heuristic'],
+      });
       const recallEntry: DecisionLog = { id: `${task.id}:recall`, timestamp: Date.now(), stage: 'memory', decision: 'recalled memories', rationale: `${recalled.length} entries`, requirementRef: task.goal.description, alternatives: [], rejectedReasons: [] };
       await auditLogger.log(recallEntry);
       decisionLog.push(recallEntry);
 
       // 2. Generate candidate plans
       await this.eventBus.publish(sessionId, { taskId: task.id, type: 'stage-started', message: 'Planning approach...', progress: 15 });
-      const goalWithContext: IGoal = { ...task.goal, context: recalled.map(m => m.entry.summary).join('\n') };
+      const goalWithContext: IGoal = { ...task.goal, context: recalled.map(m => m.summary).join('\n') };
       const plans = await this.planner.generatePlans(goalWithContext);
       this.anomaly.checkRetries(trace.id, task.id, 0);
 
@@ -131,7 +131,7 @@ export class CognitiveEngine {
 
       // 6. Score, consolidate, deliver
       scoreTask(trace, { testPassRate: swarmResult.reviewPassed ? 1 : 0, planFeasibility: selectedPlan.feasibilityScore, tokensEfficiency: Math.max(0, 1 - tokensUsed / 100_000) });
-      await this.memory.consolidateFromTask(selectedPlan, decisionLog, task.tenantId);
+      // consolidation is handled by MemoryOrchestrator at a higher level — skip legacy path
 
       await this.eventBus.publish(sessionId, { taskId: task.id, type: 'stage-started', message: 'Packaging and delivering your app...', progress: 90 });
       const bundle = swarmResult.subGoalResults['export'] as Record<string, unknown> | undefined;

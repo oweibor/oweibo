@@ -2,7 +2,7 @@
 // BaseAgent subclass for general-coding tasks (§16f.2)
 import { BaseAgent } from '../agentic/BaseAgent.js';
 import type { ILLMClient } from '@oweibo/core-contracts';
-import type { LongTermMemoryStore } from '../agentic/LongTermMemoryStore.js';
+import type { ISemanticMemoryStore } from '@oweibo/core-contracts';
 import type { LangfuseTraceClient } from 'langfuse';
 
 export interface EditProposal {
@@ -23,7 +23,7 @@ export interface EditProposal {
 export class GeneralCodingAgent extends BaseAgent {
   constructor(
     llm:  ILLMClient,
-    memory: LongTermMemoryStore,
+    memory: ISemanticMemoryStore,
     trace: LangfuseTraceClient,
     taskId: string,
     tenantId: string,

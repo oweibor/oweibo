@@ -4,6 +4,7 @@
  */
 import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 import { QdrantSemanticStore, SemanticStoreCapExceededError } from '../QdrantSemanticStore.js';
+import { MemoryCircuitBreaker, MemoryCircuitOpenError } from '../MemoryCircuitBreaker.js';
 import type { StoreMemoryInput, MemoryScope } from '@oweibo/core-contracts';
 
 const TENANT  = 't-1';
@@ -207,5 +208,117 @@ describe('QdrantSemanticStore.purge*', () => {
     await expect(store.purgeProject(TENANT, '')).rejects.toThrow(/projectId is required/);
     await expect(store.purgeUser('', USER)).rejects.toThrow(/tenantId is required/);
     await expect(store.purgeUser(TENANT, '')).rejects.toThrow(/userId is required/);
+  });
+});
+
+describe('QdrantSemanticStore — purge audit hook', () => {
+  it('fires the auditor with action=memory.tenant.purge after purgeTenant succeeds', async () => {
+    const audit  = jest.fn<(e: unknown) => void>().mockReturnValue(undefined);
+    const store  = new QdrantSemanticStore({ qdrant: makeQdrant(), embedder, audit });
+    await store.purgeTenant(TENANT);
+    expect(audit).toHaveBeenCalledTimes(1);
+    const event = (audit as any).mock.calls[0][0];
+    expect(event.action).toBe('memory.tenant.purge');
+    expect(event.tenantId).toBe(TENANT);
+    expect(event.ts).toBeInstanceOf(Date);
+  });
+
+  it('fires action=memory.project.purge with projectId from purgeProject', async () => {
+    const audit = jest.fn<(e: unknown) => void>().mockReturnValue(undefined);
+    const store = new QdrantSemanticStore({ qdrant: makeQdrant(), embedder, audit });
+    await store.purgeProject(TENANT, PROJECT);
+    const event = (audit as any).mock.calls[0][0];
+    expect(event.action).toBe('memory.project.purge');
+    expect(event.projectId).toBe(PROJECT);
+  });
+
+  it('fires action=memory.user.purge with userId from purgeUser', async () => {
+    const audit = jest.fn<(e: unknown) => void>().mockReturnValue(undefined);
+    const store = new QdrantSemanticStore({ qdrant: makeQdrant(), embedder, audit });
+    await store.purgeUser(TENANT, USER);
+    const event = (audit as any).mock.calls[0][0];
+    expect(event.action).toBe('memory.user.purge');
+    expect(event.userId).toBe(USER);
+  });
+
+  it('fires audit even when the underlying delete swallows a "collection missing" error', async () => {
+    const audit  = jest.fn<(e: unknown) => void>().mockReturnValue(undefined);
+    const qdrant = makeQdrant({
+      delete: jest.fn<() => Promise<unknown>>().mockRejectedValue(new Error('not found')),
+    });
+    const store = new QdrantSemanticStore({ qdrant, embedder, audit });
+    await store.purgeTenant(TENANT);
+    expect(audit).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT undo the purge if the auditor itself throws', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const audit  = jest.fn<(e: unknown) => void | Promise<void>>().mockImplementation(() => { throw new Error('audit DB down'); });
+    const qdrant = makeQdrant();
+    const store = new QdrantSemanticStore({ qdrant, embedder, audit });
+    await expect(store.purgeTenant(TENANT)).resolves.toBeUndefined();
+    expect(qdrant.delete).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('purge audit hook threw'), expect.any(Error));
+    warnSpy.mockRestore();
+  });
+});
+
+describe('QdrantSemanticStore — circuit breaker integration', () => {
+  it('does NOT fire the audit when the breaker is open (purge did not happen)', async () => {
+    const breaker = new MemoryCircuitBreaker('test', { failureThreshold: 1, cooldownMs: 60_000 });
+    breaker.recordFailure(); // trip immediately
+    const audit  = jest.fn<(e: unknown) => void>().mockReturnValue(undefined);
+    const store  = new QdrantSemanticStore({ qdrant: makeQdrant(), embedder, breaker, audit });
+
+    await expect(store.purgeTenant(TENANT)).rejects.toBeInstanceOf(MemoryCircuitOpenError);
+    expect(audit).not.toHaveBeenCalled();
+  });
+
+  it('opens the breaker after N consecutive Qdrant failures (full outage)', async () => {
+    const breaker = new MemoryCircuitBreaker('test', { failureThreshold: 2, cooldownMs: 60_000 });
+    // Simulate a real Qdrant outage: every call fails. The breaker only
+    // counts truly-consecutive failures (success on any call resets), so
+    // anything less than a full outage stays under the threshold.
+    const outage = jest.fn<() => Promise<unknown>>().mockRejectedValue(new Error('qdrant down'));
+    const qdrant = {
+      getCollection:    outage,
+      createCollection: outage,
+      upsert:           outage,
+      search:           outage,
+      delete:           outage,
+      retrieve:         outage,
+      setPayload:       outage,
+    };
+    const store = new QdrantSemanticStore({ qdrant: qdrant as any, embedder, breaker });
+
+    // Two failed delete calls → 2 consecutive failures → breaker opens
+    await expect(store.purgeTenant(TENANT)).resolves.toBeUndefined(); // catches non-circuit error
+    await expect(store.purgeTenant(TENANT)).resolves.toBeUndefined();
+    expect(breaker.getState()).toBe('open');
+
+    // Third call: fast-fails with circuit-open
+    await expect(store.purgeTenant(TENANT)).rejects.toBeInstanceOf(MemoryCircuitOpenError);
+  });
+
+  it('recall propagates MemoryCircuitOpenError instead of returning []', async () => {
+    const breaker = new MemoryCircuitBreaker('test', { failureThreshold: 1, cooldownMs: 60_000 });
+    breaker.recordFailure();
+    const store = new QdrantSemanticStore({ qdrant: makeQdrant(), embedder, breaker });
+
+    await expect(store.recall({ tenantId: TENANT, query: 'x' }))
+      .rejects.toBeInstanceOf(MemoryCircuitOpenError);
+  });
+
+  it('recall still returns [] for a missing collection when the breaker is healthy', async () => {
+    const breaker = new MemoryCircuitBreaker('test', { failureThreshold: 5, cooldownMs: 60_000 });
+    const qdrant  = makeQdrant({
+      search: jest.fn<() => Promise<unknown>>().mockRejectedValue(new Error('not found')),
+    });
+    const store = new QdrantSemanticStore({ qdrant, embedder, breaker });
+
+    const results = await store.recall({ tenantId: TENANT, query: 'x' });
+    expect(results).toEqual([]);
+    // The non-circuit failure WAS recorded; ensure breaker counted it
+    expect(breaker.getState()).toBe('closed'); // 1 failure < threshold 5
   });
 });

@@ -42,6 +42,7 @@ import type {
 } from '@oweibo/core-contracts';
 
 import { TenantKeyBuilder } from '../../infra/TenantKeyBuilder.js';
+import { MemoryCircuitBreaker, MemoryCircuitOpenError } from './MemoryCircuitBreaker.js';
 
 // @qdrant/js-client-rest is ESM-only; same alias pattern used across the project.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -49,6 +50,22 @@ type QdrantClient = any;
 
 /** Embedder function — accepts text, returns a float vector. */
 export type Embedder = (text: string) => Promise<number[]>;
+
+/**
+ * Audit hook fired after a destructive operation succeeds. Implementations
+ * typically call appendAudit() — declared as a callback to keep core-engine
+ * free of @oweibo/db imports (the storage layer doesn't know about Postgres).
+ */
+export type PurgeAuditor = (event: PurgeAuditEvent) => void | Promise<void>;
+
+export interface PurgeAuditEvent {
+  readonly action:    'memory.tenant.purge' | 'memory.project.purge' | 'memory.user.purge';
+  readonly tenantId:  string;
+  readonly projectId?: string;
+  readonly userId?:    string;
+  /** Wall-clock timestamp the purge completed. */
+  readonly ts:        Date;
+}
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -126,6 +143,19 @@ export interface QdrantSemanticStoreDeps {
   readonly qdrant:   QdrantClient;
   readonly embedder: Embedder;
   readonly config?:  Partial<QdrantSemanticStoreConfig>;
+  /**
+   * Optional in-process circuit breaker. When supplied, every Qdrant call
+   * is gated by `breaker.exec(...)`; sustained failures trip the breaker
+   * and subsequent calls fast-fail with MemoryCircuitOpenError until the
+   * cooldown elapses.
+   */
+  readonly breaker?: MemoryCircuitBreaker;
+  /**
+   * Optional purge audit hook. When supplied, fires after a successful
+   * purgeTenant / purgeProject / purgeUser. Errors thrown by the auditor
+   * are caught and logged — they never undo the purge.
+   */
+  readonly audit?:   PurgeAuditor;
 }
 
 // ─── Payload schema ───────────────────────────────────────────────────────────
@@ -201,7 +231,7 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
     await this.ensureCollection(collection);
 
     // 3. Cap check
-    const { points_count } = await this.deps.qdrant.getCollection(collection) as { points_count?: number };
+    const { points_count } = await this.qcall(() => this.deps.qdrant.getCollection(collection)) as { points_count?: number };
     if ((points_count ?? 0) >= this.config.maxEntriesPerTenant) {
       throw new SemanticStoreCapExceededError(scope.tenantId, this.config.maxEntriesPerTenant);
     }
@@ -213,22 +243,22 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
     const filter = {
       must: [{ key: 'tenant_id', match: { value: scope.tenantId } }],
     };
-    const duplicates = await this.deps.qdrant.search(collection, {
+    const duplicates = await this.qcall(() => this.deps.qdrant.search(collection, {
       vector,
       limit:           1,
       with_payload:    false,
       score_threshold: this.config.deduplicationThreshold,
       filter,
-    }) as Array<{ id: string }>;
+    })) as Array<{ id: string }>;
 
     if (duplicates.length > 0 && duplicates[0] !== undefined) {
       // Reinforce existing entry instead of creating a duplicate, then return
       // its actual stored data (real recallCount, real timestamps).
       const existingId = String(duplicates[0].id);
       await this.reinforcePoint(collection, existingId);
-      const [existing] = await this.deps.qdrant.retrieve(collection, {
+      const [existing] = await this.qcall(() => this.deps.qdrant.retrieve(collection, {
         ids: [existingId], with_payload: true,
-      }) as Array<{ id: string; payload: Partial<StoredPayload> } | undefined>;
+      })) as Array<{ id: string; payload: Partial<StoredPayload> } | undefined>;
       if (existing) return this.toMemoryEntry(existing.id, existing.payload, scope.tenantId);
       // Fallback: collection mutated between dedup and retrieve (extremely rare)
       const now = new Date().toISOString();
@@ -263,10 +293,10 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
       _source:      SOURCE_TAG,
     };
 
-    await this.deps.qdrant.upsert(collection, {
+    await this.qcall(() => this.deps.qdrant.upsert(collection, {
       wait:   true,
       points: [{ id, vector, payload }],
-    });
+    }));
 
     return {
       id, scope, kind, summary,
@@ -312,14 +342,16 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
 
     let raw: Array<{ id: string | number; score: number; payload: unknown }>;
     try {
-      raw = await this.deps.qdrant.search(collection, {
+      raw = await this.qcall(() => this.deps.qdrant.search(collection, {
         vector,
         limit:        fetchLimit,
         with_payload: true,
         filter:       { must },
-      }) as Array<{ id: string | number; score: number; payload: unknown }>;
-    } catch {
-      // Collection may not exist yet — degrade gracefully
+      })) as Array<{ id: string | number; score: number; payload: unknown }>;
+    } catch (err) {
+      // Circuit-open is a system-wide signal callers must observe; rethrow.
+      if (err instanceof MemoryCircuitOpenError) throw err;
+      // Otherwise the collection probably doesn't exist yet — degrade gracefully.
       return [];
     }
 
@@ -361,13 +393,16 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
     if (!tenantId) throw new Error('QdrantSemanticStore.purgeTenant: tenantId is required');
     const collection = TenantKeyBuilder.ltmCollection(tenantId);
     try {
-      await this.deps.qdrant.delete(collection, {
+      await this.qcall(() => this.deps.qdrant.delete(collection, {
         wait:   true,
         filter: { must: [{ key: 'tenant_id', match: { value: tenantId } }] },
-      });
-    } catch {
-      // Collection may not exist — that's fine for purge
+      }));
+    } catch (err) {
+      // Circuit open means the delete did NOT happen — must propagate, never audit.
+      if (err instanceof MemoryCircuitOpenError) throw err;
+      // Collection may not exist — that's fine for purge.
     }
+    await this.fireAudit({ action: 'memory.tenant.purge', tenantId, ts: new Date() });
   }
 
   /**
@@ -379,7 +414,7 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
     if (!projectId) throw new Error('QdrantSemanticStore.purgeProject: projectId is required');
     const collection = TenantKeyBuilder.ltmCollection(tenantId);
     try {
-      await this.deps.qdrant.delete(collection, {
+      await this.qcall(() => this.deps.qdrant.delete(collection, {
         wait:   true,
         filter: {
           must: [
@@ -387,10 +422,12 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
             { key: 'project_id', match: { value: projectId } },
           ],
         },
-      });
-    } catch {
-      // Collection may not exist — that's fine for purge
+      }));
+    } catch (err) {
+      if (err instanceof MemoryCircuitOpenError) throw err;
+      // Collection may not exist — that's fine for purge.
     }
+    await this.fireAudit({ action: 'memory.project.purge', tenantId, projectId, ts: new Date() });
   }
 
   /**
@@ -404,7 +441,7 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
     if (!userId)   throw new Error('QdrantSemanticStore.purgeUser: userId is required');
     const collection = TenantKeyBuilder.ltmCollection(tenantId);
     try {
-      await this.deps.qdrant.delete(collection, {
+      await this.qcall(() => this.deps.qdrant.delete(collection, {
         wait:   true,
         filter: {
           must: [
@@ -412,13 +449,41 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
             { key: 'user_id',   match: { value: userId } },
           ],
         },
-      });
-    } catch {
-      // Collection may not exist — that's fine for purge
+      }));
+    } catch (err) {
+      if (err instanceof MemoryCircuitOpenError) throw err;
+      // Collection may not exist — that's fine for purge.
     }
+    await this.fireAudit({ action: 'memory.user.purge', tenantId, userId, ts: new Date() });
   }
 
   // ── Private helpers ─────────────────────────────────────────────────────────
+
+  /**
+   * qcall — run a Qdrant client call through the optional circuit breaker.
+   * Without a breaker this is a transparent passthrough. With a breaker,
+   * sustained failures trip it and subsequent calls fast-fail with
+   * MemoryCircuitOpenError until the cooldown elapses.
+   */
+  private async qcall<T>(fn: () => Promise<T>): Promise<T> {
+    if (!this.deps.breaker) return fn();
+    return this.deps.breaker.exec(fn);
+  }
+
+  /**
+   * fireAudit — invoke the optional purge auditor without letting its
+   * failures undo the destructive operation. Must be called only AFTER the
+   * underlying delete has succeeded.
+   */
+  private async fireAudit(event: PurgeAuditEvent): Promise<void> {
+    if (!this.deps.audit) return;
+    try {
+      await this.deps.audit(event);
+    } catch (err) {
+      // Best-effort: audit must never undo a purge that already completed.
+      console.warn('[QdrantSemanticStore] purge audit hook threw:', err);
+    }
+  }
 
   /**
    * ensureCollection — create the tenant's Qdrant collection if it doesn't
@@ -428,14 +493,16 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
    */
   private async ensureCollection(collection: string): Promise<void> {
     try {
-      await this.deps.qdrant.getCollection(collection);
-    } catch {
+      await this.qcall(() => this.deps.qdrant.getCollection(collection));
+    } catch (err) {
+      if (err instanceof MemoryCircuitOpenError) throw err;
       // Collection doesn't exist — create it with cosine distance vectors.
       try {
-        await this.deps.qdrant.createCollection(collection, {
+        await this.qcall(() => this.deps.qdrant.createCollection(collection, {
           vectors: { size: this.config.vectorDimension, distance: 'Cosine' },
-        });
-      } catch {
+        }));
+      } catch (createErr) {
+        if (createErr instanceof MemoryCircuitOpenError) throw createErr;
         // Race condition: another process created it between our check and create.
         // Safe to ignore — the collection exists now.
       }
@@ -449,22 +516,23 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
   private async reinforcePoint(collection: string, pointId: string): Promise<void> {
     try {
       // Retrieve current recall_count
-      const [point] = await this.deps.qdrant.retrieve(collection, {
+      const [point] = await this.qcall(() => this.deps.qdrant.retrieve(collection, {
         ids: [pointId], with_payload: true,
-      }) as Array<{ id: string; payload: Partial<StoredPayload> } | undefined>;
+      })) as Array<{ id: string; payload: Partial<StoredPayload> } | undefined>;
 
       if (!point) return;
 
       const currentCount = point.payload.recall_count ?? 0;
-      await this.deps.qdrant.setPayload(collection, {
+      await this.qcall(() => this.deps.qdrant.setPayload(collection, {
         payload: {
           recall_count: currentCount + 1,
           updated_at:   new Date().toISOString(),
         },
         points: [pointId],
-      });
+      }));
     } catch {
-      // Non-fatal — stale recall_count is a minor analytics imprecision
+      // Best-effort — stale recall_count is minor; if the breaker is open
+      // here, the next store/recall will surface it to callers.
     }
   }
 

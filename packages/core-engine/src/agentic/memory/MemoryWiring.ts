@@ -32,8 +32,13 @@ import { MemoryOrchestrator } from './MemoryOrchestrator.js';
 import { WorkingMemoryRegistry } from './WorkingMemory.js';
 import { ShortTermMemoryStore }  from './ShortTermMemoryStore.js';
 import { ProjectRegistry }       from './ProjectRegistry.js';
-import { QdrantSemanticStore, type Embedder } from './QdrantSemanticStore.js';
+import {
+  QdrantSemanticStore,
+  type Embedder,
+  type PurgeAuditor,
+} from './QdrantSemanticStore.js';
 import { OllamaEmbedder } from './OllamaEmbedder.js';
+import { MemoryCircuitBreaker } from './MemoryCircuitBreaker.js';
 import {
   MemoryDecayService,
   DEFAULT_DECAY_CONFIG,
@@ -68,6 +73,21 @@ export interface MemoryWiringConfig {
   readonly logger?:    Logger;
   /** Override an embedder explicitly (skips OllamaEmbedder construction). */
   readonly embedder?: Embedder;
+  /**
+   * Hook invoked after every successful purgeTenant / purgeProject /
+   * purgeUser. Typically wraps `appendAudit()` from @oweibo/db. Declared
+   * as a callback so core-engine stays free of DB imports.
+   */
+  readonly purgeAuditor?: PurgeAuditor;
+  /**
+   * Configuration for the in-process Qdrant circuit breaker. Pass `false`
+   * to disable; pass an object to override the defaults; omit for the
+   * defaults (3 failures → 30s cooldown).
+   */
+  readonly breaker?: false | {
+    readonly failureThreshold?: number;
+    readonly cooldownMs?:       number;
+  };
   readonly schedules?: {
     readonly decayMs?:        number; // default: 7d
     readonly consolidatorMs?: number; // default: 1d
@@ -142,11 +162,22 @@ export async function wireMemorySubsystem(cfg: MemoryWiringConfig): Promise<Memo
     embedder = ollama.asEmbedder();
   }
 
+  // Construct the optional in-process circuit breaker. Reused across the
+  // semantic store and any service that ends up sharing the Qdrant client.
+  const breaker = cfg.breaker === false
+    ? undefined
+    : new MemoryCircuitBreaker('qdrant-semantic-store', {
+        ...(cfg.breaker?.failureThreshold !== undefined ? { failureThreshold: cfg.breaker.failureThreshold } : {}),
+        ...(cfg.breaker?.cooldownMs       !== undefined ? { cooldownMs:       cfg.breaker.cooldownMs       } : {}),
+      });
+
   if (qdrant && embedder) {
     semantic = new QdrantSemanticStore({
       qdrant,
       embedder,
       ...(cfg.vectorDimension ? { config: { vectorDimension: cfg.vectorDimension } as never } : {}),
+      ...(breaker ? { breaker } : {}),
+      ...(cfg.purgeAuditor ? { audit: cfg.purgeAuditor } : {}),
     });
     logger.info('semantic tier wired (Qdrant +', cfg.embedModel ?? 'custom embedder', ')');
   } else {

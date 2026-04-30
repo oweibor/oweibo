@@ -107,6 +107,10 @@ services:
       # CHECKPOINT_MASTER_KEY: required for at-rest checkpoint encryption (Phase 2).
       # Generate with: openssl rand -hex 32
       - CHECKPOINT_MASTER_KEY=${CHECKPOINT_MASTER_KEY:-}
+      # OpenTelemetry — emit traces/metrics/logs to the local collector
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otelcol:4317}
+      - OTEL_SERVICE_NAME=kilo-pipeline
+      - OTEL_RESOURCE_ATTRIBUTES=deployment.environment=${NODE_ENV:-development}
     mem_limit: 1.5g
     healthcheck:
       test: [ "CMD-SHELL", "wget -q --spider http://localhost:3100 || exit 1" ]
@@ -121,6 +125,8 @@ services:
         condition: service_healthy
       ollama:
         condition: service_healthy
+      otelcol:
+        condition: service_started
     labels:
       # Exclude from Watchtower — locally built image
       - "com.centurylinklabs.watchtower.enable=false"
@@ -326,6 +332,170 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  # OBSERVABILITY — Traces, Metrics, Logs, Alerting
+  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  # Prometheus: metrics backend (remote write receiver enabled)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    networks:
+      - oweibo
+    ports:
+      - "9090:9090"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --web.enable-remote-write-receiver
+      - --storage.tsdb.retention.time=30d
+    volumes:
+      - ./infra/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:9090/-/healthy || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Grafana Tempo: distributed tracing backend (OTLP/gRPC from otelcol)
+  tempo:
+    image: grafana/tempo:latest
+    container_name: tempo
+    restart: unless-stopped
+    networks:
+      - oweibo
+    ports:
+      - "3200:3200"   # Tempo HTTP API (Grafana datasource)
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./infra/observability/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    mem_limit: 512m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Grafana Loki: log aggregation backend (receives from otelcol Loki exporter)
+  loki:
+    image: grafana/loki:latest
+    container_name: loki
+    restart: unless-stopped
+    networks:
+      - oweibo
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./infra/observability/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki_data:/loki
+    mem_limit: 512m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # OpenTelemetry Collector: receives OTLP from services, fans out to backends
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: otelcol
+    restart: unless-stopped
+    networks:
+      - oweibo
+    ports:
+      - "4317:4317"   # OTLP/gRPC
+      - "4318:4318"   # OTLP/HTTP
+    command: ["--config=/etc/otelcol/otelcol-config.yaml"]
+    volumes:
+      - ./infra/observability/otelcol-config.yaml:/etc/otelcol/otelcol-config.yaml:ro
+    environment:
+      - OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=${OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT:-false}
+    mem_limit: 512m
+    depends_on:
+      tempo:
+        condition: service_started
+      loki:
+        condition: service_started
+      prometheus:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Prometheus Alertmanager: routes P0 → Matrix+webhook, P2+ → email
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: alertmanager
+    restart: unless-stopped
+    networks:
+      - oweibo
+    ports:
+      - "9093:9093"
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./infra/observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    environment:
+      - SMTP_HOST=${SMTP_HOST:-localhost:25}
+      - MATRIX_WEBHOOK_URL=${MATRIX_WEBHOOK_URL:-}
+      - ONCALL_WEBHOOK_URL=${ONCALL_WEBHOOK_URL:-}
+    mem_limit: 128m
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # Grafana: unified observability UI (datasources auto-provisioned)
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: grafana
+    restart: unless-stopped
+    networks:
+      - oweibo
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./infra/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=${GF_AUTH_ANONYMOUS_ENABLED:-false}
+      - GF_SECURITY_ADMIN_USER=${GF_GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_GRAFANA_PASSWORD:-changeme}
+      - GF_FEATURE_TOGGLES_ENABLE=traceqlEditor
+      - TZ=${TZ}
+    mem_limit: 512m
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      tempo:
+        condition: service_started
+      loki:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # PERSISTENCE
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -334,6 +504,11 @@ volumes:
   ollama_models:
   qdrant_data:
   redis_data:
+  prometheus_data:
+  tempo_data:
+  loki_data:
+  alertmanager_data:
+  grafana_data:
 
 networks:
   oweibo:

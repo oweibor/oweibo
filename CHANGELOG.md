@@ -9,13 +9,71 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Pending (Phase 6–8)
+### Pending (Phase 7–8)
 
-- Audit middleware on all privileged routes; GDPR erasure endpoint
-- OpenTelemetry GenAI semantic conventions across all LLM/agent/tool spans
-- Self-hosted observability: OTel collector → Tempo + Loki + Prometheus; Grafana dashboards
-- Launch hardening: k6 load test (500 RPS), chaos testing, DR rehearsal, external pentest
-- Legacy `TENANT_TOKENS` sunset: 60-day migration window
+- Launch hardening: k6 load test (500 RPS sustained), chaos testing, DR rehearsal, external pentest
+- Legacy `TENANT_TOKENS` sunset: 60-day migration window, import as real `api_keys` rows
+
+---
+
+## [0.6.0] — 2026-04-29
+
+### Phase 6: Audit, GDPR, OTel GenAI semantic conventions, self-hosted observability stack
+
+**`packages/observability`** — new package
+
+- `genai.ts` — GENAI, OWEIBO, OPERATION constant maps pinned to OTel GenAI semantic conventions v1.29.0 (`CONVENTIONS_VERSION` file)
+- `agent-span.ts` — `withAgentSpan(agentId, taskCtx, fn)` opens an `invoke_agent` CLIENT span with all `gen_ai.*` + `oweibo.*` attributes
+- `llm-span.ts` — `withLLMSpan(opts, taskCtx, fn, getResult?)` wraps `chat`/`embeddings` calls; `getResult` extractor records token counts, response model, finish reasons post-call
+- `tool-span.ts` — `withToolSpan(opts, taskCtx, fn)` wraps tool execution in `execute_tool` INTERNAL spans
+- `sdk.ts` — `initOtel(serviceName)` using NodeSDK + OTLPTraceExporter (gRPC) + PrometheusExporter; sets `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false` in production; `resetSdk()` for test teardown
+- `logger.ts` — `createLogger(service)` pino factory; redacts `password`, `token`, `access_token`, `refresh_token`, `email`, `authorization`, and all `req.headers.*` fields
+- `buckets.ts` — TOKEN_BUCKETS `[0,100,500,1000,5000,10000,50000,Inf]`, DURATION_BUCKETS, TTFT_BUCKETS, TPOT_BUCKETS for histogram recording
+
+**Instrumentation chokepoints**
+
+- `kilo/pipeline/src/services/llm/BaseLLMClient.ts` — `generate()` now accepts optional `taskCtx`; wraps private `_generate()` in `withLLMSpan`; span `system` derived from class name
+- `packages/core-engine/src/tools/ToolRegistry.ts` — `invoke(name, args, taskCtx?)` wraps execution in `withToolSpan({ toolName, toolType: 'function' }, spanCtx, fn)`
+
+**GDPR erasure endpoint**
+
+- `apps/identity/src/routes/gdpr.ts` — `DELETE /api/v1/users/:id/personal-data`; requires `platform:users:delete` scope or `isSelf`; anonymises `betterauth.users` via `$executeRaw`; soft-deletes `oweibo.users`; deletes Qdrant vectors by `user_id` filter across 3 collections; fire-and-forget MinIO prefix purge
+- Mounted in `apps/identity/src/index.ts`
+
+**Audit middleware wired to 16 privileged routes**
+
+- `kilo/pipeline/src/routes/task.ts` — `task.create`, `task.clear`
+- `kilo/pipeline/src/routes/staging.ts` — `staging.approve`, `staging.reject`
+- `kilo/pipeline/src/routes/quarantine.ts` — `quarantine.override`
+- `apps/identity/src/routes/platform.ts` — `platform.tenant.create`, `platform.tenant.update`, `platform.tenant.suspend`, `platform.user.roles`
+- `apps/identity/src/routes/tenant.ts` — `tenant.member.invite`, `tenant.member.roles`, `tenant.member.remove`, `tenant.apikey.create`, `tenant.apikey.revoke`, `tenant.settings.update`
+- `apps/identity/src/routes/gdpr.ts` — `gdpr.user.erase`
+
+**Self-hosted observability stack (`infra/observability/` + `docker-compose.yml`)**
+
+- **OTel Collector** (`otelcol-config.yaml`): OTLP/gRPC :4317 receiver; tail-based sampling (100% ERROR spans, 1% success); `attributes/strip-content` processor deletes `gen_ai.prompt` + `gen_ai.completion` (PII policy §15.6.1.4); fans out to Tempo (traces), Prometheus remote write (metrics), Loki (logs)
+- **Tempo** (`tempo.yaml`): OTLP/gRPC ingest from otelcol; local storage; 30-day block retention; service-graphs + span-metrics metrics generators
+- **Loki** (`loki.yaml`): TSDB v13 schema; local filesystem chunks; 30-day retention; alertmanager integration
+- **Prometheus** (`prometheus.yml`): remote write receiver enabled; scrapes `otelcol:8888` (collector internal metrics); alertmanager at `:9093`
+- **Grafana** (`grafana/provisioning/datasources/oweibo.yaml`): auto-provisions all three datasources on startup; Tempo configured with `tracesToLogsV2` (Loki, `oweibo.tenant.id` tag), `tracesToMetrics` (Prometheus), node graph, TraceQL editor
+- **Alertmanager** (`alertmanager.yml`): P0 → Matrix webhook + on-call webhook (both `continue: true`); P2+ → email; group by `alertname + oweibo_tenant_id + severity`; `critical` inhibits `warning` for the same alert
+
+**ESLint and dep-cruiser**
+
+- `scripts/eslint-rules/no-direct-llm-call.js` — blocks `import`/`require` of any LLM provider client (Ollama, OpenAI, Anthropic, DeepSeek, OpenRouter) outside `BaseLLMClient` and test files
+- `.dependency-cruiser.js` — two new rules: `observability-cannot-import-business-logic`, `no-direct-llm-provider-outside-base-client`
+
+**CI conformance gates**
+
+- `e2e/observability/genai-conformance.test.ts` — static file-system test: CONVENTIONS_VERSION semver, all required `gen_ai.*` attribute keys present, otelcol strips PII content, tail-sampling covers ERROR spans, ESLint rule covers all providers, dep-cruiser rules registered, Grafana trace→log correlation wired
+- `packages/api-middleware/src/__tests__/audit-coverage.test.ts` — unit tests for outcome derivation (allow/deny/error), action string correctness, no-op on unauthenticated requests; documents complete 16-action privileged action space
+
+**Package dependency updates**
+
+- `kilo/pipeline/package.json` — added `@oweibo/observability: workspace:*`
+- `packages/core-engine/package.json` — added `@oweibo/observability: workspace:*`
+- `apps/identity/package.json` — added `@oweibo/api-middleware: workspace:*`
+- `pnpm-workspace.yaml` — added `e2e` package
 
 ---
 
@@ -359,6 +417,10 @@ Resource families:
 
 ---
 
-[Unreleased]: https://github.com/oweibor/oweibo/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/oweibor/oweibo/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/oweibor/oweibo/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/oweibor/oweibo/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/oweibor/oweibo/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/oweibor/oweibo/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/oweibor/oweibo/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/oweibor/oweibo/releases/tag/v0.1.0

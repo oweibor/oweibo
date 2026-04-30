@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@oweibo/channel-contracts": "workspace:*",
+    "@oweibo/observability":     "workspace:*",
     "ajv": "^8.17.1",
     "@oweibo/core-contracts": "workspace:*",
     "@qdrant/js-client-rest": "^1.17.0",

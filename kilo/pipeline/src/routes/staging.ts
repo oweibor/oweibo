@@ -23,7 +23,7 @@ const logger = require('../services/logger');
 const promotionEngine = require('../services/promotion/engine');
 const qdrant = require('../services/qdrant');
 const { safeJoin, sanitizeSegment } = require('../services/safePath');
-const { authenticate, requireScopes, buildLegacyTokenMap } = require('@oweibo/api-middleware');
+const { authenticate, requireScopes, buildLegacyTokenMap, audit } = require('@oweibo/api-middleware');
 
 const router = express.Router();
 
@@ -119,7 +119,7 @@ router.get('/', _auth, requireScopes('staging:read'), async (req, res) => {
  * Promote a staging item to active memory.  Tenant-scoped: looks up the item
  * in <tenant>/.kilo/staging/ first, then Qdrant with a tenant filter.
  */
-router.post('/:id/approve', _auth, requireScopes('staging:approve'), async (req, res) => {
+router.post('/:id/approve', _auth, requireScopes('staging:approve'), audit('staging.approve', { resourceType: 'staging_item' }), async (req, res) => {
     const tenantId = (req as any).principal?.ctx?.tenantId || (req as any).tenantId;
 
     let id;
@@ -195,7 +195,7 @@ router.post('/:id/approve', _auth, requireScopes('staging:approve'), async (req,
  * POST /staging/:id/reject
  * Move item from staging to rejected.  Tenant-scoped.
  */
-router.post('/:id/reject', _auth, requireScopes('staging:reject'), async (req, res) => {
+router.post('/:id/reject', _auth, requireScopes('staging:reject'), audit('staging.reject', { resourceType: 'staging_item' }), async (req, res) => {
     const tenantId = (req as any).principal?.ctx?.tenantId || (req as any).tenantId;
     const { reason = 'Manual rejection' } = req.body || {};
 

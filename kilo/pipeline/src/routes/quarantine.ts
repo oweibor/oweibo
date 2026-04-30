@@ -19,7 +19,7 @@ const logger = require('../services/logger');
 const promotionEngine = require('../services/promotion/engine');
 const config = require('../config');
 const { sanitizeSegment } = require('../services/safePath');
-const { authenticate, requireScopes, buildLegacyTokenMap } = require('@oweibo/api-middleware');
+const { authenticate, requireScopes, buildLegacyTokenMap, audit } = require('@oweibo/api-middleware');
 
 const router = express.Router();
 
@@ -109,7 +109,7 @@ router.get('/', _auth, requireScopes('quarantine:read'), (req, res) => {
  * embedded in the item — cross-tenant override returns 404 to avoid
  * enumeration.
  */
-router.post('/:id/override', _auth, requireScopes('quarantine:override'), async (req, res) => {
+router.post('/:id/override', _auth, requireScopes('quarantine:override'), audit('quarantine.override', { resourceType: 'quarantine_item' }), async (req, res) => {
     const tenantId = (req as any).principal?.ctx?.tenantId || (req as any).tenantId;
     const { action } = req.body || {}; // 'promote' or 'dismiss'
 

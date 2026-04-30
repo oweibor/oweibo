@@ -227,6 +227,37 @@ module.exports = {
       from: { path: '^kilo/pipeline', pathNot: '/__tests__/' },
       to:   { path: '^apps/identity' },
     },
+
+    // ── Phase 6: observability package isolation ─────────────────────────
+
+    {
+      name: 'observability-cannot-import-business-logic',
+      severity: 'error',
+      comment: 'packages/observability is a cross-cutting utility — it must not import ' +
+               'from core-engine, identity, kilo-pipeline, or api-middleware. ' +
+               'It depends only on @opentelemetry/* and pino.',
+      from: { path: '^packages/observability' },
+      to: {
+        path: '^(packages/core-engine|packages/api-middleware|apps/identity|kilo/pipeline)',
+      },
+    },
+    {
+      name: 'no-direct-llm-provider-outside-base-client',
+      severity: 'error',
+      comment: 'All LLM calls must flow through BaseLLMClient.generate() to guarantee ' +
+               'OTel GenAI span instrumentation. Direct imports of provider clients bypass spans.',
+      from: {
+        path:    '^kilo/pipeline/src/',
+        pathNot: [
+          '^kilo/pipeline/src/services/llm/BaseLLMClient',
+          '^kilo/pipeline/src/services/llm/(Ollama|OpenAI|Anthropic|DeepSeek|OpenRouter)Client',
+          '/__tests__/',
+        ],
+      },
+      to: {
+        path: '^kilo/pipeline/src/services/llm/(Ollama|OpenAI|Anthropic|DeepSeek|OpenRouter)Client',
+      },
+    },
   ],
   options: {
     doNotFollow: {

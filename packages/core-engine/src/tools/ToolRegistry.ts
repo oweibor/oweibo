@@ -2,6 +2,8 @@
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const Ajv = require('ajv') as typeof import('ajv').default;
 import type { IToolDefinition, IToolInvocationResult, ISecurityContext } from '@oweibo/core-contracts';
+import { withToolSpan } from '@oweibo/observability';
+import type { TaskContext } from '@oweibo/observability';
 
 // Duck-typed Qdrant client surface — avoids direct ESM import of @qdrant/js-client-rest
 type QdrantClient = {
@@ -86,7 +88,12 @@ export class ToolRegistry {
     }
   }
 
-  async invoke(name: string, input: unknown, securityContext: ISecurityContext): Promise<IToolInvocationResult> {
+  async invoke(
+    name: string,
+    input: unknown,
+    securityContext: ISecurityContext,
+    taskCtx?: TaskContext,
+  ): Promise<IToolInvocationResult> {
     const tool = this.tools.get(name);
     if (!tool) throw new Error(`[ToolRegistry] Unknown tool: "${name}"`);
 
@@ -102,28 +109,33 @@ export class ToolRegistry {
       throw new SchemaValidationError(name, 'input', ajv.errorsText(validate.errors) ?? '');
     }
 
-    const startMs = Date.now();
-    let output: unknown;
-    try {
-      output = tool.handler ? await tool.handler(input) : undefined;
-    } catch (err) {
-      return {
-        toolName: name,
-        status: 'error',
-        durationMs: Date.now() - startMs,
-        error: err instanceof Error ? err.message : String(err),
-        tokensUsed: 0,
-      };
-    }
+    const spanCtx: TaskContext = taskCtx ?? { tenantId: '', userId: '', taskId: '' };
+    const spanOpts = { toolName: name, toolType: 'function' as const };
 
-    if (tool.outputSchema) {
-      const validateOut = ajv.compile(tool.outputSchema);
-      if (!validateOut(output)) {
-        throw new SchemaValidationError(name, 'output', ajv.errorsText(validateOut.errors) ?? '');
+    return withToolSpan(spanOpts, spanCtx, async () => {
+      const startMs = Date.now();
+      let output: unknown;
+      try {
+        output = tool.handler ? await tool.handler(input) : undefined;
+      } catch (err) {
+        return {
+          toolName: name,
+          status: 'error',
+          durationMs: Date.now() - startMs,
+          error: err instanceof Error ? err.message : String(err),
+          tokensUsed: 0,
+        };
       }
-    }
 
-    return { toolName: name, status: 'success', output, durationMs: Date.now() - startMs, tokensUsed: 0 };
+      if (tool.outputSchema) {
+        const validateOut = ajv.compile(tool.outputSchema);
+        if (!validateOut(output)) {
+          throw new SchemaValidationError(name, 'output', ajv.errorsText(validateOut.errors) ?? '');
+        }
+      }
+
+      return { toolName: name, status: 'success', output, durationMs: Date.now() - startMs, tokensUsed: 0 };
+    });
   }
 
   list(): readonly IToolDefinition[] {

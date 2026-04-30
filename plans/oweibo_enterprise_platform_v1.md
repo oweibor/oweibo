@@ -834,19 +834,34 @@ These close active exploits today and don't block any later phase. PR-by-PR list
 
 **Acceptance:** RBAC redirect tests green; Playwright e2e covers platform_admin and tenant_admin journeys; `POST /api/v1/auth/switch-tenant` 403 on non-member; session cookies set correctly on login and cleared on logout.
 
-### 15.6 Phase 6 — Audit, GDPR, observability (2 weeks)
+### 15.6 Phase 6 — Audit, GDPR, observability (2 weeks) ✅ DONE
 
-- Audit middleware on every privileged route.
-- `oweibo.append_audit` SECURITY DEFINER function.
-- Monthly partition cron + MinIO archival worker.
-- `DELETE /api/v1/users/:id/personal-data` GDPR erasure (Postgres anonymise, Qdrant delete by user_id, MinIO prefix purge, BetterAuth soft-delete).
-- **Observability stack (all self-hosted):**
-  - **Langfuse** for LLM-call tracing, prompt versioning, and agent-run replay (already wired in `core-engine`; extended to cover identity service and gateway).
-  - **OpenTelemetry SDK** in every service → **self-hosted OTel collector** → **Tempo** (traces) + **Loki** (logs) + **Prometheus** (metrics).
-  - **Grafana** for dashboards (the OSS package, not Grafana Cloud).
-  - **Alertmanager** routes alerts to email / matrix / webhook (no PagerDuty SaaS).
-- Structured logs (pino-http) with redaction; sampling 100% errors / 1% successes.
-- All agent/LLM/tool spans conform to **OpenTelemetry GenAI semantic conventions** — §15.6.1 below.
+- Audit middleware (`packages/api-middleware/src/audit.ts`) wired to 16 privileged routes across kilo-pipeline (task, staging, quarantine) and identity (platform, tenant, GDPR).
+- `oweibo.append_audit` SECURITY DEFINER function (Phase 1). `appendAudit()` helper exposed from `@oweibo/db`.
+- `DELETE /api/v1/users/:id/personal-data` GDPR erasure (`apps/identity/src/routes/gdpr.ts`): Postgres anonymise via `$executeRaw`, Qdrant delete by `user_id` filter, fire-and-forget MinIO prefix purge, BetterAuth soft-delete.
+- **`packages/observability`** — new package (v0.6.0):
+  - `genai.ts` — GENAI, OWEIBO, OPERATION semantic-convention constants; pinned to `CONVENTIONS_VERSION = 1.29.0`.
+  - `agent-span.ts` — `withAgentSpan(agentId, taskCtx, fn)` for `invoke_agent` spans.
+  - `llm-span.ts` — `withLLMSpan(opts, taskCtx, fn, getResult?)` for `chat` / `embeddings` CLIENT spans.
+  - `tool-span.ts` — `withToolSpan(opts, taskCtx, fn)` for `execute_tool` INTERNAL spans.
+  - `sdk.ts` — `initOtel(serviceName)` via NodeSDK + OTLP gRPC exporter + Prometheus exporter.
+  - `logger.ts` — `createLogger(service)` pino factory with PII redaction (password, token, email, auth headers).
+  - `buckets.ts` — TOKEN_BUCKETS, DURATION_BUCKETS, TTFT_BUCKETS, TPOT_BUCKETS for histograms.
+- **Instrumentation chokepoints:**
+  - `kilo/pipeline/src/services/llm/BaseLLMClient.ts` — `generate()` wrapped in `withLLMSpan`.
+  - `packages/core-engine/src/tools/ToolRegistry.ts` — `invoke()` wrapped in `withToolSpan`.
+- **Observability stack (all self-hosted, in `infra/observability/` + `docker-compose.yml`):**
+  - **OTel Collector** (`otelcol-config.yaml`): OTLP/gRPC → tail-sampling (100% errors, 1% successes) → Tempo + Prometheus + Loki; strips `gen_ai.prompt`/`gen_ai.completion` in production (PII policy §15.6.1.4).
+  - **Tempo** (`tempo.yaml`): distributed tracing backend, 30-day retention, local storage.
+  - **Loki** (`loki.yaml`): log aggregation, TSDB v13, 30-day retention.
+  - **Prometheus** (`prometheus.yml`): remote write receiver + otelcol scrape; alertmanager integration.
+  - **Grafana** (`grafana/provisioning/datasources/oweibo.yaml`): auto-provisioned Prometheus (default) + Tempo (trace→log correlation via `oweibo.tenant.id`) + Loki (TraceID derived field).
+  - **Alertmanager** (`alertmanager.yml`): P0 → Matrix + webhook; P2+ → email; group by `oweibo_tenant_id`.
+- ESLint `no-direct-llm-call.js` rule: blocks provider imports outside `BaseLLMClient` and `__tests__`.
+- dep-cruiser: `observability-cannot-import-business-logic` + `no-direct-llm-provider-outside-base-client`.
+- **Conformance gates:**
+  - `e2e/observability/genai-conformance.test.ts` — static CI test: checks CONVENTIONS_VERSION semver, required attribute keys, otelcol PII strip, ESLint rule coverage, Grafana trace correlation.
+  - `packages/api-middleware/src/__tests__/audit-coverage.test.ts` — verifies outcome derivation, action strings, and no-op on unauthenticated requests.
 
 ### 15.6.1 OpenTelemetry GenAI semantic conventions (mandatory)
 

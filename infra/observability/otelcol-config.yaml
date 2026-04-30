@@ -1,0 +1,69 @@
+# OpenTelemetry Collector configuration.
+# Receives OTLP/gRPC from all oweibo services on :4317.
+# Fans out to Tempo (traces), Prometheus (metrics), Loki (logs).
+# Sampling: 100% errors, 1% successes (tail-based).
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+  # Tail-based sampling: always send error spans; sample 1% of success spans
+  tail_sampling:
+    decision_wait: 10s
+    num_traces: 50000
+    policies:
+      - name: errors-policy
+        type: status_code
+        status_code: { status_codes: [ERROR] }
+      - name: success-sample
+        type: probabilistic
+        probabilistic: { sampling_percentage: 1 }
+
+  # Strip message content in production (PII policy — §15.6.1.4)
+  attributes/strip-content:
+    actions:
+      - key: gen_ai.prompt
+        action: delete
+      - key: gen_ai.completion
+        action: delete
+
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  prometheusremotewrite:
+    endpoint: http://prometheus:9090/api/v1/write
+    tls:
+      insecure_skip_verify: true
+
+  loki:
+    endpoint: http://loki:3100/loki/api/v1/push
+    default_labels_enabled:
+      exporter: false
+      job: true
+
+service:
+  pipelines:
+    traces:
+      receivers:  [otlp]
+      processors: [batch, tail_sampling, attributes/strip-content]
+      exporters:  [otlp/tempo]
+    metrics:
+      receivers:  [otlp]
+      processors: [batch]
+      exporters:  [prometheusremotewrite]
+    logs:
+      receivers:  [otlp]
+      processors: [batch]
+      exporters:  [loki]

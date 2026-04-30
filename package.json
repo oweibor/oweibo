@@ -33,5 +33,9 @@
     "node": ">=20.0.0",
     "pnpm": ">=9.0.0"
   },
-  "packageManager": "pnpm@9.12.0"
+  "packageManager": "pnpm@9.12.0",
+  "dependencies": {
+    "@types/archiver": "^6.0.3",
+    "archiver": "^7.0.1"
+  }
 }

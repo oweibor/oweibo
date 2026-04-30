@@ -16,6 +16,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { withTenantContext } from '@oweibo/db';
 import type { Principal } from '@oweibo/db';
 import { authenticate, requirePlatformAdmin } from '../middleware/authenticate.js';
+import { audit } from '@oweibo/api-middleware';
 
 const router = Router();
 router.use(authenticate);
@@ -38,7 +39,7 @@ const CreateTenantSchema = z.object({
   features: z.record(z.unknown()).optional(),
 });
 
-router.post('/api/v1/platform/tenants', async (req, res) => {
+router.post('/api/v1/platform/tenants', audit('platform.tenant.create', { resourceType: 'tenant' }), async (req, res) => {
   const parsed = CreateTenantSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: 'validation_error', issues: parsed.error.flatten() });
@@ -81,7 +82,7 @@ const UpdateTenantSchema = z.object({
   quotas:           z.record(z.unknown()).optional(),
 });
 
-router.patch('/api/v1/platform/tenants/:id', async (req, res) => {
+router.patch('/api/v1/platform/tenants/:id', audit('platform.tenant.update', { resourceType: 'tenant' }), async (req, res) => {
   const parsed = UpdateTenantSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: 'validation_error', issues: parsed.error.flatten() });
@@ -94,7 +95,7 @@ router.patch('/api/v1/platform/tenants/:id', async (req, res) => {
   res.json({ tenant });
 });
 
-router.post('/api/v1/platform/tenants/:id/suspend', async (req, res) => {
+router.post('/api/v1/platform/tenants/:id/suspend', audit('platform.tenant.suspend', { resourceType: 'tenant' }), async (req, res) => {
   const principal = req.principal as Principal;
   const tenant = await withTenantContext(principal, tx =>
     tx.tenant.update({ where: { id: req.params['id'] }, data: { status: 'suspended' } })
@@ -116,7 +117,7 @@ const UpdatePlatformRolesSchema = z.object({
   roles: z.array(z.enum(['platform_admin', 'platform_operator', 'platform_billing'])),
 });
 
-router.post('/api/v1/platform/users/:id/roles', async (req, res) => {
+router.post('/api/v1/platform/users/:id/roles', audit('platform.user.roles', { resourceType: 'user' }), async (req, res) => {
   const parsed = UpdatePlatformRolesSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: 'validation_error', issues: parsed.error.flatten() });

@@ -16,6 +16,7 @@
 const logger = require('../logger');
 const scanner = require('../ollama/scanner');
 const { CircuitBreaker } = require('./CircuitBreaker');
+const { withLLMSpan } = require('@oweibo/observability');
 
 import { CircuitBreakerConfig } from './CircuitBreaker';
 
@@ -78,13 +79,29 @@ abstract class BaseLLMClient {
         prompt: string,
         callType: LlmCallType,
         context = '',
-        opts: GenerateOptions = {}
+        opts: GenerateOptions = {},
+        taskCtx?: { tenantId: string; userId: string; taskId: string },
     ): Promise<GenerateResult> {
         if (!this.breaker.isCallAllowed()) {
             return { text: '', tripped: true, error: 'tripped' };
         }
 
-        const timeoutMs = opts.timeoutMs ?? this.cfg.timeoutMs;
+        const model      = opts.model ?? this.cfg.model;
+        const timeoutMs  = opts.timeoutMs ?? this.cfg.timeoutMs;
+        const spanCtx    = taskCtx ?? { tenantId: '', userId: '', taskId: '' };
+        const spanSystem = this.constructor.name.replace('Client', '').toLowerCase();
+
+        const spanOpts = { system: spanSystem, model, operation: 'chat' as const };
+        return withLLMSpan(spanOpts, spanCtx, () => this._generate(prompt, callType, context, opts, timeoutMs));
+    }
+
+    private async _generate(
+        prompt: string,
+        callType: LlmCallType,
+        context: string,
+        opts: GenerateOptions,
+        timeoutMs: number,
+    ): Promise<GenerateResult> {
         const timeoutSignal = AbortSignal.timeout(timeoutMs);
         const signal = opts.signal ? mergeSignals(opts.signal, timeoutSignal) : timeoutSignal;
 

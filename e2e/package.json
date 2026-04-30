@@ -1,0 +1,12 @@
+{
+  "name": "@oweibo/e2e",
+  "version": "0.6.0",
+  "private": true,
+  "description": "Static conformance and end-to-end tests for the oweibo platform",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^2.0.5"
+  }
+}

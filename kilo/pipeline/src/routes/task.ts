@@ -19,7 +19,7 @@ const { safeJoin, sanitizeSegment } = require('../services/safePath');
 const queue          = require('../services/queue');
 const logger         = require('../services/logger');
 const ledger         = require('../services/recovery/ledger');
-const { authenticate, requireScopes, buildLegacyTokenMap, idempotent } = require('@oweibo/api-middleware');
+const { authenticate, requireScopes, buildLegacyTokenMap, idempotent, audit } = require('@oweibo/api-middleware');
 const { checkAndConsume } = require('../services/quota');
 
 /**
@@ -97,6 +97,7 @@ function validateWorkspacePath(tenantId, workspacePath) {
 router.post('/task',
     authenticate({ jwksUri: config.IDENTITY_JWKS_URI, issuer: config.JWT_ISSUER, audience: config.JWT_AUDIENCE }, buildLegacyTokenMap()),
     requireScopes('tasks:write'),
+    audit('task.create', { resourceType: 'task' }),
     taskLimiter,
     validate(TASK_SCHEMA),
     async (req, res) => {
@@ -196,6 +197,7 @@ router.post('/task',
 router.post('/task/clear',
     authenticate({ jwksUri: config.IDENTITY_JWKS_URI, issuer: config.JWT_ISSUER, audience: config.JWT_AUDIENCE }, buildLegacyTokenMap()),
     requireScopes('tasks:write'),
+    audit('task.clear', { resourceType: 'task' }),
     validate(TASK_CLEAR_SCHEMA), (req, res) => {
     const tenantId = (req as any).principal?.ctx?.tenantId || (req as any).tenantId;
     const { task_id, action, guidance, hash } = req.body;

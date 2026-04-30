@@ -1,0 +1,45 @@
+# Prometheus Alertmanager — self-hosted, no PagerDuty.
+# Routes: email for P2+, Matrix for P1, webhook for P0.
+# Silences and inhibition rules are managed via the Alertmanager UI (:9093).
+
+global:
+  resolve_timeout: 5m
+  smtp_from:        alerts@oweibo.io
+  smtp_smarthost:   ${SMTP_HOST:-localhost:25}
+  smtp_require_tls: false
+
+route:
+  receiver: default-email
+  group_by: [alertname, oweibo_tenant_id, severity]
+  group_wait:      30s
+  group_interval:  5m
+  repeat_interval: 4h
+  routes:
+    - matchers: [severity="critical"]
+      receiver: matrix-p0
+      continue: true
+    - matchers: [severity="critical"]
+      receiver: webhook-p0
+    - matchers: [severity="warning"]
+      receiver: default-email
+
+receivers:
+  - name: default-email
+    email_configs:
+      - to: oncall@oweibo.io
+        send_resolved: true
+
+  - name: matrix-p0
+    webhook_configs:
+      - url: ${MATRIX_WEBHOOK_URL:-http://localhost:8008/_matrix/webhook}
+        send_resolved: true
+
+  - name: webhook-p0
+    webhook_configs:
+      - url: ${ONCALL_WEBHOOK_URL:-http://localhost:9099/alert}
+        send_resolved: true
+
+inhibit_rules:
+  - source_matchers: [severity="critical"]
+    target_matchers: [severity="warning"]
+    equal:           [alertname]

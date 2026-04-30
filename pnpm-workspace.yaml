@@ -4,3 +4,4 @@ packages:
   - "kilo/pipeline"
   - "packages/browser-tool"
   - "packages/browser-extension"
+  - "e2e"

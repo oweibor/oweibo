@@ -31,7 +31,7 @@ export function initOtel(serviceName: string, opts: OtelOptions = {}): NodeSDK {
   const sdk = new NodeSDK({
     resource: new Resource({ [SEMRESATTRS_SERVICE_NAME]: serviceName }),
     traceExporter: new OTLPTraceExporter({ url: endpoint }),
-    metricReader:  new PrometheusExporter({ port: promPort, preventServerClose: true }),
+    metricReader:  new PrometheusExporter({ port: promPort }),
   });
 
   sdk.start();

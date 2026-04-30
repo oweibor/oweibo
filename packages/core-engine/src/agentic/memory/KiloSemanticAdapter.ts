@@ -51,6 +51,7 @@ import type {
   RecallQuery,
   StoreMemoryInput,
   TenantId,
+  UserId,
 } from '@oweibo/core-contracts';
 
 // @qdrant/js-client-rest is ESM-only; under the project's CJS module mode
@@ -240,6 +241,22 @@ export class KiloSemanticAdapter implements ISemanticMemoryStore {
       must: [
         { key: 'tenant_id', match: { value: tenantId } },
         { key: 'project_id', match: { value: projectId } },
+      ],
+    };
+    await Promise.all(
+      ALL_COLLECTIONS.map((collection) =>
+        this.deps.qdrant.delete(collection, { wait: true, filter }),
+      ),
+    );
+  }
+
+  async purgeUser(tenantId: TenantId, userId: UserId): Promise<void> {
+    if (!tenantId) throw new Error('KiloSemanticAdapter.purgeUser: tenantId is required');
+    if (!userId)   throw new Error('KiloSemanticAdapter.purgeUser: userId is required');
+    const filter = {
+      must: [
+        { key: 'tenant_id', match: { value: tenantId } },
+        { key: 'user_id',   match: { value: userId } },
       ],
     };
     await Promise.all(

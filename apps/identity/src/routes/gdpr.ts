@@ -9,7 +9,11 @@
  * Erasure steps:
  *   1. Anonymise betterauth.users (email, name)
  *   2. Soft-delete + anonymise oweibo.users
- *   3. Delete Qdrant points by user_id filter (semantic + STM memory)
+ *   3. Look up every tenant the user belongs to; delete that tenant's Qdrant
+ *      semantic-memory points authored by this user (filter: tenant_id +
+ *      user_id). Collections follow the `agent-ltm:<tenantId>` convention
+ *      defined by core-engine's TenantKeyBuilder — duplicated here because
+ *      identity cannot import core-engine (dep-cruiser rule).
  *   4. Fire-and-forget MinIO prefix purge (heavy; async worker in prod)
  */
 import { Router } from 'express';
@@ -22,8 +26,17 @@ import { config } from '../config.js';
 const router = Router();
 router.use(authenticate);
 
+/**
+ * Mirrors core-engine's TenantKeyBuilder.ltmCollection. Kept as a string
+ * literal here because @oweibo/core-engine is a forbidden import for
+ * apps/identity.
+ */
+function ltmCollection(tenantId: string): string {
+  return `agent-ltm:${tenantId}`;
+}
+
 router.delete('/api/v1/users/:id/personal-data',
-  audit('user.data.erasure', { resourceType: 'user' }),
+  audit('gdpr.user.erase', { resourceType: 'user' }),
   async (req, res) => {
     const principal  = req.principal as Principal;
     const targetId   = req.params.id!;
@@ -43,7 +56,7 @@ router.delete('/api/v1/users/:id/personal-data',
         ? principal
         : { ...principal, scopes: [...principal.scopes, 'platform:tenants:write'] };
 
-      await withTenantContext(platformPrincipal, async tx => {
+      const tenantIds = await withTenantContext(platformPrincipal, async tx => {
         // Step 1: anonymise betterauth.users (raw SQL — not RLS-gated)
         await tx.$executeRaw`
           UPDATE betterauth.users
@@ -56,18 +69,29 @@ router.delete('/api/v1/users/:id/personal-data',
           where: { id: targetId },
           data:  { email: anonymizedEmail, status: 'deleted' },
         });
+
+        // Collect every tenant the user authored memories in
+        const memberships = await tx.tenantMembership.findMany({
+          where:  { userId: targetId },
+          select: { tenantId: true },
+        });
+        return memberships.map(m => m.tenantId);
       });
 
-      // Step 3: Qdrant — delete by user_id filter across all relevant collections
-      const qdrantUrl   = process.env['QDRANT_URL'] ?? config.QDRANT_HOST ?? 'http://localhost:6333';
-      const collections = ['semantic_memory', 'stm_memory', 'tool-embeddings'];
+      // Step 3: Qdrant — purge each tenant's semantic memory by user_id
+      const qdrantUrl = process.env['QDRANT_URL'] ?? config.QDRANT_HOST ?? 'http://localhost:6333';
       await Promise.allSettled(
-        collections.map(col =>
-          fetch(`${qdrantUrl}/collections/${col}/points/delete`, {
+        tenantIds.map(tenantId =>
+          fetch(`${qdrantUrl}/collections/${ltmCollection(tenantId)}/points/delete`, {
             method:  'POST',
             headers: { 'Content-Type': 'application/json' },
             body:    JSON.stringify({
-              filter: { must: [{ key: 'user_id', match: { value: targetId } }] },
+              filter: {
+                must: [
+                  { key: 'tenant_id', match: { value: tenantId } },
+                  { key: 'user_id',   match: { value: targetId } },
+                ],
+              },
             }),
           })
         )

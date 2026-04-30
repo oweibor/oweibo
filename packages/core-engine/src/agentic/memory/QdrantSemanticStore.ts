@@ -38,6 +38,7 @@ import type {
   RecallQuery,
   StoreMemoryInput,
   TenantId,
+  UserId,
 } from '@oweibo/core-contracts';
 
 import { TenantKeyBuilder } from '../../infra/TenantKeyBuilder.js';
@@ -132,6 +133,7 @@ export interface QdrantSemanticStoreDeps {
 /** The Qdrant payload written and read by this store. */
 interface StoredPayload {
   readonly tenant_id:    string;
+  readonly user_id?:     string;
   readonly project_id?:  string;
   readonly session_id?:  string;
   readonly task_id?:     string;
@@ -245,6 +247,7 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
 
     const payload: StoredPayload = {
       tenant_id:    scope.tenantId,
+      user_id:      scope.userId,
       project_id:   scope.projectId,
       session_id:   scope.sessionId,
       task_id:      scope.taskId,
@@ -390,6 +393,31 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
     }
   }
 
+  /**
+   * purgeUser — hard delete all memories authored by a single user inside a
+   * tenant. Used for per-user GDPR erasure when the user shares the tenant
+   * with other members. Memories without a user_id (legacy or system-authored)
+   * are left untouched.
+   */
+  async purgeUser(tenantId: TenantId, userId: UserId): Promise<void> {
+    if (!tenantId) throw new Error('QdrantSemanticStore.purgeUser: tenantId is required');
+    if (!userId)   throw new Error('QdrantSemanticStore.purgeUser: userId is required');
+    const collection = TenantKeyBuilder.ltmCollection(tenantId);
+    try {
+      await this.deps.qdrant.delete(collection, {
+        wait:   true,
+        filter: {
+          must: [
+            { key: 'tenant_id', match: { value: tenantId } },
+            { key: 'user_id',   match: { value: userId } },
+          ],
+        },
+      });
+    } catch {
+      // Collection may not exist — that's fine for purge
+    }
+  }
+
   // ── Private helpers ─────────────────────────────────────────────────────────
 
   /**
@@ -481,6 +509,7 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
   ): MemoryEntry {
     const scope: MemoryScope = {
       tenantId,
+      userId:    payload.user_id,
       projectId: payload.project_id,
       sessionId: payload.session_id,
       taskId:    payload.task_id,

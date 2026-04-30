@@ -31,15 +31,21 @@ export type TenantId  = string;
 export type ProjectId = string;
 export type SessionId = string;
 export type TaskId    = string;
+export type UserId    = string;
 
 /**
  * MemoryScope threads the full identity chain through every operation.
  * `projectId` is optional at the contract level because not every action
  * lives inside a project (e.g. a one-off ad-hoc task), but when present
  * it becomes the primary cross-session continuity key.
+ *
+ * `userId` is the authoring user inside the tenant. Required for per-user
+ * GDPR erasure: without it, deletion granularity bottoms out at tenant
+ * and one user's records cannot be removed without affecting siblings.
  */
 export interface MemoryScope {
   readonly tenantId:  TenantId;
+  readonly userId?:   UserId;
   readonly projectId?: ProjectId;
   readonly sessionId?: SessionId;
   readonly taskId?:   TaskId;
@@ -238,6 +244,12 @@ export interface ISemanticMemoryStore {
   purgeTenant(tenantId: TenantId): Promise<void>;
   /** Hard delete all memories for a single project (without touching the tenant). */
   purgeProject(tenantId: TenantId, projectId: ProjectId): Promise<void>;
+  /**
+   * Hard delete all memories authored by a single user inside a tenant.
+   * Used for per-user GDPR erasure when a user leaves a tenant they share
+   * with other members. Requires payloads to carry the authoring `userId`.
+   */
+  purgeUser(tenantId: TenantId, userId: UserId): Promise<void>;
 }
 
 // ─── Orchestrator (facade used by agents + pipeline) ─────────────────────────

@@ -3,15 +3,47 @@
  * a live Qdrant instance.
  */
 import { describe, it, expect, jest, beforeEach } from '@jest/globals';
-import { QdrantSemanticStore, SemanticStoreCapExceededError } from '../QdrantSemanticStore.js';
+import {
+  QdrantSemanticStore,
+  SemanticStoreCapExceededError,
+  SchemaIncompatibleError,
+  LegacySchemaError,
+} from '../QdrantSemanticStore.js';
 import { MemoryCircuitBreaker, MemoryCircuitOpenError } from '../MemoryCircuitBreaker.js';
 import type { StoreMemoryInput, MemoryScope } from '@oweibo/core-contracts';
+
+const SCHEMA_MARKER_ID = '00000000-0000-4000-8000-000000000001';
 
 const TENANT  = 't-1';
 const USER    = 'u-1';
 const PROJECT = 'p-1';
 const SCOPE: MemoryScope = { tenantId: TENANT, userId: USER, projectId: PROJECT };
 const COLLECTION = `agent-ltm:${TENANT}`;
+
+/**
+ * Default retrieve mock routes by id: returns a valid v1 schema marker for
+ * SCHEMA_MARKER_ID (so existing tests don't trigger writeSchemaMarker on
+ * every store() call) and [] for any other id. Tests override `retrieve`
+ * directly when they need different behaviour (e.g. dedup-hit body fetch
+ * or schema mismatch scenarios).
+ */
+function defaultRetrieve(dim = 8) {
+  return jest.fn<(col: string, opts: { ids: string[] }) => Promise<unknown>>()
+    .mockImplementation(async (_col, opts) => {
+      if (opts?.ids?.[0] === SCHEMA_MARKER_ID) {
+        return [{
+          id: SCHEMA_MARKER_ID,
+          payload: {
+            _kind:      'schema_marker',
+            version:    'v1',
+            vector_dim: dim,
+            created_at: '2026-01-01T00:00:00Z',
+          },
+        }];
+      }
+      return [];
+    });
+}
 
 function makeQdrant(overrides: Record<string, any> = {}): any {
   return {
@@ -20,7 +52,7 @@ function makeQdrant(overrides: Record<string, any> = {}): any {
     upsert:           jest.fn<() => Promise<any>>().mockResolvedValue(undefined),
     search:           jest.fn<() => Promise<any>>().mockResolvedValue([]),
     delete:           jest.fn<() => Promise<any>>().mockResolvedValue(undefined),
-    retrieve:         jest.fn<() => Promise<any>>().mockResolvedValue([]),
+    retrieve:         defaultRetrieve(),
     setPayload:       jest.fn<() => Promise<any>>().mockResolvedValue(undefined),
     ...overrides,
   };
@@ -83,30 +115,52 @@ describe('QdrantSemanticStore.store', () => {
     const qdrant = makeQdrant({
       getCollection: jest.fn().mockResolvedValue({ points_count: 100_000 }),
     });
-    const store = new QdrantSemanticStore({ qdrant, embedder, config: { maxEntriesPerTenant: 100_000 } });
+    const store = new QdrantSemanticStore({
+      qdrant, embedder,
+      config: { maxEntriesPerTenant: 100_000, vectorDimension: 8 },
+    });
     await expect(store.store(input())).rejects.toBeInstanceOf(SemanticStoreCapExceededError);
-    expect(qdrant.upsert).not.toHaveBeenCalled();
+    // Marker writes are excluded — only entry writes count for this assertion
+    const entryUpserts = qdrant.upsert.mock.calls.filter(
+      (c: any[]) => c[1]?.points?.[0]?.id !== SCHEMA_MARKER_ID,
+    );
+    expect(entryUpserts).toHaveLength(0);
   });
 
   it('reinforces an existing entry on dedup hit instead of upserting', async () => {
     const qdrant = makeQdrant({
-      search:   jest.fn().mockResolvedValue([{ id: 'dup-id' }]),
-      retrieve: jest.fn().mockResolvedValue([{
-        id: 'dup-id',
-        payload: {
-          tenant_id: TENANT, user_id: USER, project_id: PROJECT,
-          kind: 'domain-fact', summary: 'a test memory',
-          importance: 0.5, recall_count: 7,
-          created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
-          tags: [],
-        },
-      }]),
+      search: jest.fn().mockResolvedValue([{ id: 'dup-id' }]),
+      // retrieve is hit twice: once for the schema marker, once for the
+      // dedup-hit body. Route by id so both lookups get the right payload.
+      retrieve: jest.fn().mockImplementation(async (_col: string, opts: { ids: string[] }) => {
+        if (opts?.ids?.[0] === SCHEMA_MARKER_ID) {
+          return [{ id: SCHEMA_MARKER_ID, payload: {
+            _kind: 'schema_marker', version: 'v1', vector_dim: 8,
+            created_at: '2026-01-01T00:00:00Z',
+          }}];
+        }
+        return [{
+          id: 'dup-id',
+          payload: {
+            tenant_id: TENANT, user_id: USER, project_id: PROJECT,
+            kind: 'domain-fact', summary: 'a test memory',
+            importance: 0.5, recall_count: 7,
+            created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+            tags: [],
+          },
+        }];
+      }),
     });
-    const store = new QdrantSemanticStore({ qdrant, embedder });
+    const store = new QdrantSemanticStore({ qdrant, embedder, config: { vectorDimension: 8 } });
 
     const entry = await store.store(input());
     expect(entry.id).toBe('dup-id');
-    expect(qdrant.upsert).not.toHaveBeenCalled();
+    // No entry upsert (only the schema marker write would be possible, and
+    // that only fires on fresh creation, which didn't happen here).
+    const entryUpserts = qdrant.upsert.mock.calls.filter(
+      (c: any[]) => c[1]?.points?.[0]?.id !== SCHEMA_MARKER_ID,
+    );
+    expect(entryUpserts).toHaveLength(0);
     expect(qdrant.setPayload).toHaveBeenCalledTimes(1);
   });
 });
@@ -260,6 +314,146 @@ describe('QdrantSemanticStore — purge audit hook', () => {
     expect(qdrant.delete).toHaveBeenCalledTimes(1);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('purge audit hook threw'), expect.any(Error));
     warnSpy.mockRestore();
+  });
+});
+
+describe('QdrantSemanticStore — schema marker (gap #6 + #10)', () => {
+  function markerPoint(payload: Record<string, unknown>) {
+    return [{ id: SCHEMA_MARKER_ID, payload }];
+  }
+
+  it('writes a v1 schema marker when creating a fresh collection', async () => {
+    const qdrant = makeQdrant({
+      // First call (existence check) rejects — collection doesn't exist;
+      // second call (cap check, AFTER creation) returns a healthy stat.
+      getCollection: jest.fn<() => Promise<unknown>>()
+        .mockRejectedValueOnce(new Error('not found'))
+        .mockResolvedValue({ points_count: 0 }),
+    });
+    const store = new QdrantSemanticStore({
+      qdrant, embedder, config: { vectorDimension: 8, embedderId: 'test-embedder' },
+    });
+
+    await store.store(input());
+
+    // Find the upsert call that wrote the marker
+    const markerCall = qdrant.upsert.mock.calls.find((c: any[]) =>
+      c[1]?.points?.[0]?.id === SCHEMA_MARKER_ID,
+    );
+    expect(markerCall).toBeDefined();
+    const markerPayload = (markerCall as any)[1].points[0].payload;
+    expect(markerPayload._kind).toBe('schema_marker');
+    expect(markerPayload.version).toBe('v1');
+    expect(markerPayload.vector_dim).toBe(8);
+    expect(markerPayload.embedder_id).toBe('test-embedder');
+    // createCollection was called on the fresh path
+    expect(qdrant.createCollection).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws SchemaIncompatibleError when the existing marker has a different vector_dim', async () => {
+    const qdrant = makeQdrant({
+      retrieve: jest.fn<() => Promise<unknown>>().mockResolvedValue(markerPoint({
+        _kind: 'schema_marker', version: 'v1', vector_dim: 1536,
+        created_at: '2026-01-01T00:00:00Z',
+      })),
+    });
+    const store = new QdrantSemanticStore({
+      qdrant, embedder, config: { vectorDimension: 768 }, // configured 768, but collection is 1536
+    });
+
+    await expect(store.store(input())).rejects.toBeInstanceOf(SchemaIncompatibleError);
+    await expect(store.store(input())).rejects.toThrow(/vector_dim=1536/);
+  });
+
+  it('throws SchemaIncompatibleError when embedder_id differs from existing marker', async () => {
+    const qdrant = makeQdrant({
+      retrieve: jest.fn<() => Promise<unknown>>().mockResolvedValue(markerPoint({
+        _kind: 'schema_marker', version: 'v1', vector_dim: 8,
+        embedder_id: 'old-embedder',
+        created_at: '2026-01-01T00:00:00Z',
+      })),
+    });
+    const store = new QdrantSemanticStore({
+      qdrant, embedder, config: { vectorDimension: 8, embedderId: 'new-embedder' },
+    });
+
+    await expect(store.store(input())).rejects.toBeInstanceOf(SchemaIncompatibleError);
+    await expect(store.store(input())).rejects.toThrow(/embedder_id='old-embedder'/);
+  });
+
+  it('passes through when an existing marker matches the current config', async () => {
+    const qdrant = makeQdrant({
+      retrieve: jest.fn<() => Promise<unknown>>().mockResolvedValue(markerPoint({
+        _kind: 'schema_marker', version: 'v1', vector_dim: 8,
+        created_at: '2026-01-01T00:00:00Z',
+      })),
+    });
+    const store = new QdrantSemanticStore({
+      qdrant, embedder, config: { vectorDimension: 8 },
+    });
+
+    await store.store(input());
+    // Upsert was called for the entry; the marker write would only happen on
+    // fresh creation, which didn't occur here.
+    const markerCall = qdrant.upsert.mock.calls.find((c: any[]) =>
+      c[1]?.points?.[0]?.id === SCHEMA_MARKER_ID,
+    );
+    expect(markerCall).toBeUndefined();
+  });
+
+  it('warn-and-continue (default) on a legacy collection with no marker', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const qdrant = makeQdrant({
+      // retrieve returns no marker → legacy collection
+      retrieve: jest.fn<() => Promise<unknown>>().mockResolvedValue([]),
+    });
+    const store = new QdrantSemanticStore({
+      qdrant, embedder, config: { vectorDimension: 8 }, // strictSchema not set
+    });
+
+    await expect(store.store(input())).resolves.toBeDefined();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('no schema marker'));
+    // It should also have written a marker on-the-fly
+    const markerCall = qdrant.upsert.mock.calls.find((c: any[]) =>
+      c[1]?.points?.[0]?.id === SCHEMA_MARKER_ID,
+    );
+    expect(markerCall).toBeDefined();
+    warnSpy.mockRestore();
+  });
+
+  it('throws LegacySchemaError under strictSchema on a collection with no marker', async () => {
+    const qdrant = makeQdrant({
+      retrieve: jest.fn<() => Promise<unknown>>().mockResolvedValue([]),
+    });
+    const store = new QdrantSemanticStore({
+      qdrant, embedder, config: { vectorDimension: 8, strictSchema: true },
+    });
+
+    await expect(store.store(input())).rejects.toBeInstanceOf(LegacySchemaError);
+    await expect(store.store(input())).rejects.toThrow(/no schema marker/);
+  });
+
+  it('schema marker is filtered out of recall results (no tenant_id field)', async () => {
+    // The store's recall filters by tenant_id; the marker has no tenant_id,
+    // so even without an explicit must_not, it's already excluded.
+    const qdrant = makeQdrant({
+      search: jest.fn<() => Promise<unknown>>().mockResolvedValue([
+        // Legitimate result
+        { id: 'real-1', score: 0.9, payload: {
+          tenant_id: TENANT, kind: 'domain-fact', summary: 'real',
+          importance: 0.5, recall_count: 0,
+          created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+        }},
+      ]),
+    });
+    const store = new QdrantSemanticStore({ qdrant, embedder, config: { vectorDimension: 8 } });
+    const results = await store.recall({ tenantId: TENANT, query: 'x' });
+    expect(results).toHaveLength(1);
+    expect(results[0]!.id).toBe('real-1');
+
+    // The recall filter must include tenant_id
+    const [, body] = qdrant.search.mock.calls[0];
+    expect(body.filter.must).toContainEqual({ key: 'tenant_id', match: { value: TENANT } });
   });
 });
 

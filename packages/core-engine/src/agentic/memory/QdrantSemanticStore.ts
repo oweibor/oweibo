@@ -93,6 +93,20 @@ export interface QdrantSemanticStoreConfig {
    * Must match the embedder's output dimension.
    */
   readonly vectorDimension: number;
+  /**
+   * Identifier of the embedder model — recorded in the schema marker so
+   * future callers can detect embedder swaps even when dimensions happen
+   * to match. Free-form (e.g. `'ollama:nomic-embed-text'`).
+   */
+  readonly embedderId?: string;
+  /**
+   * Strict schema mode — when true, throw LegacySchemaError on any
+   * collection that exists but has no schema marker (legacy data),
+   * blocking writes that would extend pollution. When false (default),
+   * write the marker on-the-fly and emit a console.warn so operators
+   * notice. Read paths are always permissive.
+   */
+  readonly strictSchema?: boolean;
 }
 
 const DEFAULT_KIND_BOOSTS: Partial<Record<MemoryKind, number>> = {
@@ -135,6 +149,55 @@ export class SemanticStoreCapExceededError extends Error {
     );
     this.name = 'SemanticStoreCapExceededError';
   }
+}
+
+/**
+ * Thrown when a tenant's existing Qdrant collection has a schema that's
+ * incompatible with the current store config — typically the collection
+ * was created with a different embedder dimension than this process is
+ * configured to produce. Continuing would silently corrupt search results.
+ */
+export class SchemaIncompatibleError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SchemaIncompatibleError';
+  }
+}
+
+/**
+ * Thrown (in strict mode) when a collection exists but has no schema
+ * marker — the entries predate this store's payload schema and recall
+ * results will silently default missing fields. Set `strictSchema: false`
+ * to downgrade this to a one-time warning during which the marker is
+ * written and operation continues.
+ */
+export class LegacySchemaError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'LegacySchemaError';
+  }
+}
+
+// ─── Schema marker ────────────────────────────────────────────────────────────
+
+/** Fixed UUID. The schema marker point is identical across every tenant. */
+const SCHEMA_MARKER_ID  = '00000000-0000-4000-8000-000000000001';
+const SCHEMA_VERSION_V1 = 'v1';
+
+/**
+ * The marker payload sits in the per-tenant collection but carries NO
+ * `tenant_id` field. That keeps recall()'s `tenant_id`-must filter from
+ * surfacing it as a result, and makes purgeTenant/purgeUser/purgeProject
+ * preserve it (deletion would force the next call to re-detect the
+ * collection as legacy).
+ */
+interface SchemaMarkerPayload {
+  readonly _kind:        'schema_marker';
+  readonly version:      string;
+  readonly vector_dim:   number;
+  readonly embedder_id?: string;
+  readonly created_at:   string;
+  readonly _source:      string;
 }
 
 // ─── Deps ─────────────────────────────────────────────────────────────────────
@@ -492,20 +555,133 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
    * auto-provisions the collection rather than crashing with a 404.
    */
   private async ensureCollection(collection: string): Promise<void> {
+    let exists = true;
     try {
       await this.qcall(() => this.deps.qdrant.getCollection(collection));
     } catch (err) {
       if (err instanceof MemoryCircuitOpenError) throw err;
-      // Collection doesn't exist — create it with cosine distance vectors.
+      exists = false;
+    }
+
+    if (!exists) {
+      // Create the collection with cosine vectors of the configured dim,
+      // then write the schema marker so future ensureCollection calls
+      // can validate compatibility instead of guessing.
       try {
         await this.qcall(() => this.deps.qdrant.createCollection(collection, {
           vectors: { size: this.config.vectorDimension, distance: 'Cosine' },
         }));
       } catch (createErr) {
         if (createErr instanceof MemoryCircuitOpenError) throw createErr;
-        // Race condition: another process created it between our check and create.
-        // Safe to ignore — the collection exists now.
+        // Race condition: another process created it between check and
+        // create. The schema marker we're about to write may already
+        // exist; writeSchemaMarker is idempotent (same fixed UUID).
       }
+      await this.writeSchemaMarker(collection);
+      return;
+    }
+
+    // Existing collection: validate the schema marker.
+    const marker = await this.readSchemaMarker(collection);
+
+    if (!marker) {
+      // No marker → legacy collection (created before schema versioning).
+      // Strict mode rejects writes that would extend the pollution; default
+      // mode warns once, writes a marker so we don't keep warning, and
+      // proceeds. Reads continue to tolerate missing fields via
+      // toMemoryEntry's defaults.
+      if (this.config.strictSchema) {
+        throw new LegacySchemaError(
+          `Qdrant collection '${collection}' has no schema marker — likely ` +
+          `holds legacy payloads. Migrate or purge before enabling strict mode.`,
+        );
+      }
+      console.warn(
+        `[QdrantSemanticStore] collection '${collection}' has no schema marker; ` +
+        `treating as legacy and writing a v1 marker. Recall results may include ` +
+        `entries with default-valued kind/importance until the legacy entries are purged.`,
+      );
+      await this.writeSchemaMarker(collection);
+      return;
+    }
+
+    if (marker.vector_dim !== this.config.vectorDimension) {
+      throw new SchemaIncompatibleError(
+        `Qdrant collection '${collection}' was created with vector_dim=${marker.vector_dim}; ` +
+        `current embedder produces vectors of dim=${this.config.vectorDimension}. ` +
+        `Embedder swap detected. Purge the tenant and re-create with the correct ` +
+        `embedder, or switch back to the original embedder.`,
+      );
+    }
+
+    if (this.config.embedderId && marker.embedder_id && marker.embedder_id !== this.config.embedderId) {
+      throw new SchemaIncompatibleError(
+        `Qdrant collection '${collection}' was created with embedder_id='${marker.embedder_id}'; ` +
+        `current is '${this.config.embedderId}'. Embeddings produced by different models are ` +
+        `not interchangeable even when their dimensions match.`,
+      );
+    }
+  }
+
+  /**
+   * readSchemaMarker — fetch the per-collection schema marker payload.
+   * Returns null when the marker point is absent (legacy collection or
+   * fresh creation in progress).
+   */
+  private async readSchemaMarker(collection: string): Promise<SchemaMarkerPayload | null> {
+    try {
+      const points = await this.qcall(() => this.deps.qdrant.retrieve(collection, {
+        ids: [SCHEMA_MARKER_ID], with_payload: true,
+      })) as Array<{ id: string; payload?: Partial<SchemaMarkerPayload> }>;
+      const p = points[0];
+      if (!p || !p.payload || p.payload._kind !== 'schema_marker') return null;
+      const { version, vector_dim, created_at, embedder_id } = p.payload;
+      if (typeof version !== 'string' || typeof vector_dim !== 'number' || typeof created_at !== 'string') {
+        return null;
+      }
+      return {
+        _kind:      'schema_marker',
+        version,
+        vector_dim,
+        created_at,
+        ...(embedder_id ? { embedder_id } : {}),
+        _source:    SOURCE_TAG,
+      };
+    } catch (err) {
+      if (err instanceof MemoryCircuitOpenError) throw err;
+      return null;
+    }
+  }
+
+  /**
+   * writeSchemaMarker — upsert the per-collection schema marker. Idempotent:
+   * uses the fixed SCHEMA_MARKER_ID so repeated calls overwrite in place.
+   * The marker carries no `tenant_id`, so recall (which filters by tenant_id)
+   * never surfaces it as a result, and purge* won't delete it.
+   */
+  private async writeSchemaMarker(collection: string): Promise<void> {
+    const dim = this.config.vectorDimension;
+    // A unit vector along the first axis — non-zero (cosine-safe), deterministic,
+    // and far enough from real embedded text that it won't dedup-collide.
+    const vector = Array(dim).fill(0);
+    vector[0] = 1;
+    const payload: SchemaMarkerPayload = {
+      _kind:      'schema_marker',
+      version:    SCHEMA_VERSION_V1,
+      vector_dim: dim,
+      ...(this.config.embedderId ? { embedder_id: this.config.embedderId } : {}),
+      created_at: new Date().toISOString(),
+      _source:    SOURCE_TAG,
+    };
+    try {
+      await this.qcall(() => this.deps.qdrant.upsert(collection, {
+        wait:   true,
+        points: [{ id: SCHEMA_MARKER_ID, vector, payload }],
+      }));
+    } catch (err) {
+      if (err instanceof MemoryCircuitOpenError) throw err;
+      // Best-effort: marker is a hint, not a correctness requirement. Next
+      // ensureCollection will re-attempt.
     }
   }
 

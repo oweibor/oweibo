@@ -88,6 +88,14 @@ export interface MemoryWiringConfig {
     readonly failureThreshold?: number;
     readonly cooldownMs?:       number;
   };
+  /**
+   * When true, the store throws LegacySchemaError on any pre-existing
+   * Qdrant collection that lacks a schema marker (i.e. holds legacy
+   * payloads). Default false: warn, write a marker, continue. Useful in
+   * environments that have completed legacy migration and want a hard
+   * guarantee against new pollution.
+   */
+  readonly strictSchema?: boolean;
   readonly schedules?: {
     readonly decayMs?:        number; // default: 7d
     readonly consolidatorMs?: number; // default: 1d
@@ -172,10 +180,18 @@ export async function wireMemorySubsystem(cfg: MemoryWiringConfig): Promise<Memo
       });
 
   if (qdrant && embedder) {
+    // Build the store config — only set keys that are actually configured
+    // so the store's defaults (vectorDimension=1536, strictSchema=false)
+    // apply when the caller hasn't opted in.
+    const storeConfig: Record<string, unknown> = {};
+    if (cfg.vectorDimension)   storeConfig['vectorDimension'] = cfg.vectorDimension;
+    if (cfg.embedModel)        storeConfig['embedderId']      = cfg.embedModel;
+    if (cfg.strictSchema)      storeConfig['strictSchema']    = cfg.strictSchema;
+
     semantic = new QdrantSemanticStore({
       qdrant,
       embedder,
-      ...(cfg.vectorDimension ? { config: { vectorDimension: cfg.vectorDimension } as never } : {}),
+      ...(Object.keys(storeConfig).length > 0 ? { config: storeConfig as never } : {}),
       ...(breaker ? { breaker } : {}),
       ...(cfg.purgeAuditor ? { audit: cfg.purgeAuditor } : {}),
     });

@@ -16,6 +16,8 @@ const schema = z.object({
   // BetterAuth
   BETTER_AUTH_SECRET:   z.string().min(32),
   BETTER_AUTH_BASE_URL: z.string().default('http://localhost:3110'),
+  // Shared secret for machine-to-machine internal calls (e.g. agent-token mint)
+  INTERNAL_SERVICE_KEY: z.string().min(32).optional(),
 });
 
 function parseConfig() {

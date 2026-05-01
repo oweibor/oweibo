@@ -94,6 +94,14 @@ const _stubs = {
     '../../config':                      configStub,
     '../services/queue':                 queueStub,
     '../middleware/auth':                (req, res, next) => { req.tenantId = 'tenant-sup'; next(); },
+    '@oweibo/api-middleware':            {
+        authenticate:         () => (req, _res, next) => { req.tenantId = 'tenant-sup'; req.principal = { ctx: { tenantId: 'tenant-sup' } }; next(); },
+        requireScopes:        () => (_req, _res, next) => next(),
+        requireTenantMatch:   () => (_req, _res, next) => next(),
+        buildLegacyTokenMap:  () => ({}),
+        idempotent:           () => (_req, _res, next) => next(),
+        audit:                () => (_req, _res, next) => next(),
+    },
     '../services/recovery/ledger':       { getLedgerEntry: () => ({}), saveLedgerEntry: () => {}, resetLedger: () => true, evaluateWall: () => false },
     'uuid':                              uuidMod,
 };

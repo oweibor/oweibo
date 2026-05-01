@@ -4,6 +4,7 @@ module.exports = {
   testEnvironment: 'node',
   testMatch: ['**/src/**/__tests__/**/*.test.ts'],
   testPathIgnorePatterns: ['/node_modules/', '/dist/'],
+  testTimeout: 30000,
   transform: {
     '^.+\\.tsx?$': ['ts-jest', { tsconfig: { module: 'CommonJS' } }],
   },

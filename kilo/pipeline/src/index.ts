@@ -62,25 +62,47 @@ const stagingRoutes = require('./routes/staging');
 const quarantineRoutes = require('./routes/quarantine');
 const scrapeRoutes = require('./routes/scrape');
 
-// Security middleware
-const { ipLimiter } = require('./middleware/rateLimiter');
+// Shared middleware from @oweibo/api-middleware
+const { ipLimiter, requestId, buildLegacyTokenMap, legacyDeprecationHeaders, authenticate } = require('@oweibo/api-middleware');
+
+// Phase 3: NATS + outbox + quota + Redis
+const { initNats, drainNats } = require('./services/nats');
+const { startOutboxPublisher, stopOutboxPublisher } = require('./services/outboxPublisher');
+const { initQuota } = require('./services/quota');
+
+// Build the legacy token map once at startup from TENANT_TOKENS / KILO_API_TOKEN
+const legacyTokenMap = buildLegacyTokenMap();
+
+// JWKS config for JWT verification — identity service must be reachable
+const jwksCfg = {
+  jwksUri:  config.IDENTITY_JWKS_URI || 'http://localhost:3110/.well-known/jwks.json',
+  issuer:   config.JWT_ISSUER        || 'https://identity.oweibo.io',
+  audience: config.JWT_AUDIENCE      || 'oweibo-api',
+};
 
 const app = express();
 
 // --- Middleware ---
 app.use(express.json({ limit: '1mb' }));
 
+// Correlation ID + W3C traceparent on every request (before auth so even 401s are correlated)
+app.use(requestId);
+
 // Pre-auth IP rate limiter — applied globally before any route processing.
-// /health and /metrics are exempt (see rateLimiter.ts skip fn).
+// /health, /metrics, /livez are exempt (see rateLimit.ts skip fn).
 app.use(ipLimiter);
 
-// Request logging — includes tenant_id once auth middleware has run
-app.use((req, _res, next) => {
-    if (req.path !== '/health') {
+// Emit Sunset/Deprecation headers when legacy static tokens are in use
+app.use(legacyDeprecationHeaders);
+
+// Request logging — includes request_id and principal sub once auth has run
+app.use((req: any, _res: any, next: any) => {
+    if (req.path !== '/health' && req.path !== '/healthz') {
         logger.debug('Request', {
-            method:    req.method,
-            path:      req.path,
-            tenant_id: req.tenantId || 'unauthenticated',
+            method:     req.method,
+            path:       req.path,
+            request_id: req.requestId,
+            principal:  req.principal?.sub ?? 'unauthenticated',
         });
     }
     next();
@@ -498,6 +520,20 @@ async function main() {
         port: config.PORT,
     });
 
+    // Initialize Phase 3 services (NATS, Redis quota)
+    try {
+        const Redis = require('ioredis');
+        const redis = new Redis(config.REDIS_URL, { lazyConnect: true, enableOfflineQueue: false });
+        redis.on('error', (err) => logger.warn('[redis] connection error', { error: err.message }));
+        await redis.connect().catch(() => logger.warn('[redis] connect failed — quota service degraded'));
+        initQuota(redis);
+
+        await initNats().catch(err => logger.warn('[nats] connect failed — event bus degraded', { error: err.message }));
+        startOutboxPublisher();
+    } catch (err) {
+        logger.warn('Phase 3 service init failed — continuing in degraded mode', { error: err.message });
+    }
+
     // Initialize services
     try {
         logger.info('Initializing Qdrant client...');
@@ -567,6 +603,8 @@ async function main() {
     const shutdown = async (signal) => {
         logger.info(`${signal} received — shutting down gracefully`);
 
+        stopOutboxPublisher();
+        await drainNats().catch(() => {});
         watcher.stop();
 
         server.close(() => {

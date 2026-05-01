@@ -200,6 +200,64 @@ module.exports = {
       from: { path: '^packages/db' },
       to:   { path: '^apps/identity' },
     },
+
+    // ── Phase 2: api-middleware isolation rules ───────────────────────────
+
+    {
+      name: 'api-middleware-cannot-import-core-engine',
+      severity: 'error',
+      comment: 'packages/api-middleware is a pure HTTP-layer package. ' +
+               'It must not import core-engine internals — only core-contracts and packages/db.',
+      from: { path: '^packages/api-middleware' },
+      to:   { path: '^packages/core-engine' },
+    },
+    {
+      name: 'api-middleware-cannot-import-identity',
+      severity: 'error',
+      comment: 'packages/api-middleware must not import apps/identity. ' +
+               'JWT verification is done via JWKS endpoint — no direct service coupling.',
+      from: { path: '^packages/api-middleware' },
+      to:   { path: '^apps/identity' },
+    },
+    {
+      name: 'kilo-pipeline-cannot-import-identity',
+      severity: 'error',
+      comment: 'kilo/pipeline must not import apps/identity directly. ' +
+               'Auth is delegated to packages/api-middleware (authenticate middleware).',
+      from: { path: '^kilo/pipeline', pathNot: '/__tests__/' },
+      to:   { path: '^apps/identity' },
+    },
+
+    // ── Phase 6: observability package isolation ─────────────────────────
+
+    {
+      name: 'observability-cannot-import-business-logic',
+      severity: 'error',
+      comment: 'packages/observability is a cross-cutting utility — it must not import ' +
+               'from core-engine, identity, kilo-pipeline, or api-middleware. ' +
+               'It depends only on @opentelemetry/* and pino.',
+      from: { path: '^packages/observability' },
+      to: {
+        path: '^(packages/core-engine|packages/api-middleware|apps/identity|kilo/pipeline)',
+      },
+    },
+    {
+      name: 'no-direct-llm-provider-outside-base-client',
+      severity: 'error',
+      comment: 'All LLM calls must flow through BaseLLMClient.generate() to guarantee ' +
+               'OTel GenAI span instrumentation. Direct imports of provider clients bypass spans.',
+      from: {
+        path:    '^kilo/pipeline/src/',
+        pathNot: [
+          '^kilo/pipeline/src/services/llm/BaseLLMClient',
+          '^kilo/pipeline/src/services/llm/(Ollama|OpenAI|Anthropic|DeepSeek|OpenRouter)Client',
+          '/__tests__/',
+        ],
+      },
+      to: {
+        path: '^kilo/pipeline/src/services/llm/(Ollama|OpenAI|Anthropic|DeepSeek|OpenRouter)Client',
+      },
+    },
   ],
   options: {
     doNotFollow: {

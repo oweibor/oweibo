@@ -132,7 +132,12 @@ oweibo/
 | Redis | 6379 | Idempotency, rate-limiting, JWKS cache, token revocations |
 | NATS JetStream | 4222 | Task bus, audit outbox drain |
 | Postgres 16 | 5432 | `betterauth.*` + `oweibo.*` (RLS enforced) |
-| Langfuse | 3000 | LLM call tracing and prompt management |
+| Prometheus | 9090 | Metrics backend (remote write from OTel collector) |
+| Grafana | 3000 | Unified observability UI (traces, metrics, logs) |
+| Tempo | 3200 | Distributed tracing backend |
+| Alertmanager | 9093 | Alert routing (P0 → Matrix, P2+ → email) |
+| OTel Collector | 4317/4318 | OTLP receiver; fans out to Tempo, Prometheus, Loki |
+| Langfuse | — | LLM call tracing and prompt management (external) |
 
 Internal ports (5432, 6379, 4222, 6333, 9100) are bound to localhost or the internal network only. Only Caddy/Traefik is exposed on 443.
 
@@ -455,13 +460,65 @@ pnpm --filter @oweibo/identity dev
 pnpm --filter kilo-pipeline dev
 ```
 
-### 6. Submit a task
+### 6. Log in and submit a task
 
 ```bash
+# Authenticate — stores credentials in ~/.oweibo/credentials
+oweibo login --email you@example.com
+
+# Submit a task and stream events
+oweibo task submit "Add a /healthz endpoint to the Express app" --wait
+
+# Or use the REST API directly
 curl -X POST http://localhost:3100/task \
   -H "Authorization: Bearer $OWEIBO_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"instruction": "Add a /healthz endpoint to the Express app in workspace/my-project"}'
+```
+
+### CLI quick-reference
+
+```text
+# Auth
+oweibo login             # email + password → ~/.oweibo/credentials
+oweibo logout            # clear credentials
+oweibo whoami            # show current user
+
+# Platform admin (requires platform_admin role)
+oweibo platform tenant list
+oweibo platform tenant create --name Acme --slug acme
+oweibo platform tenant suspend <tenantId>
+oweibo platform user list
+oweibo platform user role <userId> platform_admin
+
+# Tenant admin
+oweibo tenant member list [--tenant <id>]
+oweibo tenant member invite --email alice@acme.com --roles tenant_developer
+oweibo tenant key create --name ci-key --scopes tasks:write,staging:read
+oweibo tenant settings set --trust graduated
+
+# Tasks
+oweibo task submit "build me a Next.js app" --wait
+oweibo task list [--status running]
+oweibo task status <taskId>
+oweibo task pause  <taskId>
+oweibo task cancel <taskId>
+
+# Staging, quarantine, HITL
+oweibo staging list
+oweibo staging approve <id>
+oweibo quarantine list
+oweibo quarantine override <id> --reason "reviewed safe"
+oweibo hitl list
+oweibo hitl approve <requestId> --task <taskId>
+
+# Scraping
+oweibo scrape start https://example.com --type general
+oweibo scrape list
+oweibo scrape results <jobId>
+
+# Usage
+oweibo ledger list [--date 2026-04-29]
 ```
 
 ---
@@ -500,14 +557,52 @@ curl -X POST http://localhost:3100/task \
 | `OPENAI_API_KEY` | Optional OpenAI API key |
 | `ANTHROPIC_API_KEY` | Optional Anthropic API key |
 
-### Observability
+### Admin web (`apps/admin-web`)
 
-| Variable | Description |
-|---|---|
-| `LANGFUSE_PUBLIC_KEY` | Langfuse project public key |
-| `LANGFUSE_SECRET_KEY` | Langfuse project secret key |
-| `LANGFUSE_BASE_URL` | Langfuse host URL |
-| `METRICS_TOKEN` | Bearer token protecting the `/metrics` endpoint |
+| Variable | Description | Default |
+|---|---|---|
+| `IDENTITY_URL` | Identity service base URL | `http://localhost:3110` |
+| `PIPELINE_URL` | Pipeline API base URL | `http://localhost:3100` |
+| `NODE_ENV` | `production` sets `Secure` flag on session cookies | `development` |
+
+Session cookies: `oweibo_session` (access token, 15 min, httpOnly + sameSite=strict) and `oweibo_refresh` (30 days).
+
+### CLI (Phase 4)
+
+| Variable | Description | Default |
+|---|---|---|
+| `OWEIBO_API_URL` | Pipeline API base URL | `http://localhost:3100/api/v1` |
+| `OWEIBO_IDENTITY_URL` | Identity service base URL | `http://localhost:3110` |
+| `OWEIBO_API_KEY` | Bearer token (overrides credentials file) | — |
+| `OWEIBO_TENANT_ID` | Default tenant ID | — |
+
+Credentials are stored in `~/.oweibo/credentials` (mode 0600). `login` stores both the access token (15 min) and the refresh token (30 days); the client refreshes transparently before each expired request.
+
+### Message bus and cache (Phase 3)
+
+| Variable | Description | Default |
+|---|---|---|
+| `NATS_URL` | NATS JetStream server URL | `nats://localhost:4222` |
+| `REDIS_URL` | Redis connection URL (idempotency, RL, quotas) | `redis://localhost:6379` |
+| `AGENT_TOKEN_ENDPOINT` | Identity service internal agent-token mint URL | `http://localhost:3110/internal/agent-token` |
+| `INTERNAL_SERVICE_KEY` | Shared secret for machine-to-machine calls (≥32 chars) | — |
+
+### Observability (Phase 6)
+
+| Variable | Description | Default |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTel collector gRPC endpoint | `http://otelcol:4317` |
+| `OTEL_SERVICE_NAME` | Service name attached to all spans | per-service |
+| `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | Set `false` in production (PII policy §15.6.1.4) | `false` |
+| `LANGFUSE_PUBLIC_KEY` | Langfuse project public key | — |
+| `LANGFUSE_SECRET_KEY` | Langfuse project secret key | — |
+| `LANGFUSE_BASE_URL` | Langfuse host URL | — |
+| `METRICS_TOKEN` | Bearer token protecting the `/metrics` endpoint | — |
+| `GF_GRAFANA_USER` | Grafana admin username | `admin` |
+| `GF_GRAFANA_PASSWORD` | Grafana admin password | `changeme` |
+| `SMTP_HOST` | Alertmanager SMTP relay host | `localhost:25` |
+| `MATRIX_WEBHOOK_URL` | Matrix webhook for P0 alerts | — |
+| `ONCALL_WEBHOOK_URL` | On-call webhook for P0 alerts | — |
 
 ---
 
@@ -586,6 +681,9 @@ Enforced by dep-cruiser (`.dependency-cruiser.js`). The build fails on any viola
 | `no-direct-prisma-outside-db-package` | All DB access flows through `withTenantContext()` in `packages/db` |
 | `identity-service-cannot-import-core-engine` | `apps/identity` is auth-only; no engine internals |
 | `db-package-cannot-import-identity` | No circular identity↔db dependency |
+| `api-middleware-cannot-import-core-engine` | `packages/api-middleware` is HTTP-layer only |
+| `api-middleware-cannot-import-identity` | JWT verification via JWKS endpoint — no direct service coupling |
+| `kilo-pipeline-cannot-import-identity` | Auth delegated to `packages/api-middleware`; no direct identity import |
 | _(+ 7 more)_ | Specialist agent isolation, SynthesisAgent isolation, browser-tool boundaries |
 
 ---
@@ -596,11 +694,11 @@ Enforced by dep-cruiser (`.dependency-cruiser.js`). The build fails on any viola
 |---|---|---|
 | **Phase 0** | P0 security hardening: path traversal defence, SSRF guard, rate limiting, sandbox hardening (CapDrop/ReadonlyRootfs), constant-time auth, Qdrant circuit breaker | **Done** |
 | **Phase 1** | Identity foundation: BetterAuth IdP, RS256 JWKS, Postgres RLS schema, `withTenantContext` chokepoint, platform/tenant management API, `check-rls` lint gate | **Done** |
-| Phase 2 | Unified auth/authz middleware (`packages/api-middleware`); both gateways migrated; legacy token bridge; `requestId` + `traceparent` propagation | Pending |
-| Phase 3 | Endpoint refactor; NATS JetStream replaces in-memory queue; outbox saga; agent token wiring; quota service; idempotency keys | Pending |
-| Phase 4 | Robust CLI: all operationIds, device-code login, `~/.oweibo/credentials`, bidirectional parity CI gate | Pending |
-| Phase 5 | Web admin UI: `apps/admin-web` Next.js 15 RSC, RBAC route groups, tenant switcher, Playwright e2e | Pending |
-| Phase 6 | Audit middleware on all privileged routes; GDPR erasure; OTel GenAI semantic conventions; Langfuse/Tempo/Loki/Prometheus | Pending |
+| **Phase 2** | Unified auth/authz middleware (`packages/api-middleware`); both gateways migrated; legacy token bridge; `requestId` + `traceparent` propagation | **Done** |
+| **Phase 3** | NATS JetStream event bus + file-based outbox publisher; agent JWT wiring in sandbox; Redis-backed quota service; `requireScopes` on every route; `assertSafeTarget` SSRF guard in shared middleware; internal agent-token mint endpoint | **Done** |
+| **Phase 4** | Robust CLI: all resource-family subcommands; `login`/`logout`/`whoami`; `~/.oweibo/credentials` refresh-token cache; bidirectional parity CI gate; 40+ integration tests | **Done** |
+| **Phase 5** | Web admin UI: `apps/admin-web` Next.js 15 RSC, edge-runtime RBAC middleware, tenant switcher with JWT re-issue, Playwright e2e for platform_admin + tenant_admin journeys | **Done** |
+| **Phase 6** | Audit middleware on all privileged routes (16 actions); GDPR erasure endpoint; `packages/observability` (GenAI OTel semantic conventions, span helpers, pino logger); OTel collector → Tempo + Loki + Prometheus + Grafana + Alertmanager; `no-direct-llm-call` ESLint rule; CI conformance test | **Done** |
 | Phase 7 | Launch hardening: k6 load test (500 RPS sustained), chaos testing, DR rehearsal, external pentest | Pending |
 | Phase 8 | Legacy `TENANT_TOKENS` sunset: 60-day migration window, import as real `api_keys` rows | Pending |
 | Phase 10+ | Firecracker microVMs, Postgres hash-partitioning, multi-region, self-hosted edge tier | Deferred |

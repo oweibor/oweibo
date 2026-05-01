@@ -441,3 +441,26 @@ function buildModuleBoundaries(
     };
   });
 }
+
+function detectLanguage(filePath: string): CodeLanguage {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case '.ts': case '.tsx': return 'typescript';
+    case '.js': case '.jsx': case '.mjs': case '.cjs': return 'javascript';
+    case '.py': return 'python';
+    case '.go': return 'go';
+    case '.rs': return 'rust';
+    case '.java': return 'java';
+    default: return 'unknown' as CodeLanguage;
+  }
+}
+
+function classifyFilesByExtension(files: readonly string[]): Record<CodeLanguage, string[]> {
+  const result: Record<string, string[]> = {};
+  for (const f of files) {
+    const lang = detectLanguage(f);
+    if (!result[lang]) result[lang] = [];
+    result[lang].push(f);
+  }
+  return result as Record<CodeLanguage, string[]>;
+}

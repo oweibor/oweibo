@@ -68,7 +68,7 @@ ${wrapUntrusted('rule', inv.rule)}`;
             violations.push(`Violation of "${inv.rule}": ${text}`);
             if (inv.id) failedInvariantIds.push(inv.id);
 
-            const quarantineDir = '/var/kilo/quarantine/invariants';
+            const quarantineDir = path.join(process.env['QUARANTINE_BASE'] || '/var/kilo/quarantine', 'invariants');
             fs.mkdirSync(quarantineDir, { recursive: true });
             try {
                 fs.writeFileSync(

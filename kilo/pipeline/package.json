@@ -16,10 +16,14 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "@oweibo/core-contracts": "workspace:*",
-    "@oweibo/core-engine": "workspace:*",
+    "@oweibo/api-middleware":  "workspace:*",
+    "@oweibo/observability":   "workspace:*",
+    "@oweibo/core-contracts":  "workspace:*",
+    "@oweibo/core-engine":     "workspace:*",
     "@qdrant/js-client-rest": "^1.12.0",
     "@xenova/transformers": "^2.17.0",
+    "ioredis": "^5.3.2",
+    "nats": "^2.28.0",
     "chokidar": "^3.6.0",
     "cheerio": "^1.0.0",
     "dockerode": "^4.0.0",

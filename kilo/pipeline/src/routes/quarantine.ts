@@ -17,8 +17,9 @@ const fs = require('fs');
 const path = require('path');
 const logger = require('../services/logger');
 const promotionEngine = require('../services/promotion/engine');
-const auth = require('../middleware/auth');
+const config = require('../config');
 const { sanitizeSegment } = require('../services/safePath');
+const { authenticate, requireScopes, buildLegacyTokenMap, audit } = require('@oweibo/api-middleware');
 
 const router = express.Router();
 
@@ -73,8 +74,10 @@ function readQuarantineFile(itemPath) {
  * Items lacking a `tenant_id` field are skipped (fail-closed; backfill in
  * Phase 1 platform migration).
  */
-router.get('/', auth, (req, res) => {
-    const tenantId = (req as any).tenantId;
+const _auth = authenticate({ jwksUri: config.IDENTITY_JWKS_URI, issuer: config.JWT_ISSUER, audience: config.JWT_AUDIENCE }, buildLegacyTokenMap());
+
+router.get('/', _auth, requireScopes('quarantine:read'), (req, res) => {
+    const tenantId = (req as any).principal?.ctx?.tenantId || (req as any).tenantId;
     const allItems = [];
 
     if (!fs.existsSync(QUARANTINE_BASE)) {
@@ -106,8 +109,8 @@ router.get('/', auth, (req, res) => {
  * embedded in the item — cross-tenant override returns 404 to avoid
  * enumeration.
  */
-router.post('/:id/override', auth, async (req, res) => {
-    const tenantId = (req as any).tenantId;
+router.post('/:id/override', _auth, requireScopes('quarantine:override'), audit('quarantine.override', { resourceType: 'quarantine_item' }), async (req, res) => {
+    const tenantId = (req as any).principal?.ctx?.tenantId || (req as any).tenantId;
     const { action } = req.body || {}; // 'promote' or 'dismiss'
 
     let id;

@@ -16,7 +16,7 @@ import { ConflictResolver } from './ConflictResolver.js';
 import { tracedToolCall } from '../observability/LangfuseTracer.js';
 import { InstrumentedLLMClient } from './InstrumentedLLMClient.js';
 import type { ILLMClient } from '@oweibo/core-contracts';
-import type { LongTermMemoryStore } from './LongTermMemoryStore.js';
+import type { ISemanticMemoryStore } from '@oweibo/core-contracts';
 import type { PolicyEngine } from '../governance/PolicyEngine.js';
 import type { AnomalyDetector } from '../observability/AnomalyDetector.js';
 import type { ImmutableAuditLogger } from '../governance/ImmutableAuditLogger.js';
@@ -49,7 +49,7 @@ export class SwarmCoordinator {
 
   constructor(
     private readonly baseLlm:             { baseUrl: string; model: string },
-    private readonly memory:              LongTermMemoryStore,
+    private readonly memory:              ISemanticMemoryStore,
     private readonly policy:              PolicyEngine,
     private readonly anomaly:             AnomalyDetector,
     private readonly auditLogger:         ImmutableAuditLogger,

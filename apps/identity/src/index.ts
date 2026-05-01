@@ -14,9 +14,12 @@ import { toNodeHandler } from 'better-auth/node';
 import { config } from './config.js';
 import { initKeys } from './services/jwks.js';
 import { auth } from './services/betterAuth.js';
-import jwksRouter     from './routes/jwks.js';
-import platformRouter from './routes/platform.js';
-import tenantRouter   from './routes/tenant.js';
+import jwksRouter       from './routes/jwks.js';
+import platformRouter   from './routes/platform.js';
+import tenantRouter     from './routes/tenant.js';
+import agentTokenRouter from './routes/agentToken.js';
+import authTokenRouter  from './routes/authToken.js';
+import gdprRouter       from './routes/gdpr.js';
 
 const app = express();
 app.use(express.json({ limit: '256kb' }));
@@ -32,6 +35,15 @@ app.use(platformRouter);
 
 // Tenant management
 app.use('/api/v1/tenants', tenantRouter);
+
+// CLI authentication: token mint, refresh, me, logout
+app.use(authTokenRouter);
+
+// GDPR erasure
+app.use(gdprRouter);
+
+// Internal machine-to-machine: agent token minting (not exposed via external proxy)
+app.use(agentTokenRouter);
 
 // Liveness / readiness
 app.get('/healthz', (_req, res) => res.json({ status: 'ok' }));

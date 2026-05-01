@@ -5,8 +5,16 @@
  */
 import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { generateKeyPair, exportPKCS8, exportSPKI } from 'jose';
+import type { KeyLike } from 'jose';
 
-// We mock the config and the jwks module before importing jwt.ts
+// Module-level variables assigned in beforeAll.
+// The mock factory closes over these lazily — by the time any test calls
+// getPrivateKey()/getPublicKey() the keys are already set.
+let _privateKey: KeyLike;
+let _publicKey:  KeyLike;
+
+// vi.mock() is hoisted by Vitest so the factory must not reference variables
+// that aren't yet initialised. Use lazy getters instead.
 vi.mock('../config.js', () => ({
   config: {
     JWT_ISSUER:       'https://test.identity.oweibo.io',
@@ -16,29 +24,25 @@ vi.mock('../config.js', () => ({
   },
 }));
 
-let mintAccessToken: (p: any) => Promise<string>;
+vi.mock('../services/jwks.js', () => ({
+  initKeys:      vi.fn().mockResolvedValue(undefined),
+  getPrivateKey: () => _privateKey,
+  getPublicKey:  () => _publicKey,
+  getJwks:       () => ({ keys: [] }),
+}));
+
+let mintAccessToken:  (p: any) => Promise<string>;
 let verifyAccessToken: (t: string) => Promise<any>;
-let mintAgentToken: (opts: any) => Promise<string>;
-let initKeys: () => Promise<void>;
-let getPrivateKey: () => any;
-let getPublicKey: () => any;
+let mintAgentToken:   (opts: any) => Promise<string>;
 
 beforeAll(async () => {
   // Generate a real RS256 keypair for tests
-  const { privateKey, publicKey } = await generateKeyPair('RS256');
-  const privatePem = await exportPKCS8(privateKey);
-  const publicPem  = await exportSPKI(publicKey);
+  const kp = await generateKeyPair('RS256');
+  _privateKey = kp.privateKey;
+  _publicKey  = kp.publicKey;
 
-  // Patch the jwks module to use the test keypair
-  vi.mock('../services/jwks.js', () => ({
-    initKeys:      vi.fn().mockResolvedValue(undefined),
-    getPrivateKey: () => privateKey,
-    getPublicKey:  () => publicKey,
-    getJwks:       () => ({ keys: [] }),
-  }));
-
-  // Import after mocking
-  const jwtMod = await import('../services/jwt.js');
+  // Import after mocking (dynamic import respects the mocks above)
+  const jwtMod     = await import('../services/jwt.js');
   mintAccessToken  = jwtMod.mintAccessToken;
   verifyAccessToken = jwtMod.verifyAccessToken;
   mintAgentToken   = jwtMod.mintAgentToken;

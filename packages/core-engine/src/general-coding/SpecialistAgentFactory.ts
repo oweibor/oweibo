@@ -5,7 +5,7 @@ import type {
   TenantSpawnBudget, FileClassifierRule, AgentMessage,
 } from '@oweibo/core-contracts';
 import type { ILLMClient } from '@oweibo/core-contracts';
-import type { LongTermMemoryStore } from '../agentic/LongTermMemoryStore.js';
+import type { ISemanticMemoryStore } from '@oweibo/core-contracts';
 import type { VaultClient } from '../infrastructure/VaultClient.js';
 import type { LangfuseTraceClient, Langfuse } from 'langfuse';
 import type { EditPlan } from './ConversationalLoop.js';
@@ -81,7 +81,7 @@ export class SpecialistAgentFactory {
 
   constructor(
     private readonly llm:               ILLMClient,
-    private readonly memory:            LongTermMemoryStore,
+    private readonly memory:            ISemanticMemoryStore,
     private readonly vault:             VaultClient,
     private readonly langfuse:          Langfuse,
     private readonly applicator:        EditApplicator,
@@ -315,7 +315,7 @@ export class SpecialistAgent extends BaseAgent {
     memoryScope: string,
     private readonly specialistSystemPrompt: string,
     llm: ILLMClient,
-    memory: LongTermMemoryStore,
+    memory: ISemanticMemoryStore,
     trace: LangfuseTraceClient,
     taskId: string,
     tenantId: string,

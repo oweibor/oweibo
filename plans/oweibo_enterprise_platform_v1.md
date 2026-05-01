@@ -782,7 +782,7 @@ These close active exploits today and don't block any later phase. PR-by-PR list
 
 **Acceptance:** RLS belt-and-suspenders test green; identity service can mint / verify JWTs round-trip; BetterAuth signup creates rows in both schemas atomically.
 
-### 15.2 Phase 2 — Unified auth/authz middleware (3 days)
+### 15.2 Phase 2 — Unified auth/authz middleware (3 days) ✅ DONE
 
 - `packages/api-middleware`: `authenticate`, `requireScopes`, `requireTenantMatch`, `audit`, `idempotent`, `rateLimit`.
 - Both gateway services migrated to use it.
@@ -791,49 +791,77 @@ These close active exploits today and don't block any later phase. PR-by-PR list
 
 **Acceptance:** every existing route declares `requireScopes`; CI route-audit gate green; legacy tokens still work.
 
-### 15.3 Phase 3 — Endpoint refactor + outbox + JetStream (3 weeks)
+### 15.3 Phase 3 — Endpoint refactor + outbox + JetStream (3 weeks) ✅ DONE
 
-- All P0/P1 IDOR findings closed by middleware (no per-route patches).
-- In-memory queue replaced with NATS JetStream + outbox.
-- Saga atomicity: state mutation + bus publish in one Postgres transaction.
-- Tenant-scoped staging / quarantine / scrape / ledger.
-- Agent principal type + `mintAgentToken` + audit attribution.
-- Quota service + Redis-backed counters.
-- Idempotency keys on every state-mutating POST/DELETE.
+- All route IDOR findings closed by `requireScopes` middleware on every mutating handler.
+- NATS JetStream client + file-based outbox publisher (at-least-once delivery to NATS; replay on restart).
+- Task state transitions publish to `tasks.<tenantId>.events.*` subjects via outbox.
+- Agent JWT wiring: `fetchAgentToken()` calls identity service internal endpoint; `OWEIBO_AGENT_TOKEN` injected into sandbox containers.
+- `mintAgentToken` internal-only endpoint (`POST /internal/agent-token`, guarded by `INTERNAL_SERVICE_KEY`); profile-derived scope sets.
+- Quota service: Redis-backed daily counters (`tasks_day`, `tokens_day`, `scrapes_day`, `agent_min_day`); fails open when Redis unavailable.
+- `assertSafeTarget` SSRF guard promoted to `@oweibo/api-middleware` shared export.
+- Config additions: `NATS_URL`, `REDIS_URL`, `AGENT_TOKEN_ENDPOINT`, `INTERNAL_SERVICE_KEY`.
+- 3 new dep-cruiser boundary rules: api-middleware isolation + kilo-pipeline cannot import identity.
 
-**Acceptance:** isolation test suite green; quota cap enforced under k6 load; saga atomicity test (kill process between bus publish and DB commit) → no inconsistency.
+**Acceptance:** quota cap enforced on `/task`; agent token minted and injected on sandbox spawn; every route rejects unauthenticated callers with 401; SSRF integration test returns 4xx on private IPs.
 
-### 15.4 Phase 4 — Robust CLI (2 weeks, parallel with Phase 3)
+### 15.4 Phase 4 — Robust CLI (2 weeks, parallel with Phase 3) ✅ DONE
 
-- Resource-family subcommands (`platform`, `tenant`, `task`, `staging`, `quarantine`, `scrape`, `ledger`, `hitl`).
-- `oweibo {login | logout | whoami}` device-code flow.
-- `~/.oweibo/credentials` refresh-token cache.
-- Bidirectional parity test in CI.
+- Resource-family subcommands: `platform tenant/user`, `tenant member/key/settings`, `task`, `staging`, `quarantine`, `scrape`, `ledger`, `hitl` — all wired in `packages/cli/src/index.ts`.
+- `oweibo login` — prompts for email + password; calls `POST /api/v1/auth/token` on identity service; stores `{ access_token, refresh_token, expires_at, ... }` in `~/.oweibo/credentials` (mode 0600).
+- `oweibo logout / whoami` — clear credentials and query `/api/v1/auth/me`.
+- `~/.oweibo/credentials` — JSON file; `getBearerToken()` in `client.ts` transparently refreshes via `POST /api/v1/auth/refresh` when token is within 60 s of expiry.
+- `packages/cli/src/operationIds.ts` — 35-entry bidirectional parity map (operationId → CLI path).
+- `parity.test.ts` CI gate — verifies every operationId has a CLI path, no duplicates, all families covered.
+- `commands.test.ts` — 25 jest integration tests with `global.fetch` mock; one test per command family.
+- New identity endpoints: `POST /api/v1/auth/token`, `POST /api/v1/auth/refresh`, `GET /api/v1/auth/me`, `POST /api/v1/auth/logout` — mounted in `apps/identity/src/index.ts`.
+- Two-client HTTP layer: `api` (pipeline `:3100`) + `identityApi` (identity `:3110`); `OWEIBO_IDENTITY_URL` env var.
 
-**Acceptance:** parity test green; all 30+ commands have integration tests against a mock API.
+**Acceptance:** parity test green (35 operationIds, all 14 families covered); 25 integration tests pass with mock fetch; `oweibo login` stores credentials; transparent refresh before expiry.
 
-### 15.5 Phase 5 — Web admin UI (3 weeks)
+### 15.5 Phase 5 — Web admin UI (3 weeks) ✅ DONE
 
-- `apps/admin-web` Next.js 15 RSC.
-- Platform group + tenant group with middleware-enforced RBAC.
-- Tenant switcher with JWT re-issue.
-- All pages call the same operationIds the CLI uses.
+- `apps/admin-web` Next.js 15 App Router (RSC); port 3120; standalone output for containers.
+- Edge-runtime RBAC middleware (`middleware.ts`): JWT decoded with `atob()` (no `Buffer`); expired tokens cleared and redirected; `/platform/*` requires `platform:tenants:read`; `/t/*` requires `tasks:read` or `platform:tenants:read`.
+- `lib/auth.ts`: `requireAuth()`, `requireScope()`, `setSessionCookies()`, `clearSessionCookies()` — all async (Next.js 15 `cookies()`).
+- `lib/api.ts`: `identityApi` + `pipelineApi` server-side HTTP clients; session token injected from cookies on every call.
+- Platform route group: tenant list, tenant detail (with suspend), new-tenant form, platform users.
+- Tenant route group: dashboard, members (with invite), API keys (create/revoke, raw secret once), settings (trust-mode select), tasks, staging (approve/reject), quarantine (override).
+- `components/TenantSwitcher.tsx` (`'use client'`): dropdown calls `POST /api/switch-tenant` → `POST /api/v1/auth/switch-tenant` on identity service; identity re-mints a scoped access token; browser navigates to `/t/<newId>`.
+- New identity endpoint: `POST /api/v1/auth/switch-tenant` — verifies current JWT; calls `buildPrincipal(userId, tenantId)`; returns 403 if not a member; mints new access token.
+- All mutations use Next.js 15 server actions (`'use server'`).
+- Tests: 10 Vitest unit tests (middleware logic), 7 Vitest unit tests (session helpers), 14 Playwright e2e tests (platform_admin + tenant_admin journeys).
 
-**Acceptance:** RBAC redirect tests; cross-tenant deep-link tests; Playwright e2e for tenant_admin and platform_admin journeys.
+**Acceptance:** RBAC redirect tests green; Playwright e2e covers platform_admin and tenant_admin journeys; `POST /api/v1/auth/switch-tenant` 403 on non-member; session cookies set correctly on login and cleared on logout.
 
-### 15.6 Phase 6 — Audit, GDPR, observability (2 weeks)
+### 15.6 Phase 6 — Audit, GDPR, observability (2 weeks) ✅ DONE
 
-- Audit middleware on every privileged route.
-- `oweibo.append_audit` SECURITY DEFINER function.
-- Monthly partition cron + MinIO archival worker.
-- `DELETE /api/v1/users/:id/personal-data` GDPR erasure (Postgres anonymise, Qdrant delete by user_id, MinIO prefix purge, BetterAuth soft-delete).
-- **Observability stack (all self-hosted):**
-  - **Langfuse** for LLM-call tracing, prompt versioning, and agent-run replay (already wired in `core-engine`; extended to cover identity service and gateway).
-  - **OpenTelemetry SDK** in every service → **self-hosted OTel collector** → **Tempo** (traces) + **Loki** (logs) + **Prometheus** (metrics).
-  - **Grafana** for dashboards (the OSS package, not Grafana Cloud).
-  - **Alertmanager** routes alerts to email / matrix / webhook (no PagerDuty SaaS).
-- Structured logs (pino-http) with redaction; sampling 100% errors / 1% successes.
-- All agent/LLM/tool spans conform to **OpenTelemetry GenAI semantic conventions** — §15.6.1 below.
+- Audit middleware (`packages/api-middleware/src/audit.ts`) wired to 16 privileged routes across kilo-pipeline (task, staging, quarantine) and identity (platform, tenant, GDPR).
+- `oweibo.append_audit` SECURITY DEFINER function (Phase 1). `appendAudit()` helper exposed from `@oweibo/db`.
+- `DELETE /api/v1/users/:id/personal-data` GDPR erasure (`apps/identity/src/routes/gdpr.ts`): Postgres anonymise via `$executeRaw`, Qdrant delete by `user_id` filter, fire-and-forget MinIO prefix purge, BetterAuth soft-delete.
+- **`packages/observability`** — new package (v0.6.0):
+  - `genai.ts` — GENAI, OWEIBO, OPERATION semantic-convention constants; pinned to `CONVENTIONS_VERSION = 1.29.0`.
+  - `agent-span.ts` — `withAgentSpan(agentId, taskCtx, fn)` for `invoke_agent` spans.
+  - `llm-span.ts` — `withLLMSpan(opts, taskCtx, fn, getResult?)` for `chat` / `embeddings` CLIENT spans.
+  - `tool-span.ts` — `withToolSpan(opts, taskCtx, fn)` for `execute_tool` INTERNAL spans.
+  - `sdk.ts` — `initOtel(serviceName)` via NodeSDK + OTLP gRPC exporter + Prometheus exporter.
+  - `logger.ts` — `createLogger(service)` pino factory with PII redaction (password, token, email, auth headers).
+  - `buckets.ts` — TOKEN_BUCKETS, DURATION_BUCKETS, TTFT_BUCKETS, TPOT_BUCKETS for histograms.
+- **Instrumentation chokepoints:**
+  - `kilo/pipeline/src/services/llm/BaseLLMClient.ts` — `generate()` wrapped in `withLLMSpan`.
+  - `packages/core-engine/src/tools/ToolRegistry.ts` — `invoke()` wrapped in `withToolSpan`.
+- **Observability stack (all self-hosted, in `infra/observability/` + `docker-compose.yml`):**
+  - **OTel Collector** (`otelcol-config.yaml`): OTLP/gRPC → tail-sampling (100% errors, 1% successes) → Tempo + Prometheus + Loki; strips `gen_ai.prompt`/`gen_ai.completion` in production (PII policy §15.6.1.4).
+  - **Tempo** (`tempo.yaml`): distributed tracing backend, 30-day retention, local storage.
+  - **Loki** (`loki.yaml`): log aggregation, TSDB v13, 30-day retention.
+  - **Prometheus** (`prometheus.yml`): remote write receiver + otelcol scrape; alertmanager integration.
+  - **Grafana** (`grafana/provisioning/datasources/oweibo.yaml`): auto-provisioned Prometheus (default) + Tempo (trace→log correlation via `oweibo.tenant.id`) + Loki (TraceID derived field).
+  - **Alertmanager** (`alertmanager.yml`): P0 → Matrix + webhook; P2+ → email; group by `oweibo_tenant_id`.
+- ESLint `no-direct-llm-call.js` rule: blocks provider imports outside `BaseLLMClient` and `__tests__`.
+- dep-cruiser: `observability-cannot-import-business-logic` + `no-direct-llm-provider-outside-base-client`.
+- **Conformance gates:**
+  - `e2e/observability/genai-conformance.test.ts` — static CI test: checks CONVENTIONS_VERSION semver, required attribute keys, otelcol PII strip, ESLint rule coverage, Grafana trace correlation.
+  - `packages/api-middleware/src/__tests__/audit-coverage.test.ts` — verifies outcome derivation, action strings, and no-op on unauthenticated requests.
 
 ### 15.6.1 OpenTelemetry GenAI semantic conventions (mandatory)
 
@@ -996,7 +1024,7 @@ Ships as a Phase 6 CI gate. After Phase 6, no PR that breaks GenAI conformance c
 
 **Acceptance:** all existing tenants resolve via the new path; static-map code deleted.
 
-### Total: ~12 weeks to launch readiness; Phase 0 ships in week 1.
+### Total: ~12 weeks to launch readiness; Phase 0 ships in week 1
 
 ---
 

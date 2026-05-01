@@ -12,6 +12,7 @@ const { EventEmitter } = require('events');
 const logger  = require('./logger');
 const metrics = require('./metrics');
 const config  = require('../config');
+const { writeOutboxEvent } = require('./outboxPublisher');
 
 class TaskQueue extends EventEmitter {
     [key: string]: any;
@@ -125,6 +126,8 @@ class TaskQueue extends EventEmitter {
             max:        this._maxConcurrency,
         });
 
+        writeOutboxEvent(`tasks.${tenant_id}.submit`, { type: 'task-queued', taskId: task_id, tenantId: tenant_id });
+
         this._processNext();
 
         return { task_id, status: 'queued' };
@@ -187,6 +190,7 @@ class TaskQueue extends EventEmitter {
                 remaining_running: this._running.size - 1,
             });
             metrics.taskCount.inc({ status: 'completed', tenant_id: task.tenant_id || 'unknown' });
+            writeOutboxEvent(`tasks.${task.tenant_id}.events.${taskId}`, { type: 'task-complete', taskId, tenantId: task.tenant_id });
             this.emit('task:complete', task);
         }
 
@@ -206,6 +210,7 @@ class TaskQueue extends EventEmitter {
                 error:     task.result.error,
             });
             metrics.taskCount.inc({ status: 'failed', tenant_id: task.tenant_id || 'unknown' });
+            writeOutboxEvent(`tasks.${task.tenant_id}.events.${taskId}`, { type: 'task-failed', taskId, tenantId: task.tenant_id, error: task.result.error });
             this.emit('task:fail', task);
         }
 

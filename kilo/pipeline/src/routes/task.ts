@@ -13,13 +13,14 @@ const { v4: uuidv4 } = require('uuid');
 const fs   = require('fs');
 const path = require('path');
 const config         = require('../config');
-const authMiddleware = require('../middleware/auth');
 const { taskLimiter } = require('../middleware/rateLimiter');
 const { validate, TASK_SCHEMA, TASK_CLEAR_SCHEMA } = require('../middleware/validate');
 const { safeJoin, sanitizeSegment } = require('../services/safePath');
 const queue          = require('../services/queue');
 const logger         = require('../services/logger');
 const ledger         = require('../services/recovery/ledger');
+const { authenticate, requireScopes, buildLegacyTokenMap, idempotent, audit } = require('@oweibo/api-middleware');
+const { checkAndConsume } = require('../services/quota');
 
 /**
  * Read gate_results.json for a task and penalise any invariants that blocked it.
@@ -93,8 +94,14 @@ function validateWorkspacePath(tenantId, workspacePath) {
 // POST /task
 // ---------------------------------------------------------------------------
 
-router.post('/task', authMiddleware, taskLimiter, validate(TASK_SCHEMA), (req, res) => {
-    const { tenantId } = req;
+router.post('/task',
+    authenticate({ jwksUri: config.IDENTITY_JWKS_URI, issuer: config.JWT_ISSUER, audience: config.JWT_AUDIENCE }, buildLegacyTokenMap()),
+    requireScopes('tasks:write'),
+    audit('task.create', { resourceType: 'task' }),
+    taskLimiter,
+    validate(TASK_SCHEMA),
+    async (req, res) => {
+    const tenantId = (req as any).principal?.ctx?.tenantId || (req as any).tenantId;
     const { workspace_path, instruction, trust_mode_override } = req.body;
 
     // --- Validate required fields ---
@@ -133,6 +140,16 @@ router.post('/task', authMiddleware, taskLimiter, validate(TASK_SCHEMA), (req, r
     // --- Generate or accept caller-supplied task_id ---
     // Caller-supplied IDs are already validated by TASK_SCHEMA (alphanumeric/hyphen/underscore only).
     const task_id = req.body.task_id || uuidv4();
+
+    // --- Quota check (daily tasks cap) ---
+    const quota = await checkAndConsume(tenantId, 'tasks_day');
+    if (!quota.allowed) {
+        return res.status(429).json({
+            error: 'quota_exceeded',
+            message: 'Daily task quota exceeded',
+            current: quota.current,
+        });
+    }
 
     try {
         const result = queue.enqueue({
@@ -177,8 +194,12 @@ router.post('/task', authMiddleware, taskLimiter, validate(TASK_SCHEMA), (req, r
 // POST /task/clear
 // ---------------------------------------------------------------------------
 
-router.post('/task/clear', authMiddleware, validate(TASK_CLEAR_SCHEMA), (req, res) => {
-    const { tenantId } = req;
+router.post('/task/clear',
+    authenticate({ jwksUri: config.IDENTITY_JWKS_URI, issuer: config.JWT_ISSUER, audience: config.JWT_AUDIENCE }, buildLegacyTokenMap()),
+    requireScopes('tasks:write'),
+    audit('task.clear', { resourceType: 'task' }),
+    validate(TASK_CLEAR_SCHEMA), (req, res) => {
+    const tenantId = (req as any).principal?.ctx?.tenantId || (req as any).tenantId;
     const { task_id, action, guidance, hash } = req.body;
 
     if (!task_id) {

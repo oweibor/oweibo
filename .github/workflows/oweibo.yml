@@ -118,8 +118,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build core-contracts
-        run: pnpm --filter @oweibo/core-contracts build
+      - name: Build workspace packages required by tests
+        run: |
+          pnpm --filter @oweibo/core-contracts build
+          pnpm --filter @oweibo/db exec prisma generate
+          pnpm --filter @oweibo/db build
+          pnpm --filter @oweibo/api-middleware build
 
       - name: Run tests
         run: pnpm -r test --if-present
+        env:
+          OWEIBO_DISABLE_PYTHON_SUBPROCESS: '1'
+          QUARANTINE_BASE: ${{ runner.temp }}/kilo-quarantine

@@ -1,0 +1,11 @@
+export { authenticate }              from './authenticate.js';
+export { buildLegacyTokenMap, legacyDeprecationHeaders } from './legacyBridge.js';
+export { requireScopes, requireTenantMatch }             from './authorization.js';
+export { audit, snapshotHash }       from './audit.js';
+export { idempotent }                from './idempotent.js';
+export { requestId, propagationHeaders } from './requestId.js';
+export { ipLimiter, taskLimiter, scrapeLimiter, sseLimiter } from './rateLimit.js';
+export { assertSafeTarget }          from './ssrfGuard.js';
+export type { SafeTarget }           from './ssrfGuard.js';
+export type { AuthenticatedRequest, JwksConfig, LegacyToken, Middleware } from './types.js';
+export type { RedisLike }            from './idempotent.js';

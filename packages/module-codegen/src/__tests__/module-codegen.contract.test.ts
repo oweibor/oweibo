@@ -2,7 +2,7 @@
  * Contract test: verifies this module package exports a valid IModuleGenerator.
  * Structural smoke test only — behaviour is validated in integration tests.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from '@jest/globals';
 
 describe('module-codegen contract', () => {
   it('default export is an IModuleGenerator', async () => {

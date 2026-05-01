@@ -56,4 +56,8 @@ dev-debug.log
 
 # Task files
 # tasks.json
-# tasks/ 
+# tasks/
+
+# Load test / DR / pentest results (generated output — not source)
+load-tests/results/
+!load-tests/results/.gitkeep

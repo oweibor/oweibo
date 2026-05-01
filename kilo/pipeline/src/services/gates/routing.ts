@@ -33,7 +33,7 @@ function handleT1Failure(taskId, reason) {
                 // If already at rearchitect and we failed again, it's a CONVERGENCE_EXIT
                 logger.warn('T1 HALT during rearchitect -> CONVERGENCE_EXIT', { task_id: taskId });
 
-                const quarantineDir = '/var/kilo/quarantine/tasks';
+                const quarantineDir = path.join(process.env['QUARANTINE_BASE'] || '/var/kilo/quarantine', 'tasks');
                 fs.mkdirSync(quarantineDir, { recursive: true });
                 fs.writeFileSync(path.join(quarantineDir, `${taskId}_T1_fail.json`), JSON.stringify({
                     task_id: taskId,

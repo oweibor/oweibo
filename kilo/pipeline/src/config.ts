@@ -283,6 +283,24 @@ const config = Object.freeze({
 
     /** Curriculum Learning: max packages to check per run (rate-limit for low-power nodes) */
     CURRICULUM_MAX_PKGS: parseInt(process.env.CURRICULUM_MAX_PKGS, 10) || 20,
+
+    // ── Phase 2: identity / JWT config ──────────────────────────────────────
+    /** URL to the identity service JWKS endpoint for JWT verification */
+    IDENTITY_JWKS_URI: process.env.IDENTITY_JWKS_URI || 'http://localhost:3110/.well-known/jwks.json',
+    /** JWT issuer claim expected in access tokens */
+    JWT_ISSUER: process.env.JWT_ISSUER || 'https://identity.oweibo.io',
+    /** JWT audience claim expected in access tokens */
+    JWT_AUDIENCE: process.env.JWT_AUDIENCE || 'oweibo-api',
+
+    // ── Phase 3: NATS JetStream + quota + agent token ───────────────────────
+    /** NATS server URL for task event bus */
+    NATS_URL: process.env.NATS_URL || 'nats://localhost:4222',
+    /** Redis connection URL for idempotency, rate-limiting, quota counters */
+    REDIS_URL: process.env.REDIS_URL || 'redis://localhost:6379',
+    /** Identity service internal endpoint for agent token minting */
+    AGENT_TOKEN_ENDPOINT: process.env.AGENT_TOKEN_ENDPOINT || 'http://localhost:3110/internal/agent-token',
+    /** Shared secret for machine-to-machine internal calls */
+    INTERNAL_SERVICE_KEY: process.env.INTERNAL_SERVICE_KEY || '',
 });
 
 module.exports = config;

@@ -17,7 +17,7 @@ import { CognitiveEngine }         from './agentic/CognitiveEngine.js';
 import { SwarmCoordinator }        from './agentic/SwarmCoordinator.js';
 import { GoalDecomposer }          from './agentic/GoalDecomposer.js';
 import { MultiStrategyPlanner }    from './agentic/MultiStrategyPlanner.js';
-import { LongTermMemoryStore }     from './agentic/LongTermMemoryStore.js';
+import { wireMemorySubsystem }      from './agentic/memory/MemoryWiring.js';
 import { ContextPruner }           from './agentic/ContextPruner.js';
 import { TaskHeartbeat }           from './agentic/TaskHeartbeat.js';
 import { HeartbeatScanner }        from './agentic/HeartbeatScanner.js';
@@ -109,8 +109,32 @@ async function main(): Promise<void> {
   const warmPool       = new TieredWarmPoolManager(sandboxFactory);
   warmPool.start();
 
+  // ── Memory subsystem (4-tier orchestrator + background services) ─────────
+  // Tier 1 + 2 + 3 always wired; tier 4 (Qdrant) wired when QDRANT_URL is set
+  // and an embedder is available.
+  const memorySubsystem = await wireMemorySubsystem({
+    redis,
+    ...(process.env.QDRANT_URL    ? { qdrantUrl:    process.env.QDRANT_URL } : {}),
+    ...(process.env.QDRANT_API_KEY ? { qdrantApiKey: process.env.QDRANT_API_KEY } : {}),
+    ...(process.env.OLLAMA_URL    ? { ollamaUrl:    process.env.OLLAMA_URL } : {}),
+    ...(process.env.OWEIBO_EMBED_MODEL ? { embedModel:  process.env.OWEIBO_EMBED_MODEL } : {}),
+    ...(process.env.OWEIBO_EMBED_DIM   ? { vectorDimension: Number(process.env.OWEIBO_EMBED_DIM) } : {}),
+  });
+  memorySubsystem.start();
+  // Legacy ISemanticMemoryStore reference for SwarmCoordinator/CognitiveEngine
+  // — these still take the tier-4 store directly during the broader migration
+  // to consume IMemoryOrchestrator. When the semantic tier isn't wired they
+  // get a no-op store that records nothing (matches the orchestrator's
+  // graceful-degradation contract).
+  const memory: any = memorySubsystem.semantic ?? {
+    store:        async () => ({ id: '', scope: { tenantId: '' }, kind: 'domain-fact', summary: '', importance: 0, createdAt: '', updatedAt: '', recallCount: 0 }),
+    recall:       async () => [],
+    purgeTenant:  async () => undefined,
+    purgeProject: async () => undefined,
+    purgeUser:    async () => undefined,
+  };
+
   // ── Agentic core ─────────────────────────────────────────────────────────
-  const memory     = new LongTermMemoryStore(null as never, null as never);
   const planner    = new MultiStrategyPlanner(makeLLM());
   const decomposer = new GoalDecomposer(makeLLM());
   const pruner     = new ContextPruner(contextStore);
@@ -237,6 +261,7 @@ async function main(): Promise<void> {
     docGenReaper?.stop();
     scanner.stop();
     warmPool.stop();
+    memorySubsystem.stop();
     await redis.quit();
     process.exit(0);
   };

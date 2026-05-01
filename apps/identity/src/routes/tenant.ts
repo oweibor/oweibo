@@ -18,6 +18,7 @@ import { createHash, randomBytes } from 'crypto';
 import { withTenantContext } from '@oweibo/db';
 import type { Principal } from '@oweibo/db';
 import { authenticate, requireScopes } from '../middleware/authenticate.js';
+import { audit } from '@oweibo/api-middleware';
 import { expandRoles } from '../policy.js';
 
 const router = Router({ mergeParams: true });
@@ -68,6 +69,7 @@ const InviteSchema = z.object({
 
 router.post('/:tenantId/users/invite',
   requireScopes('tenant:users:write'),
+  audit('tenant.member.invite', { resourceType: 'tenant_membership' }),
   async (req, res) => {
     const parsed = InviteSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -100,6 +102,7 @@ const UpdateRolesSchema = z.object({
 
 router.post('/:tenantId/users/:userId/roles',
   requireScopes('tenant:users:write'),
+  audit('tenant.member.roles', { resourceType: 'tenant_membership' }),
   async (req, res) => {
     const parsed = UpdateRolesSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -119,6 +122,7 @@ router.post('/:tenantId/users/:userId/roles',
 
 router.delete('/:tenantId/users/:userId',
   requireScopes('tenant:users:write'),
+  audit('tenant.member.remove', { resourceType: 'tenant_membership' }),
   async (req, res) => {
     const principal = req.principal as Principal;
     await withTenantContext(principal, tx =>
@@ -155,6 +159,7 @@ const CreateApiKeySchema = z.object({
 
 router.post('/:tenantId/apikeys',
   requireScopes('tenant:apikeys:write'),
+  audit('tenant.apikey.create', { resourceType: 'api_key' }),
   async (req, res) => {
     const parsed = CreateApiKeySchema.safeParse(req.body);
     if (!parsed.success) {
@@ -192,6 +197,7 @@ router.post('/:tenantId/apikeys',
 
 router.post('/:tenantId/apikeys/:id/revoke',
   requireScopes('tenant:apikeys:write'),
+  audit('tenant.apikey.revoke', { resourceType: 'api_key' }),
   async (req, res) => {
     const principal = req.principal as Principal;
     const key = await withTenantContext(principal, tx =>
@@ -228,6 +234,7 @@ const UpdateSettingsSchema = z.object({
 
 router.patch('/:tenantId/settings',
   requireScopes('tenant:settings:write'),
+  audit('tenant.settings.update', { resourceType: 'tenant' }),
   async (req, res) => {
     const parsed = UpdateSettingsSchema.safeParse(req.body);
     if (!parsed.success) {

@@ -151,6 +151,12 @@ class PythonSubprocessPool {
   /** Probe python3/python on PATH. Returns the binary name or null. */
   async probePython(): Promise<string | null> {
     if (this._pythonBin !== undefined) return this._pythonBin;
+    // Operator override: skip the subprocess path entirely (forces regex fallback).
+    // Used in sandboxed/CI environments where the long-lived worker pipe is unreliable.
+    if (process.env['OWEIBO_DISABLE_PYTHON_SUBPROCESS'] === '1') {
+      this._pythonBin = null;
+      return null;
+    }
     for (const bin of ['python3', 'python']) {
       try {
         await new Promise<void>((resolve, reject) => {

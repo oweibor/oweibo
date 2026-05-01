@@ -124,3 +124,5 @@ jobs:
 
       - name: Run tests
         run: pnpm -r test --if-present
+        env:
+          OWEIBO_DISABLE_PYTHON_SUBPROCESS: '1'

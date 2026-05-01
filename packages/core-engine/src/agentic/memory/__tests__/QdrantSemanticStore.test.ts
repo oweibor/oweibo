@@ -457,6 +457,135 @@ describe('QdrantSemanticStore — schema marker (gap #6 + #10)', () => {
   });
 });
 
+describe('QdrantSemanticStore — MMR diversity (gap #9)', () => {
+  /**
+   * Three candidates:
+   *   A — high relevance, vector v1
+   *   B — slightly lower relevance, vector v1 (near-duplicate of A)
+   *   C — lowest relevance, vector orthogonal to v1
+   *
+   * Pure relevance ranking returns [A, B, C].
+   * MMR with low λ should swap B for C (B is too similar to A).
+   */
+  function payload(score: number, vector: number[]) {
+    return {
+      id:    `e-${score}`,
+      score,
+      vector,
+      payload: {
+        tenant_id: TENANT, kind: 'domain-fact', summary: `${score}`,
+        importance: 0.5, recall_count: 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+    };
+  }
+
+  it('with mmrLambda=1.0 (disabled), order matches pure-relevance and mmrPenalty=0', async () => {
+    const qdrant = makeQdrant({
+      search: jest.fn().mockResolvedValue([
+        payload(0.9, [1, 0, 0, 0, 0, 0, 0, 0]),
+        payload(0.8, [1, 0, 0, 0, 0, 0, 0, 0]),
+        payload(0.4, [0, 1, 0, 0, 0, 0, 0, 0]),
+      ]),
+    });
+    const store = new QdrantSemanticStore({
+      qdrant, embedder, config: { vectorDimension: 8, mmrLambda: 1.0 },
+    });
+
+    const results = await store.recall({ tenantId: TENANT, query: 'x', topK: 3 });
+    expect(results.map(r => r.summary)).toEqual(['0.9', '0.8', '0.4']);
+    expect(results.every(r => r.scoreBreakdown.mmrPenalty === 0)).toBe(true);
+
+    // Should NOT have requested vectors (saves bandwidth when MMR is off)
+    const [, body] = qdrant.search.mock.calls[0];
+    expect(body.with_vector).toBe(false);
+  });
+
+  it('with low mmrLambda, pushes near-duplicate out of top-k in favour of diverse alternative', async () => {
+    const qdrant = makeQdrant({
+      search: jest.fn().mockResolvedValue([
+        payload(0.9, [1, 0, 0, 0, 0, 0, 0, 0]),  // A
+        payload(0.8, [1, 0, 0, 0, 0, 0, 0, 0]),  // B — duplicate of A
+        payload(0.4, [0, 1, 0, 0, 0, 0, 0, 0]),  // C — orthogonal
+      ]),
+    });
+    const store = new QdrantSemanticStore({
+      qdrant, embedder, config: { vectorDimension: 8, mmrLambda: 0.3 },
+    });
+
+    const results = await store.recall({ tenantId: TENANT, query: 'x', topK: 2 });
+    // First pick is always the highest relevance.
+    expect(results[0]!.summary).toBe('0.9');
+    // Second pick: B (relevance 0.8, sim=1 to A → mmr = 0.3*0.8 - 0.7*1 = -0.46)
+    // vs.        C (relevance 0.4, sim=0 to A → mmr = 0.3*0.4 - 0       =  0.12)
+    // C wins despite lower base relevance.
+    expect(results[1]!.summary).toBe('0.4');
+  });
+
+  it('records non-zero mmrPenalty for selected candidates similar to earlier picks', async () => {
+    const qdrant = makeQdrant({
+      search: jest.fn().mockResolvedValue([
+        payload(0.9, [1, 0, 0, 0, 0, 0, 0, 0]),
+        payload(0.8, [0.9, 0.4, 0, 0, 0, 0, 0, 0]),  // very similar to first
+      ]),
+    });
+    const store = new QdrantSemanticStore({
+      qdrant, embedder, config: { vectorDimension: 8, mmrLambda: 0.5 },
+    });
+
+    const results = await store.recall({ tenantId: TENANT, query: 'x', topK: 2 });
+    // First pick has no prior selections → 0 penalty
+    expect(results[0]!.scoreBreakdown.mmrPenalty).toBe(0);
+    // Second pick was penalised for similarity to the first
+    expect(results[1]!.scoreBreakdown.mmrPenalty).toBeLessThan(0);
+  });
+
+  it('requests with_vector=true from Qdrant when MMR is enabled', async () => {
+    const qdrant = makeQdrant({
+      search: jest.fn().mockResolvedValue([payload(0.9, [1, 0, 0, 0, 0, 0, 0, 0])]),
+    });
+    const store = new QdrantSemanticStore({
+      qdrant, embedder, config: { vectorDimension: 8, mmrLambda: 0.7 },
+    });
+    await store.recall({ tenantId: TENANT, query: 'x' });
+    const [, body] = qdrant.search.mock.calls[0];
+    expect(body.with_vector).toBe(true);
+  });
+
+  it('falls back to relevance-only when candidates have no vectors (no penalty applied)', async () => {
+    const qdrant = makeQdrant({
+      // Returned points have no `vector` field — simulates Qdrant config that
+      // doesn't expose vectors, or legacy collection state.
+      search: jest.fn().mockResolvedValue([
+        { id: 'a', score: 0.9, payload: {
+          tenant_id: TENANT, kind: 'domain-fact', summary: 'a',
+          importance: 0.5, recall_count: 0,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }},
+        { id: 'b', score: 0.5, payload: {
+          tenant_id: TENANT, kind: 'domain-fact', summary: 'b',
+          importance: 0.5, recall_count: 0,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }},
+      ]),
+    });
+    const store = new QdrantSemanticStore({
+      qdrant, embedder, config: { vectorDimension: 8, mmrLambda: 0.3 },
+    });
+
+    const results = await store.recall({ tenantId: TENANT, query: 'x', topK: 2 });
+    expect(results).toHaveLength(2);
+    // Without vectors, every candidate has 0 similarity to selected → no penalty
+    expect(results.every(r => r.scoreBreakdown.mmrPenalty === 0)).toBe(true);
+    // Order falls back to pure relevance
+    expect(results[0]!.summary).toBe('a');
+    expect(results[1]!.summary).toBe('b');
+  });
+});
+
 describe('QdrantSemanticStore — concurrency hygiene (gap #11 + #12)', () => {
   it('serialises cap-check + upsert per tenant (gap #11 TOCTOU)', async () => {
     // Track in-flight critical sections per tenant. With the serialiser

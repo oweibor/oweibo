@@ -89,6 +89,22 @@ export interface QdrantSemanticStoreConfig {
   /** Over-fetch multiplier for recall (default: 3). */
   readonly overFetchMultiplier: number;
   /**
+   * MMR (Maximal Marginal Relevance) diversity coefficient in [0, 1].
+   *
+   *   1.0 — pure relevance; results sorted by composite score (no MMR).
+   *   0.7 — default; mild diversity bias, moderate near-duplicate suppression.
+   *   0.5 — equal weight to relevance and diversity.
+   *   0.0 — pure diversity; after the first (highest-relevance) pick, every
+   *         subsequent pick is whichever candidate is most different from
+   *         what's already been selected.
+   *
+   * Without MMR, two near-duplicate facts can both crowd into the top-k
+   * results. With MMR, the duplicate's marginal contribution is penalised
+   * by its similarity to the already-selected, so a more diverse alternative
+   * wins. Carbonell & Goldstein 1998 — implemented greedily.
+   */
+  readonly mmrLambda: number;
+  /**
    * Embedding vector dimension used when auto-creating a tenant collection
    * (default: 1536, matching text-embedding-ada-002 / text-embedding-3-small).
    * Must match the embedder's output dimension.
@@ -134,6 +150,7 @@ const DEFAULT_CONFIG: QdrantSemanticStoreConfig = {
   kindBoosts:          DEFAULT_KIND_BOOSTS,
   overFetchMultiplier: 3,
   vectorDimension:     1536,
+  mmrLambda:           0.7,
 };
 
 // ─── Errors ───────────────────────────────────────────────────────────────────
@@ -395,13 +412,22 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
   }
 
   /**
-   * recall — semantic search with full composite scoring.
+   * recall — semantic search with full composite scoring + MMR diversity.
    *
-   * Over-fetches from Qdrant, then re-ranks every candidate with:
-   *   score = w_semantic   · cosine
-   *         + w_recency    · exp(-daysSinceUpdate / halfLifeDays)
-   *         + w_importance · entry.importance
-   *         + w_kindBoost  · kindBoostMultiplier
+   * Over-fetches from Qdrant, computes a base relevance score per candidate:
+   *   relevance = w_semantic   · cosine
+   *             + w_recency    · exp(-daysSinceUpdate / halfLifeDays)
+   *             + w_importance · entry.importance
+   *             + w_kindBoost  · kindBoostMultiplier
+   *
+   * If `mmrLambda < 1`, the final selection runs greedy MMR over the
+   * candidate set (Carbonell & Goldstein 1998):
+   *
+   *   MMR(D) = λ · relevance(D) - (1-λ) · max sim(D, S) for S already selected
+   *
+   * which suppresses near-duplicate clusters by penalising candidates that
+   * are too similar to already-selected results. With `mmrLambda = 1.0`,
+   * MMR is disabled and the top-k pure-relevance ranking is returned.
    *
    * Fire-and-forget reinforcement (recall_count++, updated_at bump) runs
    * after the result set is assembled — must not block the return path.
@@ -414,7 +440,7 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
     if (!tenantId) throw new Error('QdrantSemanticStore.recall: tenantId is required');
 
     const collection = TenantKeyBuilder.ltmCollection(tenantId);
-    const vector     = await this.deps.embedder(q);
+    const queryVector = await this.deps.embedder(q);
 
     // Build Qdrant filter
     const must: unknown[] = [{ key: 'tenant_id', match: { value: tenantId } }];
@@ -423,15 +449,19 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
 
     // Over-fetch for re-ranking headroom
     const fetchLimit = topK * this.config.overFetchMultiplier;
+    const mmrEnabled = this.config.mmrLambda < 1;
 
-    let raw: Array<{ id: string | number; score: number; payload: unknown }>;
+    let raw: Array<{ id: string | number; score: number; payload: unknown; vector?: unknown }>;
     try {
       raw = await this.qcall(() => this.deps.qdrant.search(collection, {
-        vector,
+        vector:       queryVector,
         limit:        fetchLimit,
         with_payload: true,
+        // Only request vectors when MMR will use them; saves bandwidth on
+        // pure-relevance configurations.
+        with_vector:  mmrEnabled,
         filter:       { must },
-      })) as Array<{ id: string | number; score: number; payload: unknown }>;
+      })) as Array<{ id: string | number; score: number; payload: unknown; vector?: unknown }>;
     } catch (err) {
       // Circuit-open is a system-wide signal callers must observe; rethrow.
       if (err instanceof MemoryCircuitOpenError) throw err;
@@ -442,22 +472,35 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
     const now = Date.now();
     const w   = this.config.weights;
 
-    const results: RankedMemoryEntry[] = raw
-      .map((r) => {
-        const payload   = r.payload as Partial<StoredPayload>;
-        const entry     = this.toMemoryEntry(r.id, payload, tenantId);
-        const breakdown = this.computeBreakdown(r.score, payload, entry.kind, now);
-        const score     =
-          w.semantic   * breakdown.semantic   +
-          w.recency    * breakdown.recency    +
-          w.importance * breakdown.importance +
-          w.kindBoost  * breakdown.kindBoost  +
-          breakdown.mmrPenalty; // subtracted, so it's already negative or 0
+    type Candidate = {
+      entry:     MemoryEntry;
+      breakdown: RankedMemoryEntry['scoreBreakdown'];
+      relevance: number;     // base score before any MMR penalty
+      vector?:   number[];   // present only when mmrEnabled
+    };
 
-        return { ...entry, score, scoreBreakdown: breakdown };
-      })
-      .sort((a, b) => b.score - a.score)
-      .slice(0, topK);
+    const candidates: Candidate[] = raw.map((r) => {
+      const payload   = r.payload as Partial<StoredPayload>;
+      const entry     = this.toMemoryEntry(r.id, payload, tenantId);
+      const breakdown = this.computeBreakdown(r.score, payload, entry.kind, now);
+      const relevance =
+        w.semantic   * breakdown.semantic   +
+        w.recency    * breakdown.recency    +
+        w.importance * breakdown.importance +
+        w.kindBoost  * breakdown.kindBoost;
+      const vector = Array.isArray(r.vector) ? (r.vector as number[]) : undefined;
+      return { entry, breakdown, relevance, ...(vector ? { vector } : {}) };
+    });
+
+    const selected = mmrEnabled
+      ? this.selectByMMR(candidates, topK)
+      : candidates.sort((a, b) => b.relevance - a.relevance).slice(0, topK);
+
+    const results: RankedMemoryEntry[] = selected.map(c => ({
+      ...c.entry,
+      score: c.relevance + c.breakdown.mmrPenalty,
+      scoreBreakdown: c.breakdown,
+    }));
 
     // Fire-and-forget reinforcement
     if (reinforce && results.length > 0) {
@@ -742,6 +785,8 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
 
   /**
    * computeBreakdown — calculate individual score components for auditability.
+   * `mmrPenalty` is initialised to 0 here and overwritten by selectByMMR
+   * for results that survive into the final selection.
    */
   private computeBreakdown(
     cosineScore: number,
@@ -766,8 +811,66 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
       recency,
       importance,
       kindBoost,
-      mmrPenalty: 0, // placeholder for future MMR implementation
+      mmrPenalty: 0,
     };
+  }
+
+  /**
+   * selectByMMR — greedy Maximal Marginal Relevance selection.
+   *
+   * On each iteration, score every remaining candidate as
+   *   λ · relevance(c) - (1-λ) · max sim(c, s) over all already-selected s
+   * and pick the highest scorer. Continues until topK reached or candidates
+   * exhausted. Mutates each selected candidate's `breakdown.mmrPenalty` to
+   * record the actual penalty applied (negative = discouraged for being
+   * too similar to earlier picks).
+   *
+   * Candidates without a vector (legacy entries, edge cases) get a 0
+   * similarity penalty — they're effectively ranked by relevance only,
+   * which is the safest fallback.
+   */
+  private selectByMMR<C extends {
+    relevance: number;
+    vector?:   number[];
+    breakdown: { mmrPenalty: number };
+  }>(candidates: readonly C[], topK: number): C[] {
+    const lambda    = this.config.mmrLambda;
+    const remaining = [...candidates];
+    const selected: C[] = [];
+
+    while (selected.length < topK && remaining.length > 0) {
+      let bestIdx     = 0;
+      let bestScore   = -Infinity;
+      let bestPenalty = 0;
+
+      for (let i = 0; i < remaining.length; i++) {
+        const c = remaining[i]!;
+        let maxSim = 0;
+        if (c.vector) {
+          for (const s of selected) {
+            if (!s.vector) continue;
+            const sim = cosineSimilarity(c.vector, s.vector);
+            if (sim > maxSim) maxSim = sim;
+          }
+        }
+        const penalty = (1 - lambda) * maxSim; // ≥ 0
+        const mmr     = lambda * c.relevance - penalty;
+        if (mmr > bestScore) {
+          bestScore   = mmr;
+          bestIdx     = i;
+          bestPenalty = penalty;
+        }
+      }
+
+      const chosen = remaining.splice(bestIdx, 1)[0]!;
+      // Record the penalty that was applied. Stored as a non-positive number
+      // so callers can read "score = relevance + mmrPenalty" coherently.
+      // Avoid signed-zero (-0): bestPenalty=0 → store +0, not -0.
+      chosen.breakdown.mmrPenalty = bestPenalty === 0 ? 0 : -bestPenalty;
+      selected.push(chosen);
+    }
+
+    return selected;
   }
 
   /**
@@ -813,4 +916,26 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
       tags:        Array.isArray(payload.tags) ? payload.tags : [],
     };
   }
+}
+
+// ─── Module-private helpers ───────────────────────────────────────────────────
+
+/**
+ * Cosine similarity between two equal-length vectors. Returns a value in
+ * [-1, 1]; for normalised text-embedding vectors this is effectively in
+ * [0, 1]. Returns 0 if either vector is the zero vector or if lengths
+ * differ (defensive — should never happen with a single embedder).
+ */
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length) return 0;
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    const ai = a[i]!;
+    const bi = b[i]!;
+    dot += ai * bi;
+    na  += ai * ai;
+    nb  += bi * bi;
+  }
+  if (na === 0 || nb === 0) return 0;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
 }

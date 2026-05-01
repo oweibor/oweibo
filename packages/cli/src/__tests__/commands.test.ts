@@ -145,7 +145,7 @@ describe('staging commands', () => {
     mockFetch({ approved: true });
     const { makeStagingCommand } = await import('../commands/staging.js');
     const cmd = makeStagingCommand().commands.find(c => c.name() === 'approve')!;
-    await cmd.parseAsync(['node', 'oweibo', 'stage-1'], { from: 'electron' });
+    await cmd.parseAsync(['node', 'oweibo', 'stage-1'], { from: 'node' });
     const [url, req] = (global.fetch as jest.Mock).mock.calls[0] as [string, RequestInit];
     expect(url).toContain('/staging/stage-1/approve');
     expect(req.method).toBe('POST');
@@ -155,7 +155,7 @@ describe('staging commands', () => {
     mockFetch({ rejected: true });
     const { makeStagingCommand } = await import('../commands/staging.js');
     const cmd = makeStagingCommand().commands.find(c => c.name() === 'reject')!;
-    await cmd.parseAsync(['node', 'oweibo', 'stage-1', '--reason', 'bad output'], { from: 'electron' });
+    await cmd.parseAsync(['node', 'oweibo', 'stage-1', '--reason', 'bad output'], { from: 'node' });
     const [url] = (global.fetch as jest.Mock).mock.calls[0] as [string, RequestInit];
     expect(url).toContain('/staging/stage-1/reject');
   });
@@ -176,7 +176,7 @@ describe('quarantine commands', () => {
     mockFetch({ released: true });
     const { makeQuarantineCommand } = await import('../commands/quarantine.js');
     const cmd = makeQuarantineCommand().commands.find(c => c.name() === 'override')!;
-    await cmd.parseAsync(['node', 'oweibo', 'q-1', '--reason', 'safe'], { from: 'electron' });
+    await cmd.parseAsync(['node', 'oweibo', 'q-1', '--reason', 'safe'], { from: 'node' });
     const [url, req] = (global.fetch as jest.Mock).mock.calls[0] as [string, RequestInit];
     expect(url).toContain('/quarantine/q-1/override');
     expect(req.method).toBe('POST');
@@ -234,7 +234,7 @@ describe('platform commands', () => {
     const { makePlatformCommand } = await import('../commands/platform.js');
     const tenantGroup  = makePlatformCommand().commands.find(c => c.name() === 'tenant')!;
     const suspendCmd   = tenantGroup.commands.find(c => c.name() === 'suspend')!;
-    await suspendCmd.parseAsync(['node', 'oweibo', 't1'], { from: 'electron' });
+    await suspendCmd.parseAsync(['node', 'oweibo', 't1'], { from: 'node' });
     const [url, req] = (global.fetch as jest.Mock).mock.calls[0] as [string, RequestInit];
     expect(url).toContain('/platform/tenants/t1/suspend');
     expect(req.method).toBe('POST');

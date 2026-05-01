@@ -14,7 +14,7 @@ import { operationIds } from '../operationIds.js';
 describe('CLI ↔ API parity', () => {
   it('every operationId maps to a non-empty CLI path', () => {
     for (const [opId, cliPath] of Object.entries(operationIds)) {
-      expect(cliPath.trim(), `operationId "${opId}" has no CLI path`).not.toBe('');
+      expect(cliPath.trim()).not.toBe(''); // opId visible in loop context on failure
     }
   });
 
@@ -44,7 +44,7 @@ describe('CLI ↔ API parity', () => {
 
     for (const [prefix, label] of Object.entries(families)) {
       const found = cliPaths.some(p => p === prefix || p.startsWith(prefix + ' '));
-      expect(found, `No CLI command found for family: ${label}`).toBe(true);
+      expect(found).toBe(true); // label visible in loop context on failure
     }
   });
 

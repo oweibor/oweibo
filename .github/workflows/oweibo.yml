@@ -108,8 +108,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build core-contracts
-        run: pnpm --filter @oweibo/core-contracts build
+      - name: Build workspace packages required by tests
+        run: |
+          pnpm --filter @oweibo/core-contracts build
+          pnpm --filter @oweibo/db build
 
       - name: Run tests
         run: pnpm -r test --if-present

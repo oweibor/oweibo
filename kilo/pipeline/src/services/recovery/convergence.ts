@@ -57,7 +57,7 @@ function checkConvergence(taskId, strategyIndex) {
         };
     } else {
         // Graduated / Autonomous: quarantine and fail
-        const quarantineDir = '/var/kilo/quarantine/tasks';
+        const quarantineDir = path.join(process.env['QUARANTINE_BASE'] || '/var/kilo/quarantine', 'tasks');
         const filePath = path.join(quarantineDir, `${taskId}.json`);
 
         try {

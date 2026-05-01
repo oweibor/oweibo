@@ -121,7 +121,6 @@ jobs:
       - name: Build workspace packages required by tests
         run: |
           pnpm --filter @oweibo/core-contracts build
-          pnpm --filter @oweibo/db build
 
       - name: Run tests
         run: pnpm -r test --if-present

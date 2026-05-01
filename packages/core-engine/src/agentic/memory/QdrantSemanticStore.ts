@@ -43,6 +43,7 @@ import type {
 
 import { TenantKeyBuilder } from '../../infra/TenantKeyBuilder.js';
 import { MemoryCircuitBreaker, MemoryCircuitOpenError } from './MemoryCircuitBreaker.js';
+import { KeyedSerializer } from './KeyedSerializer.js';
 
 // @qdrant/js-client-rest is ESM-only; same alias pattern used across the project.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -261,6 +262,19 @@ const REJECTED_KINDS = new Set<MemoryKind>([
 
 export class QdrantSemanticStore implements ISemanticMemoryStore {
   private readonly config: QdrantSemanticStoreConfig;
+  /**
+   * Serialises the cap-check + upsert sequence per tenant within this
+   * process. Closes gap #11 (TOCTOU): two concurrent stores for the same
+   * tenant could each read points_count=cap-1 and both upsert, exceeding
+   * the cap. Different tenants run concurrently as before.
+   */
+  private readonly writeSerializer = new KeyedSerializer<string>();
+  /**
+   * Serialises retrieve+setPayload per point. Closes gap #12: concurrent
+   * recalls of the same point would each read recall_count=N and both
+   * setPayload(N+1), losing one increment.
+   */
+  private readonly reinforceSerializer = new KeyedSerializer<string>();
 
   constructor(private readonly deps: QdrantSemanticStoreDeps) {
     this.config = { ...DEFAULT_CONFIG, ...deps.config };
@@ -293,16 +307,13 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
     // 2. Ensure collection exists (creates on first store for a new tenant)
     await this.ensureCollection(collection);
 
-    // 3. Cap check
-    const { points_count } = await this.qcall(() => this.deps.qdrant.getCollection(collection)) as { points_count?: number };
-    if ((points_count ?? 0) >= this.config.maxEntriesPerTenant) {
-      throw new SemanticStoreCapExceededError(scope.tenantId, this.config.maxEntriesPerTenant);
-    }
-
-    // 4. Embed
+    // 3. Embed (outside the per-tenant lock — slow, parallelisable)
     const vector = await this.deps.embedder(summary);
 
-    // 5. Dedup — search for near-identical entry in same tenant
+    // 4. Dedup — search for near-identical entry in same tenant. Racy by
+    // design: two near-simultaneous stores of identical content may both
+    // miss; that's acceptable because the dedup threshold is already a
+    // best-effort similarity gate, not a uniqueness invariant.
     const filter = {
       must: [{ key: 'tenant_id', match: { value: scope.tenantId } }],
     };
@@ -334,43 +345,53 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
       };
     }
 
-    // 6. Upsert
-    const id  = randomUUID();
-    const now = new Date().toISOString();
+    // 5. Cap check + upsert — serialised per tenant within this process so
+    // the read-modify-write of points_count is atomic. Two concurrent
+    // stores for the same tenant can no longer both pass a cap check at
+    // points_count=cap-1 and then both upsert past the cap.
+    return this.writeSerializer.chain(scope.tenantId, async () => {
+      const { points_count } = await this.qcall(() => this.deps.qdrant.getCollection(collection)) as { points_count?: number };
+      if ((points_count ?? 0) >= this.config.maxEntriesPerTenant) {
+        throw new SemanticStoreCapExceededError(scope.tenantId, this.config.maxEntriesPerTenant);
+      }
 
-    const payload: StoredPayload = {
-      tenant_id:    scope.tenantId,
-      user_id:      scope.userId,
-      project_id:   scope.projectId,
-      session_id:   scope.sessionId,
-      task_id:      scope.taskId,
-      kind,
-      summary,
-      body:         input.body,
-      detail:       (input.detail as Record<string, unknown>) ?? null,
-      importance:   input.importance,
-      created_at:   now,
-      updated_at:   now,
-      recall_count: 0,
-      tags:         input.tags ? [...input.tags] : [],
-      _source:      SOURCE_TAG,
-    };
+      const id  = randomUUID();
+      const now = new Date().toISOString();
 
-    await this.qcall(() => this.deps.qdrant.upsert(collection, {
-      wait:   true,
-      points: [{ id, vector, payload }],
-    }));
+      const payload: StoredPayload = {
+        tenant_id:    scope.tenantId,
+        user_id:      scope.userId,
+        project_id:   scope.projectId,
+        session_id:   scope.sessionId,
+        task_id:      scope.taskId,
+        kind,
+        summary,
+        body:         input.body,
+        detail:       (input.detail as Record<string, unknown>) ?? null,
+        importance:   input.importance,
+        created_at:   now,
+        updated_at:   now,
+        recall_count: 0,
+        tags:         input.tags ? [...input.tags] : [],
+        _source:      SOURCE_TAG,
+      };
 
-    return {
-      id, scope, kind, summary,
-      body:        input.body,
-      detail:      input.detail,
-      importance:  input.importance,
-      createdAt:   now,
-      updatedAt:   now,
-      recallCount: 0,
-      tags:        input.tags ?? [],
-    };
+      await this.qcall(() => this.deps.qdrant.upsert(collection, {
+        wait:   true,
+        points: [{ id, vector, payload }],
+      }));
+
+      return {
+        id, scope, kind, summary,
+        body:        input.body,
+        detail:      input.detail,
+        importance:  input.importance,
+        createdAt:   now,
+        updatedAt:   now,
+        recallCount: 0,
+        tags:        input.tags ?? [],
+      };
+    });
   }
 
   /**
@@ -690,26 +711,33 @@ export class QdrantSemanticStore implements ISemanticMemoryStore {
    * Fire-and-forget; never throws to the caller.
    */
   private async reinforcePoint(collection: string, pointId: string): Promise<void> {
-    try {
-      // Retrieve current recall_count
-      const [point] = await this.qcall(() => this.deps.qdrant.retrieve(collection, {
-        ids: [pointId], with_payload: true,
-      })) as Array<{ id: string; payload: Partial<StoredPayload> } | undefined>;
+    // Serialise per pointId so concurrent recalls of the same point don't
+    // race the read-modify-write and lose increments. Serialiser key is
+    // collection-prefixed because pointIds are not globally unique across
+    // tenants — two tenants might happen to mint the same UUID and we
+    // don't want their reinforcements queued behind each other.
+    const lockKey = `${collection}::${pointId}`;
+    return this.reinforceSerializer.chain(lockKey, async () => {
+      try {
+        const [point] = await this.qcall(() => this.deps.qdrant.retrieve(collection, {
+          ids: [pointId], with_payload: true,
+        })) as Array<{ id: string; payload: Partial<StoredPayload> } | undefined>;
 
-      if (!point) return;
+        if (!point) return;
 
-      const currentCount = point.payload.recall_count ?? 0;
-      await this.qcall(() => this.deps.qdrant.setPayload(collection, {
-        payload: {
-          recall_count: currentCount + 1,
-          updated_at:   new Date().toISOString(),
-        },
-        points: [pointId],
-      }));
-    } catch {
-      // Best-effort — stale recall_count is minor; if the breaker is open
-      // here, the next store/recall will surface it to callers.
-    }
+        const currentCount = point.payload.recall_count ?? 0;
+        await this.qcall(() => this.deps.qdrant.setPayload(collection, {
+          payload: {
+            recall_count: currentCount + 1,
+            updated_at:   new Date().toISOString(),
+          },
+          points: [pointId],
+        }));
+      } catch {
+        // Best-effort — stale recall_count is minor; if the breaker is open
+        // here, the next store/recall will surface it to callers.
+      }
+    });
   }
 
   /**

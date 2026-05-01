@@ -457,6 +457,141 @@ describe('QdrantSemanticStore — schema marker (gap #6 + #10)', () => {
   });
 });
 
+describe('QdrantSemanticStore — concurrency hygiene (gap #11 + #12)', () => {
+  it('serialises cap-check + upsert per tenant (gap #11 TOCTOU)', async () => {
+    // Track in-flight critical sections per tenant. With the serialiser
+    // working correctly, this never exceeds 1 for the same tenant.
+    // We instrument the entry upsert only — that's inside the lock and
+    // each store() does exactly one — to avoid counting concurrent
+    // ensureCollection probes that legitimately race outside the lock.
+    let inFlight = 0;
+    let maxInFlight = 0;
+
+    const qdrant = makeQdrant({
+      upsert: jest.fn<(col: string, body: { points: { id: string }[] }) => Promise<unknown>>()
+        .mockImplementation(async (_col, body) => {
+          if (body?.points?.[0]?.id === SCHEMA_MARKER_ID) return undefined;
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await new Promise(r => setTimeout(r, 5));
+          inFlight -= 1;
+          return undefined;
+        }),
+    });
+    const store = new QdrantSemanticStore({ qdrant, embedder, config: { vectorDimension: 8 } });
+
+    // Fire 5 concurrent stores for the same tenant
+    await Promise.all(Array.from({ length: 5 }, () => store.store(input())));
+
+    expect(maxInFlight).toBe(1);
+    // All 5 entry upserts went through (plus possibly 1 marker upsert for
+    // fresh creation; mocks here say "exists", so no marker write expected)
+    const entryUpserts = qdrant.upsert.mock.calls.filter(
+      (c: any[]) => c[1]?.points?.[0]?.id !== SCHEMA_MARKER_ID,
+    );
+    expect(entryUpserts).toHaveLength(5);
+  });
+
+  it('different tenants run concurrently (no cross-tenant blocking)', async () => {
+    let aInFlight = false;
+    let bSawAInFlight = false;
+
+    const qdrant = makeQdrant({
+      getCollection: jest.fn<() => Promise<unknown>>().mockImplementation(async () => {
+        return { points_count: 0 };
+      }),
+      upsert: jest.fn<() => Promise<unknown>>().mockImplementation(async (_col, body: any) => {
+        const tenantId = body?.points?.[0]?.payload?.tenant_id;
+        if (tenantId === 'A') {
+          aInFlight = true;
+          await new Promise(r => setTimeout(r, 10));
+          aInFlight = false;
+        } else if (tenantId === 'B') {
+          bSawAInFlight = aInFlight;
+        }
+        return undefined;
+      }),
+    });
+    const store = new QdrantSemanticStore({ qdrant, embedder, config: { vectorDimension: 8 } });
+
+    await Promise.all([
+      store.store({ ...input(), scope: { tenantId: 'A' } }),
+      store.store({ ...input(), scope: { tenantId: 'B' } }),
+    ]);
+
+    expect(bSawAInFlight).toBe(true);
+  });
+
+  it('cap-exceeded errors propagate without blocking subsequent same-tenant calls', async () => {
+    let count = 0;
+    const qdrant = makeQdrant({
+      getCollection: jest.fn<() => Promise<unknown>>().mockImplementation(async () => {
+        // First call: at cap. Second call: still at cap.
+        return { points_count: 100_000 };
+      }),
+    });
+    const store = new QdrantSemanticStore({
+      qdrant, embedder,
+      config: { vectorDimension: 8, maxEntriesPerTenant: 100_000 },
+    });
+
+    await expect(store.store(input())).rejects.toBeInstanceOf(SemanticStoreCapExceededError);
+    // Second call still fails — but it ran (didn't deadlock behind the first)
+    await expect(store.store(input())).rejects.toBeInstanceOf(SemanticStoreCapExceededError);
+    void count;
+  });
+
+  it('serialises retrieve+setPayload per point (gap #12 lost-increment)', async () => {
+    // Recreate the read-modify-write race: 5 concurrent reinforcements
+    // of the same point. Without serialisation they'd all read N and all
+    // write N+1, ending at N+1. With serialisation each sees the previous
+    // increment, ending at N+5.
+    let storedCount = 7;
+    const qdrant = makeQdrant({
+      retrieve: jest.fn<(col: string, opts: { ids: string[] }) => Promise<unknown>>()
+        .mockImplementation(async (_col, opts) => {
+          if (opts?.ids?.[0] === SCHEMA_MARKER_ID) {
+            return [{ id: SCHEMA_MARKER_ID, payload: {
+              _kind: 'schema_marker', version: 'v1', vector_dim: 8,
+              created_at: '2026-01-01T00:00:00Z',
+            }}];
+          }
+          // Yield a microtask so the race window is real
+          await Promise.resolve();
+          return [{ id: 'p-1', payload: { recall_count: storedCount } }];
+        }),
+      setPayload: jest.fn<(col: string, body: { payload: { recall_count: number } }) => Promise<unknown>>()
+        .mockImplementation(async (_col, body) => {
+          storedCount = body.payload.recall_count;
+          return undefined;
+        }),
+    });
+    const store = new QdrantSemanticStore({ qdrant, embedder, config: { vectorDimension: 8 } });
+
+    // recall returns a single result for point p-1; reinforce=true triggers
+    // 5 concurrent reinforcements of the same point.
+    const search = jest.fn<() => Promise<unknown>>().mockResolvedValue([{
+      id: 'p-1', score: 0.9, payload: {
+        tenant_id: TENANT, kind: 'domain-fact', summary: 'x',
+        importance: 0.5, recall_count: storedCount,
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      },
+    }]);
+    qdrant.search = search;
+
+    // Fire 5 reinforcement chains for the same point
+    await Promise.all(Array.from({ length: 5 }, () => store.recall({
+      tenantId: TENANT, query: 'x', reinforce: true,
+    })));
+
+    // Reinforcement is fire-and-forget inside recall(); wait for the
+    // serialiser's chain to drain.
+    await new Promise(r => setTimeout(r, 20));
+
+    expect(storedCount).toBe(7 + 5);
+  });
+});
+
 describe('QdrantSemanticStore — circuit breaker integration', () => {
   it('does NOT fire the audit when the breaker is open (purge did not happen)', async () => {
     const breaker = new MemoryCircuitBreaker('test', { failureThreshold: 1, cooldownMs: 60_000 });

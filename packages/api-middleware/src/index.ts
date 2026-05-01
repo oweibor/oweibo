@@ -7,4 +7,5 @@ export { requestId, propagationHeaders } from './requestId.js';
 export { ipLimiter, taskLimiter, scrapeLimiter, sseLimiter } from './rateLimit.js';
 export { assertSafeTarget }          from './ssrfGuard.js';
 export type { SafeTarget }           from './ssrfGuard.js';
-export type { AuthenticatedRequest, JwksConfig, LegacyToken, Middleware, RedisLike } from './types.js';
+export type { AuthenticatedRequest, JwksConfig, LegacyToken, Middleware } from './types.js';
+export type { RedisLike }            from './idempotent.js';

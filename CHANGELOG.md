@@ -16,6 +16,50 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.7.0] — 2026-05-16
+
+### Phase 7: CI/test hardening — reliable test pipeline across all packages
+
+**CI workflow (`.github/workflows/oweibo.yml`)**
+
+- Build dependency chain before tests: `core-contracts` → `@oweibo/db` (prisma generate + build) → `@oweibo/api-middleware`; previously only `core-contracts` was built, causing import resolution failures in downstream package tests
+- `OWEIBO_DISABLE_PYTHON_SUBPROCESS=1` env var injected into the test run to force `PythonAnalyzer` into regex-fallback mode; avoids flaky 30s subprocess timeouts in sandboxed CI runners
+- `QUARANTINE_BASE` set to `${{ runner.temp }}/kilo-quarantine`; makes the quarantine directory env-overridable so tests do not need write access to the repository root
+- Removed explicit `pnpm` version pin from the workflow — `pnpm/action-setup@v4` defaults to v9 when no version is specified; eliminated version-drift divergence between local and CI
+- `core-engine` jest `testTimeout` bumped to 30 s to accommodate Python subprocess integration tests on slower CI hosts
+
+**`packages/api-middleware`**
+
+- `src/__stubs__/db.ts` (new): in-process stub of `@oweibo/db` exports (`appendAudit`, `prisma`, `withTenantContext`, `Principal`) used by test consumers to avoid triggering `prisma generate` as a side-effect of import
+- `vitest.config.ts` (new): moduleNameMapper aliases `@oweibo/db` → the stub; replaces the previous implicit resolution that broke when `@oweibo/db` was not pre-built
+- `src/index.ts`: moved `RedisLike` re-export from `types.js` to `idempotent.js` where the type is actually defined; fixes downstream packages that imported it transitively
+
+**`packages/cli`** — jest infrastructure
+
+- `jest.config.js` (new): ts-jest preset wired with `tsconfig.json`; `moduleNameMapper` resolves `.js` ESM extensions to their `.ts` sources so tests can run without a prior build step
+- `src/__tests__/commands.test.ts`, `parity.test.ts`: switched `jest.fn()` mock patterns to match updated fetch-client internals
+
+**`packages/core-engine`**
+
+- `jest.config.js`: added `testTimeout: 30000` override; prevents Python subprocess tests from failing on timeout in CI
+- `src/doc-generator/analysis/analyzers/PythonAnalyzer.ts`: reads `OWEIBO_DISABLE_PYTHON_SUBPROCESS` env var; when set, skips the subprocess and returns regex-based analysis results directly — eliminates the only non-deterministic CI timeout source
+
+**`packages/module-{auth,codegen,compliance,datalayer,export,observability,scaffolding}`**
+
+- `jest.config.js` (new in each): ts-jest preset; `moduleNameMapper` for `.js` → `.ts` resolution; contract test files discovered via `testMatch: ['**/__tests__/**/*.contract.test.ts']`
+- `src/__tests__/*.contract.test.ts`: import paths updated to use the package's own entry point rather than relative internal paths; fixes resolution under ts-jest without a prior build
+
+**`apps/identity`**
+
+- `src/__tests__/jwt.test.ts`: updated mock assertions to match current `mintAccessToken` / `verifyAccessToken` signatures; adds missing `act_as` claim assertions for agent token round-trips
+
+**`kilo/pipeline`**
+
+- `src/services/gates/invariantSemantic.ts`, `routing.ts`, `recovery/convergence.ts`: import path fixes resolving ambiguous `.js` extension references that ts-jest couldn't resolve without a build step
+- `tests/test_p2_task_clear_penalise.ts` (new): integration test for the P2 task-clear-penalise path; stubs `@oweibo/api-middleware` to avoid circular build-time dependency
+
+---
+
 ## [0.6.0] — 2026-04-29
 
 ### Phase 6: Audit, GDPR, OTel GenAI semantic conventions, self-hosted observability stack
@@ -417,7 +461,8 @@ Resource families:
 
 ---
 
-[Unreleased]: https://github.com/oweibor/oweibo/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/oweibor/oweibo/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/oweibor/oweibo/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/oweibor/oweibo/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/oweibor/oweibo/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/oweibor/oweibo/compare/v0.3.0...v0.4.0

@@ -699,7 +699,7 @@ Enforced by dep-cruiser (`.dependency-cruiser.js`). The build fails on any viola
 | **Phase 4** | Robust CLI: all resource-family subcommands; `login`/`logout`/`whoami`; `~/.oweibo/credentials` refresh-token cache; bidirectional parity CI gate; 40+ integration tests | **Done** |
 | **Phase 5** | Web admin UI: `apps/admin-web` Next.js 15 RSC, edge-runtime RBAC middleware, tenant switcher with JWT re-issue, Playwright e2e for platform_admin + tenant_admin journeys | **Done** |
 | **Phase 6** | Audit middleware on all privileged routes (16 actions); GDPR erasure endpoint; `packages/observability` (GenAI OTel semantic conventions, span helpers, pino logger); OTel collector → Tempo + Loki + Prometheus + Grafana + Alertmanager; `no-direct-llm-call` ESLint rule; CI conformance test | **Done** |
-| Phase 7 | Launch hardening: k6 load test (500 RPS sustained), chaos testing, DR rehearsal, external pentest | Pending |
+| **Phase 7** | CI/test pipeline hardening (ts-jest configs, build dependency chain, PythonAnalyzer CI fallback, QUARANTINE_BASE override, jwt test fixes, P2 penalise test); launch hardening remainder (k6, chaos, DR, pentest) in progress | **In progress** |
 | Phase 8 | Legacy `TENANT_TOKENS` sunset: 60-day migration window, import as real `api_keys` rows | Pending |
 | Phase 10+ | Firecracker microVMs, Postgres hash-partitioning, multi-region, self-hosted edge tier | Deferred |
 

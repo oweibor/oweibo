@@ -32,10 +32,13 @@ class SwarmCoordinator {
     pgPool;
     cohortRouter;
     safetyChecker;
+    cohortAdmin;
     conflictResolver;
     constructor(baseLlm, memory, policy, anomaly, auditLogger, conflictResolver, eventBus, interventionGateway, decomposer, contextStore, sessions, pgPool, cohortRouter, 
     /** D.7: optional production safety checker — fires on 5% sample of executor output. */
-    safetyChecker) {
+    safetyChecker, 
+    /** D.1: optional cohort admin — resolves per-tenant cohort_channel from tenant_settings. */
+    cohortAdmin) {
         this.baseLlm = baseLlm;
         this.memory = memory;
         this.policy = policy;
@@ -49,6 +52,7 @@ class SwarmCoordinator {
         this.pgPool = pgPool;
         this.cohortRouter = cohortRouter;
         this.safetyChecker = safetyChecker;
+        this.cohortAdmin = cohortAdmin;
         this.conflictResolver = conflictResolver;
     }
     /**
@@ -59,7 +63,11 @@ class SwarmCoordinator {
      * Invariant §2.3: hash columns and task INSERT are in the same Postgres transaction.
      */
     async startTask(task, plan, subGoals, secCtx, trace, sessionId) {
-        const channel = 'stable-v0'; // Phase D.1 will derive from tenant cohort settings
+        // D.1: derive channel from tenant_settings.cohort_channel; fall back to
+        // 'stable-v0' if no CohortAdminService is wired or the lookup fails.
+        const channel = this.cohortAdmin
+            ? await this.cohortAdmin.resolveCohortFor(task.tenantId)
+            : 'stable-v0';
         // Resolve all four role prompts
         const resolved = this.cohortRouter
             ? await this.cohortRouter.resolveAllRoles(task.id, channel)

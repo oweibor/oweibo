@@ -20,6 +20,7 @@ import type { Pool } from 'pg';
 import type { OperationalModeService } from '../infrastructure/OperationalModeService.js';
 import type { PromotionGateService } from '../bandit/PromotionGateService.js';
 import type { MutationGovernanceService } from '../governance/MutationGovernanceService.js';
+import type { CohortAdminService } from '../infrastructure/CohortAdminService.js';
 
 export interface ServerConfig {
   readonly port: number;
@@ -78,6 +79,8 @@ export async function createServer(
     promotionGate?: PromotionGateService;
     /** Optional — when provided, enables /api/v1/platform/prompts/mutations/* (D.12). */
     mutationGovernance?: MutationGovernanceService;
+    /** Optional — when provided, enables /api/v1/platform/cohorts/* (D.1). */
+    cohortAdmin?: CohortAdminService;
   },
   config: Partial<ServerConfig> = {},
 ): Promise<{ app: import('express').Application; port: number }> {
@@ -136,6 +139,7 @@ export async function createServer(
       operationalMode: deps.operationalMode,
       ...(deps.promotionGate      ? { promotionGate:      deps.promotionGate }      : {}),
       ...(deps.mutationGovernance ? { mutationGovernance: deps.mutationGovernance } : {}),
+      ...(deps.cohortAdmin        ? { cohortAdmin:        deps.cohortAdmin }        : {}),
     }));
   }
 

@@ -28,6 +28,7 @@ import type { DistributedContextStore } from './DistributedContextStore.js';
 import type { SessionStore } from '../ingestion/SessionStore.js';
 import type { ArtifactFile } from './DocumentationAgent.js';
 import type { ProductionSafetyChecker } from '../safety/ProductionSafetyChecker.js';
+import type { CohortAdminService } from '../infrastructure/CohortAdminService.js';
 
 export interface SwarmResult {
   subGoalResults: Record<string, unknown>;
@@ -65,6 +66,8 @@ export class SwarmCoordinator {
     private readonly cohortRouter?:       CohortRouter,
     /** D.7: optional production safety checker — fires on 5% sample of executor output. */
     private readonly safetyChecker?:     ProductionSafetyChecker,
+    /** D.1: optional cohort admin — resolves per-tenant cohort_channel from tenant_settings. */
+    private readonly cohortAdmin?:       CohortAdminService,
   ) {
     this.conflictResolver = conflictResolver;
   }
@@ -84,7 +87,11 @@ export class SwarmCoordinator {
     trace:     LangfuseTraceClient,
     sessionId?: string,
   ): Promise<SwarmResult> {
-    const channel = 'stable-v0'; // Phase D.1 will derive from tenant cohort settings
+    // D.1: derive channel from tenant_settings.cohort_channel; fall back to
+    // 'stable-v0' if no CohortAdminService is wired or the lookup fails.
+    const channel = this.cohortAdmin
+      ? await this.cohortAdmin.resolveCohortFor(task.tenantId)
+      : 'stable-v0';
 
     // Resolve all four role prompts
     const resolved = this.cohortRouter

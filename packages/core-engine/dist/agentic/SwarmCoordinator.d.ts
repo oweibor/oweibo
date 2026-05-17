@@ -15,6 +15,7 @@ import type { DistributedContextStore } from './DistributedContextStore.js';
 import type { SessionStore } from '../ingestion/SessionStore.js';
 import type { ArtifactFile } from './DocumentationAgent.js';
 import type { ProductionSafetyChecker } from '../safety/ProductionSafetyChecker.js';
+import type { CohortAdminService } from '../infrastructure/CohortAdminService.js';
 export interface SwarmResult {
     subGoalResults: Record<string, unknown>;
     agentMessages: AgentMessage[];
@@ -46,13 +47,17 @@ export declare class SwarmCoordinator {
     private readonly cohortRouter?;
     /** D.7: optional production safety checker — fires on 5% sample of executor output. */
     private readonly safetyChecker?;
+    /** D.1: optional cohort admin — resolves per-tenant cohort_channel from tenant_settings. */
+    private readonly cohortAdmin?;
     private readonly conflictResolver;
     constructor(baseLlm: {
         baseUrl: string;
         model: string;
     }, memory: ISemanticMemoryStore, policy: PolicyEngine, anomaly: AnomalyDetector, auditLogger: ImmutableAuditLogger, conflictResolver: ConflictResolver, eventBus: TaskEventBus, interventionGateway: TaskInterventionGateway, decomposer: GoalDecomposer, contextStore: DistributedContextStore, sessions: SessionStore, pgPool?: Pool | undefined, cohortRouter?: CohortRouter | undefined, 
     /** D.7: optional production safety checker — fires on 5% sample of executor output. */
-    safetyChecker?: ProductionSafetyChecker | undefined);
+    safetyChecker?: ProductionSafetyChecker | undefined, 
+    /** D.1: optional cohort admin — resolves per-tenant cohort_channel from tenant_settings. */
+    cohortAdmin?: CohortAdminService | undefined);
     /**
      * Entry point for CognitiveEngine (Phase A.4+).
      * Resolves prompts via CohortRouter, writes all assembled hashes atomically

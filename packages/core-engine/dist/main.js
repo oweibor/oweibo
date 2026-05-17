@@ -41,6 +41,7 @@ const OperationalModeService_js_1 = require("./infrastructure/OperationalModeSer
 const BanditService_js_1 = require("./bandit/BanditService.js");
 const PromotionGateService_js_1 = require("./bandit/PromotionGateService.js");
 const MutationGovernanceService_js_1 = require("./governance/MutationGovernanceService.js");
+const CohortAdminService_js_1 = require("./infrastructure/CohortAdminService.js");
 const prompt_registry_1 = require("@oweibo/prompt-registry");
 const prompt_registry_2 = require("@oweibo/prompt-registry");
 const server_js_1 = require("./api/server.js");
@@ -139,6 +140,7 @@ async function main() {
     let operationalMode;
     let promotionGate;
     let mutationGovernance;
+    let cohortAdmin;
     if (process.env['DATABASE_URL']) {
         pgPool = new pg_1.Pool({ connectionString: process.env['DATABASE_URL'] });
         const promptRegistry = new prompt_registry_1.PromptRegistry(pgPool, process.env['LANGFUSE_SECRET_KEY'], process.env['LANGFUSE_PUBLIC_KEY']);
@@ -148,8 +150,10 @@ async function main() {
         const banditService = new BanditService_js_1.BanditService(pgPool, operationalMode);
         promotionGate = new PromotionGateService_js_1.PromotionGateService(pgPool, banditService);
         mutationGovernance = new MutationGovernanceService_js_1.MutationGovernanceService(pgPool);
+        cohortAdmin = new CohortAdminService_js_1.CohortAdminService(pgPool);
     }
-    const swarm = new SwarmCoordinator_js_1.SwarmCoordinator(llmBase, memory, policyEngine, anomaly, auditLogger, conflictResolver, eventBus, interventionGateway, decomposer, contextStore, sessionStore, pgPool, cohortRouter);
+    const swarm = new SwarmCoordinator_js_1.SwarmCoordinator(llmBase, memory, policyEngine, anomaly, auditLogger, conflictResolver, eventBus, interventionGateway, decomposer, contextStore, sessionStore, pgPool, cohortRouter, undefined, // safetyChecker — wired in a future revision
+    cohortAdmin);
     // ── Heartbeat ─────────────────────────────────────────────────────────────
     const heartbeat = new TaskHeartbeat_js_1.TaskHeartbeat(redis);
     const scanner = new HeartbeatScanner_js_1.HeartbeatScanner(redis, async () => undefined, async () => undefined);
@@ -217,6 +221,7 @@ async function main() {
         ...(pgPool && operationalMode ? { pool: pgPool, operationalMode } : {}),
         ...(promotionGate ? { promotionGate } : {}),
         ...(mutationGovernance ? { mutationGovernance } : {}),
+        ...(cohortAdmin ? { cohortAdmin } : {}),
     });
     // ── Channel Gateway (optional) ────────────────────────────────────────────
     try {

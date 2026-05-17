@@ -2,7 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createPlatformRouter = createPlatformRouter;
 /**
- * platform.routes.ts — Platform governance routes (§17.5.1, §18.8.3, §9.5, §7.4.3).
+ * platform.routes.ts — Platform governance routes (§17.5.1, §18.8.3, §9.5, §7.4.3, §9.2).
  *
  * GET  /platform/operational-mode               — current mode state + transition history
  * POST /platform/operational-mode               — set mode (platform:admin)
@@ -14,6 +14,10 @@ exports.createPlatformRouter = createPlatformRouter;
  * GET  /platform/prompts/mutations              — list slots with mutation_status (D.12)
  * GET  /platform/prompts/mutations/:slot/:role  — full mutation history for one slot
  * POST /platform/prompts/mutations              — change mutation_status (platform:admin)
+ * GET  /platform/cohorts/tenants                — list every tenant with cohort_channel (D.1)
+ * GET  /platform/cohorts/channels               — available channel names
+ * GET  /platform/cohorts/recent                 — recent cohort changes
+ * POST /platform/cohorts/tenants/:tenantId      — change a tenant's cohort (platform:admin)
  *
  * Scope guard: POST endpoints require 'platform:admin' in the JWT scopes claim.
  * If scopes are absent (older tokens), fall back to PLATFORM_ADMIN_KEY header.
@@ -70,10 +74,14 @@ const SetMutationStatusSchema = zod_1.z.object({
     reason: zod_1.z.string().min(1).max(1000),
     rfcUrl: zod_1.z.string().url().max(500).optional(),
 });
+const SetTenantCohortSchema = zod_1.z.object({
+    newChannel: zod_1.z.string().min(1).max(100),
+    reason: zod_1.z.string().min(1).max(1000),
+});
 // ── Router factory ────────────────────────────────────────────────────────────
 function createPlatformRouter(deps) {
     const router = (0, express_1.Router)();
-    const { pool, operationalMode, promotionGate, mutationGovernance } = deps;
+    const { pool, operationalMode, promotionGate, mutationGovernance, cohortAdmin } = deps;
     // ── GET /platform/operational-mode ────────────────────────────────────────
     router.get('/operational-mode', async (_req, res) => {
         const state = await operationalMode.getModeState();
@@ -324,6 +332,66 @@ function createPlatformRouter(deps) {
         if (!result.ok) {
             const status = result.error === 'rfc_required' ? 400
                 : result.error === 'slot_not_found' ? 404
+                    : 409;
+            res.status(status).json(result);
+            return;
+        }
+        res.json(result);
+    });
+    // ── GET /platform/cohorts/tenants (D.1) ───────────────────────────────────
+    router.get('/cohorts/tenants', async (_req, res) => {
+        if (!cohortAdmin) {
+            res.status(503).json({ error: 'cohort_admin_unavailable' });
+            return;
+        }
+        const tenants = await cohortAdmin.listTenants();
+        res.json({ tenants });
+    });
+    // ── GET /platform/cohorts/channels (D.1) ──────────────────────────────────
+    router.get('/cohorts/channels', async (_req, res) => {
+        if (!cohortAdmin) {
+            res.status(503).json({ error: 'cohort_admin_unavailable' });
+            return;
+        }
+        const channels = await cohortAdmin.listChannels();
+        res.json({ channels });
+    });
+    // ── GET /platform/cohorts/recent (D.1) ────────────────────────────────────
+    router.get('/cohorts/recent', async (req, res) => {
+        if (!cohortAdmin) {
+            res.status(503).json({ error: 'cohort_admin_unavailable' });
+            return;
+        }
+        const limit = Math.min(parseInt(String(req.query['limit'] ?? '50'), 10) || 50, 200);
+        const recent = await cohortAdmin.listRecentChanges(limit);
+        res.json({ recent });
+    });
+    // ── POST /platform/cohorts/tenants/:tenantId (D.1) ────────────────────────
+    router.post('/cohorts/tenants/:tenantId', (req, res, next) => requirePlatformAdmin(req, res, next), async (req, res) => {
+        if (!cohortAdmin) {
+            res.status(503).json({ error: 'cohort_admin_unavailable' });
+            return;
+        }
+        const authed = req;
+        const tenantId = req.params['tenantId'];
+        if (!tenantId) {
+            res.status(400).json({ error: 'missing_tenant_id' });
+            return;
+        }
+        const parsed = SetTenantCohortSchema.safeParse(req.body);
+        if (!parsed.success) {
+            res.status(400).json({ error: 'invalid_body', issues: parsed.error.issues });
+            return;
+        }
+        const result = await cohortAdmin.setTenantCohort({
+            tenantId,
+            newChannel: parsed.data.newChannel,
+            reason: parsed.data.reason,
+            changedBy: authed.userId,
+        });
+        if (!result.ok) {
+            const status = result.error === 'tenant_not_found' ? 404
+                : result.error === 'unknown_channel' ? 400
                     : 409;
             res.status(status).json(result);
             return;

@@ -98,6 +98,7 @@ async function createServer(deps, config = {}) {
             operationalMode: deps.operationalMode,
             ...(deps.promotionGate ? { promotionGate: deps.promotionGate } : {}),
             ...(deps.mutationGovernance ? { mutationGovernance: deps.mutationGovernance } : {}),
+            ...(deps.cohortAdmin ? { cohortAdmin: deps.cohortAdmin } : {}),
         }));
     }
     app.use('/api/v1', v1);

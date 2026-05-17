@@ -39,6 +39,7 @@ import { OperationalModeService }  from './infrastructure/OperationalModeService
 import { BanditService }           from './bandit/BanditService.js';
 import { PromotionGateService }    from './bandit/PromotionGateService.js';
 import { MutationGovernanceService } from './governance/MutationGovernanceService.js';
+import { CohortAdminService }       from './infrastructure/CohortAdminService.js';
 import { PromptRegistry }          from '@oweibo/prompt-registry';
 import { PromptAssembler }         from '@oweibo/prompt-registry';
 import { createServer }            from './api/server.js';
@@ -155,6 +156,7 @@ async function main(): Promise<void> {
   let operationalMode: OperationalModeService | undefined;
   let promotionGate: PromotionGateService | undefined;
   let mutationGovernance: MutationGovernanceService | undefined;
+  let cohortAdmin: CohortAdminService | undefined;
   if (process.env['DATABASE_URL']) {
     pgPool = new Pool({ connectionString: process.env['DATABASE_URL'] });
     const promptRegistry = new PromptRegistry(
@@ -168,12 +170,15 @@ async function main(): Promise<void> {
     const banditService = new BanditService(pgPool, operationalMode);
     promotionGate = new PromotionGateService(pgPool, banditService);
     mutationGovernance = new MutationGovernanceService(pgPool);
+    cohortAdmin = new CohortAdminService(pgPool);
   }
 
   const swarm = new SwarmCoordinator(
     llmBase, memory, policyEngine, anomaly, auditLogger,
     conflictResolver, eventBus, interventionGateway, decomposer, contextStore, sessionStore,
     pgPool, cohortRouter,
+    undefined,    // safetyChecker — wired in a future revision
+    cohortAdmin,  // D.1 — resolves per-tenant cohort_channel at task start
   );
 
   // ── Heartbeat ─────────────────────────────────────────────────────────────
@@ -270,6 +275,7 @@ async function main(): Promise<void> {
     ...(pgPool && operationalMode ? { pool: pgPool, operationalMode } : {}),
     ...(promotionGate      ? { promotionGate }      : {}),
     ...(mutationGovernance ? { mutationGovernance } : {}),
+    ...(cohortAdmin        ? { cohortAdmin }        : {}),
   });
 
   // ── Channel Gateway (optional) ────────────────────────────────────────────

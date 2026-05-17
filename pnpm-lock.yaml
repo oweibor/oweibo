@@ -1074,27 +1074,21 @@ importers:
         specifier: ^8.13.3
         version: 8.20.0
     devDependencies:
-      '@types/jest':
-        specifier: ^29.0.0
-        version: 29.5.14
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.39
       '@types/pg':
         specifier: ^8.11.10
         version: 8.20.0
-      jest:
-        specifier: ^29.0.0
-        version: 29.7.0(@types/node@20.19.39)(ts-node@10.9.2(@types/node@20.19.39)(typescript@5.9.3))
       rimraf:
         specifier: ^5.0.0
         version: 5.0.10
-      ts-jest:
-        specifier: ^29.0.0
-        version: 29.4.9(@babel/core@7.29.0)(@jest/transform@29.7.0)(@jest/types@29.6.3)(babel-jest@29.7.0(@babel/core@7.29.0))(jest-util@29.7.0)(jest@29.7.0(@types/node@20.19.39)(ts-node@10.9.2(@types/node@20.19.39)(typescript@5.9.3)))(typescript@5.9.3)
       typescript:
         specifier: ^5.5.4
         version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@20.19.39)(terser@5.46.1)
 
 packages:
 

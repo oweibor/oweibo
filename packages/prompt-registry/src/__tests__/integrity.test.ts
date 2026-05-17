@@ -1,13 +1,12 @@
 // DONE: Phase A.6 — integrity test: assembled stable-v0 text == original static strings
 // CI gate: this test must pass before Phase A is considered done.
+import { describe, it, expect } from 'vitest';
 import { createHmac } from 'crypto';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
-const __dirname = typeof __filename !== 'undefined'
-  ? require('path').dirname(__filename)
-  : dirname(fileURLToPath(import.meta.url));
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Original static prompts (BaseAgent.ts / GoalDecomposer.ts) ───────────────
 

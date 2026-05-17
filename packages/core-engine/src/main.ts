@@ -38,6 +38,7 @@ import { CohortRouter }            from './infrastructure/CohortRouter.js';
 import { OperationalModeService }  from './infrastructure/OperationalModeService.js';
 import { BanditService }           from './bandit/BanditService.js';
 import { PromotionGateService }    from './bandit/PromotionGateService.js';
+import { MutationGovernanceService } from './governance/MutationGovernanceService.js';
 import { PromptRegistry }          from '@oweibo/prompt-registry';
 import { PromptAssembler }         from '@oweibo/prompt-registry';
 import { createServer }            from './api/server.js';
@@ -153,6 +154,7 @@ async function main(): Promise<void> {
   let cohortRouter: CohortRouter | undefined;
   let operationalMode: OperationalModeService | undefined;
   let promotionGate: PromotionGateService | undefined;
+  let mutationGovernance: MutationGovernanceService | undefined;
   if (process.env['DATABASE_URL']) {
     pgPool = new Pool({ connectionString: process.env['DATABASE_URL'] });
     const promptRegistry = new PromptRegistry(
@@ -165,6 +167,7 @@ async function main(): Promise<void> {
     operationalMode = new OperationalModeService(pgPool, rPub, rSub);
     const banditService = new BanditService(pgPool, operationalMode);
     promotionGate = new PromotionGateService(pgPool, banditService);
+    mutationGovernance = new MutationGovernanceService(pgPool);
   }
 
   const swarm = new SwarmCoordinator(
@@ -265,7 +268,8 @@ async function main(): Promise<void> {
     interventionGateway: interventionGateway as any,
     hitlGateway,
     ...(pgPool && operationalMode ? { pool: pgPool, operationalMode } : {}),
-    ...(promotionGate ? { promotionGate } : {}),
+    ...(promotionGate      ? { promotionGate }      : {}),
+    ...(mutationGovernance ? { mutationGovernance } : {}),
   });
 
   // ── Channel Gateway (optional) ────────────────────────────────────────────

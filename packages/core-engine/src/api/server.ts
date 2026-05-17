@@ -19,6 +19,7 @@ import type { SecretsManager } from '../secrets/SecretsManager.js';
 import type { Pool } from 'pg';
 import type { OperationalModeService } from '../infrastructure/OperationalModeService.js';
 import type { PromotionGateService } from '../bandit/PromotionGateService.js';
+import type { MutationGovernanceService } from '../governance/MutationGovernanceService.js';
 
 export interface ServerConfig {
   readonly port: number;
@@ -75,6 +76,8 @@ export async function createServer(
     operationalMode?: OperationalModeService;
     /** Optional — when provided, enables /api/v1/platform/promotions/* (D.6). */
     promotionGate?: PromotionGateService;
+    /** Optional — when provided, enables /api/v1/platform/prompts/mutations/* (D.12). */
+    mutationGovernance?: MutationGovernanceService;
   },
   config: Partial<ServerConfig> = {},
 ): Promise<{ app: import('express').Application; port: number }> {
@@ -131,7 +134,8 @@ export async function createServer(
     v1.use('/platform', createPlatformRouter({
       pool:            deps.pool,
       operationalMode: deps.operationalMode,
-      ...(deps.promotionGate ? { promotionGate: deps.promotionGate } : {}),
+      ...(deps.promotionGate      ? { promotionGate:      deps.promotionGate }      : {}),
+      ...(deps.mutationGovernance ? { mutationGovernance: deps.mutationGovernance } : {}),
     }));
   }
 

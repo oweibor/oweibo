@@ -40,6 +40,7 @@ const CohortRouter_js_1 = require("./infrastructure/CohortRouter.js");
 const OperationalModeService_js_1 = require("./infrastructure/OperationalModeService.js");
 const BanditService_js_1 = require("./bandit/BanditService.js");
 const PromotionGateService_js_1 = require("./bandit/PromotionGateService.js");
+const MutationGovernanceService_js_1 = require("./governance/MutationGovernanceService.js");
 const prompt_registry_1 = require("@oweibo/prompt-registry");
 const prompt_registry_2 = require("@oweibo/prompt-registry");
 const server_js_1 = require("./api/server.js");
@@ -137,6 +138,7 @@ async function main() {
     let cohortRouter;
     let operationalMode;
     let promotionGate;
+    let mutationGovernance;
     if (process.env['DATABASE_URL']) {
         pgPool = new pg_1.Pool({ connectionString: process.env['DATABASE_URL'] });
         const promptRegistry = new prompt_registry_1.PromptRegistry(pgPool, process.env['LANGFUSE_SECRET_KEY'], process.env['LANGFUSE_PUBLIC_KEY']);
@@ -145,6 +147,7 @@ async function main() {
         operationalMode = new OperationalModeService_js_1.OperationalModeService(pgPool, rPub, rSub);
         const banditService = new BanditService_js_1.BanditService(pgPool, operationalMode);
         promotionGate = new PromotionGateService_js_1.PromotionGateService(pgPool, banditService);
+        mutationGovernance = new MutationGovernanceService_js_1.MutationGovernanceService(pgPool);
     }
     const swarm = new SwarmCoordinator_js_1.SwarmCoordinator(llmBase, memory, policyEngine, anomaly, auditLogger, conflictResolver, eventBus, interventionGateway, decomposer, contextStore, sessionStore, pgPool, cohortRouter);
     // ── Heartbeat ─────────────────────────────────────────────────────────────
@@ -213,6 +216,7 @@ async function main() {
         hitlGateway,
         ...(pgPool && operationalMode ? { pool: pgPool, operationalMode } : {}),
         ...(promotionGate ? { promotionGate } : {}),
+        ...(mutationGovernance ? { mutationGovernance } : {}),
     });
     // ── Channel Gateway (optional) ────────────────────────────────────────────
     try {

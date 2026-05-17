@@ -97,6 +97,7 @@ async function createServer(deps, config = {}) {
             pool: deps.pool,
             operationalMode: deps.operationalMode,
             ...(deps.promotionGate ? { promotionGate: deps.promotionGate } : {}),
+            ...(deps.mutationGovernance ? { mutationGovernance: deps.mutationGovernance } : {}),
         }));
     }
     app.use('/api/v1', v1);

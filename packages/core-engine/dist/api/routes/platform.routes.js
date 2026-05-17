@@ -2,15 +2,18 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createPlatformRouter = createPlatformRouter;
 /**
- * platform.routes.ts — Platform governance routes (§17.5.1, §18.8.3, §9.5).
+ * platform.routes.ts — Platform governance routes (§17.5.1, §18.8.3, §9.5, §7.4.3).
  *
- * GET  /platform/operational-mode         — current mode state + transition history
- * POST /platform/operational-mode         — set mode (platform:admin)
- * GET  /platform/charter/thresholds       — current drift threshold config + recent events
- * POST /platform/charter/thresholds       — update thresholds (platform:admin)
- * GET  /platform/promotions/pending       — list arms awaiting human approval (D.6)
- * GET  /platform/promotions/recent        — recent approve/reject history (D.6)
- * POST /platform/promotions/decide        — approve or reject a promotion (platform:admin)
+ * GET  /platform/operational-mode               — current mode state + transition history
+ * POST /platform/operational-mode               — set mode (platform:admin)
+ * GET  /platform/charter/thresholds             — current drift threshold config + recent events
+ * POST /platform/charter/thresholds             — update thresholds (platform:admin)
+ * GET  /platform/promotions/pending             — list arms awaiting human approval (D.6)
+ * GET  /platform/promotions/recent              — recent approve/reject history (D.6)
+ * POST /platform/promotions/decide              — approve or reject a promotion (platform:admin)
+ * GET  /platform/prompts/mutations              — list slots with mutation_status (D.12)
+ * GET  /platform/prompts/mutations/:slot/:role  — full mutation history for one slot
+ * POST /platform/prompts/mutations              — change mutation_status (platform:admin)
  *
  * Scope guard: POST endpoints require 'platform:admin' in the JWT scopes claim.
  * If scopes are absent (older tokens), fall back to PLATFORM_ADMIN_KEY header.
@@ -60,10 +63,17 @@ const PromotionDecisionSchema = zod_1.z.object({
     decision: zod_1.z.enum(['approved', 'rejected']),
     reason: zod_1.z.string().min(1).max(1000),
 });
+const SetMutationStatusSchema = zod_1.z.object({
+    slotId: zod_1.z.string().min(1).max(100),
+    role: zod_1.z.string().min(1).max(50),
+    newStatus: zod_1.z.enum(['mutable', 'guarded', 'frozen']),
+    reason: zod_1.z.string().min(1).max(1000),
+    rfcUrl: zod_1.z.string().url().max(500).optional(),
+});
 // ── Router factory ────────────────────────────────────────────────────────────
 function createPlatformRouter(deps) {
     const router = (0, express_1.Router)();
-    const { pool, operationalMode, promotionGate } = deps;
+    const { pool, operationalMode, promotionGate, mutationGovernance } = deps;
     // ── GET /platform/operational-mode ────────────────────────────────────────
     router.get('/operational-mode', async (_req, res) => {
         const state = await operationalMode.getModeState();
@@ -254,6 +264,71 @@ function createPlatformRouter(deps) {
                 message: err instanceof Error ? err.message : String(err),
             });
         }
+    });
+    // ── GET /platform/prompts/mutations (D.12) ────────────────────────────────
+    router.get('/prompts/mutations', async (req, res) => {
+        if (!mutationGovernance) {
+            res.status(503).json({ error: 'mutation_governance_unavailable' });
+            return;
+        }
+        const role = typeof req.query['role'] === 'string' ? req.query['role'] : undefined;
+        const status = typeof req.query['status'] === 'string' ? req.query['status'] : undefined;
+        const filter = {};
+        if (role)
+            filter.role = role;
+        if (status === 'mutable' || status === 'guarded' || status === 'frozen') {
+            filter.status = status;
+        }
+        const slots = await mutationGovernance.listSlots(filter);
+        res.json({ slots });
+    });
+    // ── GET /platform/prompts/mutations/:slot/:role (D.12) ────────────────────
+    router.get('/prompts/mutations/:slot/:role', async (req, res) => {
+        if (!mutationGovernance) {
+            res.status(503).json({ error: 'mutation_governance_unavailable' });
+            return;
+        }
+        const slotId = req.params['slot'];
+        const role = req.params['role'];
+        if (!slotId || !role) {
+            res.status(400).json({ error: 'missing_params' });
+            return;
+        }
+        const limit = Math.min(parseInt(String(req.query['limit'] ?? '50'), 10) || 50, 200);
+        const history = await mutationGovernance.getHistory(slotId, role, limit);
+        res.json({ history });
+    });
+    // ── POST /platform/prompts/mutations (D.12) ───────────────────────────────
+    router.post('/prompts/mutations', (req, res, next) => requirePlatformAdmin(req, res, next), async (req, res) => {
+        if (!mutationGovernance) {
+            res.status(503).json({ error: 'mutation_governance_unavailable' });
+            return;
+        }
+        const authed = req;
+        const parsed = SetMutationStatusSchema.safeParse(req.body);
+        if (!parsed.success) {
+            res.status(400).json({ error: 'invalid_body', issues: parsed.error.issues });
+            return;
+        }
+        const setStatusInput = {
+            slotId: parsed.data.slotId,
+            role: parsed.data.role,
+            newStatus: parsed.data.newStatus,
+            reason: parsed.data.reason,
+            changedBy: authed.userId,
+        };
+        if (parsed.data.rfcUrl !== undefined) {
+            setStatusInput.rfcUrl = parsed.data.rfcUrl;
+        }
+        const result = await mutationGovernance.setStatus(setStatusInput);
+        if (!result.ok) {
+            const status = result.error === 'rfc_required' ? 400
+                : result.error === 'slot_not_found' ? 404
+                    : 409;
+            res.status(status).json(result);
+            return;
+        }
+        res.json(result);
     });
     return router;
 }

@@ -130,3 +130,53 @@ jobs:
         env:
           OWEIBO_DISABLE_PYTHON_SUBPROCESS: '1'
           QUARANTINE_BASE: ${{ runner.temp }}/kilo-quarantine
+
+  role-literal-gate:
+    name: Phase A.10 — CanonicalRole Literal Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Check for bare role string literals
+        run: node scripts/check-role-literals.js
+
+  promotion-gate:
+    # D.9: blocks any PR that proposes a channel promotion unless all
+    # cohort_promotion_rules criteria are satisfied.
+    # Set PROMOTION_CHECK=skip to bypass in hotfix scenarios (requires approval).
+    name: Phase D.9 — Promotion Gate
+    runs-on: ubuntu-latest
+    # Only run when promotion-related files are changed
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install pg client
+        run: npm install --no-save pg
+      - name: Check promotion gate (skipped when no DATABASE_URL or PROMOTION_CHECK=skip)
+        run: |
+          if [ -z "$DATABASE_URL" ] || [ "$PROMOTION_CHECK" = "skip" ]; then
+            echo "[promotion-gate] No DATABASE_URL or PROMOTION_CHECK=skip — skipping live gate check."
+            exit 0
+          fi
+          # If PROMOTE_FROM / PROMOTE_TO are set, run gate check
+          if [ -n "$PROMOTE_FROM" ] && [ -n "$PROMOTE_TO" ] && [ -n "$PROMOTE_SLOT" ] && [ -n "$PROMOTE_ARM" ]; then
+            node scripts/check-promotion-gate.js \
+              --from "$PROMOTE_FROM" --to "$PROMOTE_TO" \
+              --slot "$PROMOTE_SLOT" --arm "$PROMOTE_ARM" \
+              ${HUMAN_APPROVED:+--human-approved}
+          else
+            echo "[promotion-gate] No promotion variables set — gate check skipped for this PR."
+          fi
+        env:
+          DATABASE_URL:    ${{ secrets.PLATFORM_DATABASE_URL }}
+          PROMOTE_FROM:    ${{ vars.PROMOTE_FROM }}
+          PROMOTE_TO:      ${{ vars.PROMOTE_TO }}
+          PROMOTE_SLOT:    ${{ vars.PROMOTE_SLOT }}
+          PROMOTE_ARM:     ${{ vars.PROMOTE_ARM }}
+          HUMAN_APPROVED:  ${{ vars.HUMAN_APPROVED }}
+          PROMOTION_CHECK: ${{ vars.PROMOTION_CHECK }}

@@ -52,6 +52,7 @@ dev-debug.log
 *.njsproj
 *.sln
 *.sw?
+plans/*
 # OS specific
 
 # Task files

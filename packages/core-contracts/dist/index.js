@@ -50,6 +50,12 @@ __exportStar(require("./interfaces/ITokenBudget.js"), exports);
 __exportStar(require("./secrets/ISecretsManager.js"), exports);
 // ── Browser (v9.5+) ───────────────────────────────────────────────────────────
 __exportStar(require("./browser.js"), exports);
+// ── Phase A: prompt versioning + task types ───────────────────────────────────
+__exportStar(require("./task.js"), exports);
+// ── Phase A.10: canonical role enum ──────────────────────────────────────────
+__exportStar(require("./roles.js"), exports);
+// ── Phase B.1: cross-tenant lesson contract ───────────────────────────────────
+__exportStar(require("./lesson.js"), exports);
 // ── Events ────────────────────────────────────────────────────────────────────
 __exportStar(require("./events/billing.events.js"), exports);
 __exportStar(require("./events/inventory.events.js"), exports);

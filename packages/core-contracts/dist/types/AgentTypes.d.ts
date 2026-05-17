@@ -169,7 +169,7 @@ export type TaskEventType = 'task-accepted' | 'stage-started' | 'stage-completed
  * AgentRole — specialist function of each agent in the swarm.
  * 'orchestrator' is reserved for CognitiveEngine.
  */
-export type AgentRole = 'orchestrator' | 'architect' | 'executor' | 'reviewer' | 'critic' | 'domain-specialist' | 'documentation-writer' | 'general-coder' | 'synthesizer' | 'k8s-specialist' | 'db-migration-specialist' | 'security-policy-specialist' | 'doc-analyzer';
+export type AgentRole = 'orchestrator' | 'architect' | 'executor' | 'reviewer' | 'decomposer' | 'critic' | 'domain-specialist' | 'documentation-writer' | 'general-coder' | 'synthesizer' | 'k8s-specialist' | 'db-migration-specialist' | 'security-policy-specialist' | 'doc-analyzer';
 /**
  * AgentMessage — typed unit of communication between agents on ScopedEventBus.
  * 'challenge' = genuine disagreement — routed to ConflictResolver before execution.

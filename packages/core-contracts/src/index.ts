@@ -39,6 +39,13 @@ export * from './secrets/ISecretsManager.js';
 // ── Browser (v9.5+) ───────────────────────────────────────────────────────────
 export * from './browser.js';
 
+// ── Phase A: prompt versioning + task types ───────────────────────────────────
+export * from './task.js';
+// ── Phase A.10: canonical role enum ──────────────────────────────────────────
+export * from './roles.js';
+// ── Phase B.1: cross-tenant lesson contract ───────────────────────────────────
+export * from './lesson.js';
+
 // ── Events ────────────────────────────────────────────────────────────────────
 export * from './events/billing.events.js';
 export * from './events/inventory.events.js';

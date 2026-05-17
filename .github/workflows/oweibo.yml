@@ -156,7 +156,7 @@ jobs:
         with:
           node-version: '20'
       - name: Install pg client
-        run: npm install --no-save pg
+        run: npm install --no-save --legacy-peer-deps pg
       - name: Check promotion gate (skipped when no DATABASE_URL or PROMOTION_CHECK=skip)
         run: |
           if [ -z "$DATABASE_URL" ] || [ "$PROMOTION_CHECK" = "skip" ]; then

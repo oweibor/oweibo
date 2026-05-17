@@ -33,7 +33,9 @@ const CANONICAL_ROLE_NAMES = ['architect', 'executor', 'reviewer', 'decomposer']
 // Paths are relative to the repo root.
 const ALLOW_LIST = new Set([
   'packages/core-contracts/src/roles.ts',
+  'packages/core-contracts/src/types/AgentTypes.ts',           // AgentRole union — continuation lines not matchable by skip patterns
   'packages/core-engine/src/infrastructure/CohortRouter.ts',   // STABLE_V0_FALLBACKS keys
+  'packages/observability/src/__tests__/spans.test.ts',        // span helper test — role strings are span-name inputs, not domain role refs
   'packages/prompt-registry/src/__tests__/integrity.test.ts',  // role iteration in test
   'packages/db/migrations/20260507_000000_phase_a_foundations.sql', // SQL seed literals
 ]);
@@ -59,7 +61,9 @@ const SKIP_LINE_PATTERNS = [
   /import type/,                      // type import
   /: CanonicalRole/,                  // typed as CanonicalRole
   /CANONICAL_ROLES\s*=/,              // the canonical array definition
+  /CANONICAL_ROLES\[/,                // reading from the canonical array
   /STABLE_V0_FALLBACKS\s*[=:]/,       // fallback map definition
+  /STABLE_V0_FALLBACKS\[/,            // accessing fallback map by key
   /readonly CanonicalRole/,           // type usage
 ];
 

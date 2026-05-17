@@ -8,5 +8,5 @@
     }
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["dist", "node_modules", "src/testing/**"]
+  "exclude": ["dist", "node_modules", "src/testing/**", "src/**/__tests__/**"]
 }

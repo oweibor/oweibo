@@ -4,14 +4,14 @@
 // and aggregator for schema-version routing.
 
 import { z } from 'zod';
-import type { LessonV1 } from '@oweibo/core-contracts';
+import type { LessonV1, CanonicalRole } from '@oweibo/core-contracts';
 import { CANONICAL_ROLES } from '@oweibo/core-contracts';
 
 export const LessonV1Schema = z.object({
   schemaVersion:        z.literal('1'),
   taskId:               z.string().uuid(),
   tenantId:             z.string().uuid(),
-  role:                 z.enum(CANONICAL_ROLES as [string, ...string[]]) as z.ZodEnum<['architect', 'executor', 'reviewer', 'decomposer']>,
+  role:                 z.enum([...CANONICAL_ROLES] as [CanonicalRole, ...CanonicalRole[]]),
   slotId:               z.string().min(1).max(100),
   channel:              z.string().min(1).max(100),
   outcome:              z.enum(['success', 'failure', 'recovery']),

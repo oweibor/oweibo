@@ -11,6 +11,7 @@ import { GenericAgent } from './BaseAgent.js';
 import {
   CohortRouter, STABLE_V0_FALLBACKS,
 } from '../infrastructure/CohortRouter.js';
+import { CANONICAL_ROLES } from '@oweibo/core-contracts';
 import type { CanonicalRole } from '@oweibo/core-contracts';
 import { ConflictResolver } from './ConflictResolver.js';
 import { tracedToolCall } from '../observability/LangfuseTracer.js';
@@ -174,10 +175,10 @@ export class SwarmCoordinator {
       new InstrumentedLLMClient(this.baseLlm.baseUrl, this.baseLlm.model, trace, taskId, role);
 
     const p = agentPrompts ?? STABLE_V0_FALLBACKS;
-    const architect  = new GenericAgent('architect',         makeLlm('architect'),         this.memory, p.architect,              trace, taskId, tenantId);
-    const executor   = new GenericAgent('executor',          makeLlm('executor'),           this.memory, p.executor,               trace, taskId, tenantId);
-    const reviewer   = new GenericAgent('reviewer',          makeLlm('reviewer'),           this.memory, p.reviewer,               trace, taskId, tenantId);
-    const decomposer  = new GenericAgent('decomposer',        makeLlm('decomposer'),         this.memory, p.decomposer,               trace, taskId, tenantId);
+    const architect  = new GenericAgent(CANONICAL_ROLES[0], makeLlm(CANONICAL_ROLES[0]), this.memory, p.architect,  trace, taskId, tenantId);
+    const executor   = new GenericAgent(CANONICAL_ROLES[1], makeLlm(CANONICAL_ROLES[1]), this.memory, p.executor,   trace, taskId, tenantId);
+    const reviewer   = new GenericAgent(CANONICAL_ROLES[2], makeLlm(CANONICAL_ROLES[2]), this.memory, p.reviewer,   trace, taskId, tenantId);
+    const decomposer = new GenericAgent(CANONICAL_ROLES[3], makeLlm(CANONICAL_ROLES[3]), this.memory, p.decomposer, trace, taskId, tenantId);
 
     const allMessages:    AgentMessage[] = [];
     const subGoalResults: Record<string, unknown> = {};
@@ -230,7 +231,7 @@ export class SwarmCoordinator {
           this.safetyChecker.sampleAndCheck(outputText, {
             channel:    resolvedMeta.channel,
             promptHash: resolvedMeta.hashes.executor,
-            role:       'executor',
+            role:       CANONICAL_ROLES[1],
             taskId,
           });
         }

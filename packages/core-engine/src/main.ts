@@ -35,6 +35,7 @@ import { RemoteSkillFetcher }      from './general-coding/project/RemoteSkillFet
 import { ModelRouter }             from './infrastructure/ModelRouter.js';
 import { Pool }                    from 'pg';
 import { CohortRouter }            from './infrastructure/CohortRouter.js';
+import { OperationalModeService }  from './infrastructure/OperationalModeService.js';
 import { PromptRegistry }          from '@oweibo/prompt-registry';
 import { PromptAssembler }         from '@oweibo/prompt-registry';
 import { createServer }            from './api/server.js';
@@ -148,6 +149,7 @@ async function main(): Promise<void> {
   // ── Prompt registry + cohort router (Phase A.4) ───────────────────────────
   let pgPool: Pool | undefined;
   let cohortRouter: CohortRouter | undefined;
+  let operationalMode: OperationalModeService | undefined;
   if (process.env['DATABASE_URL']) {
     pgPool = new Pool({ connectionString: process.env['DATABASE_URL'] });
     const promptRegistry = new PromptRegistry(
@@ -157,6 +159,7 @@ async function main(): Promise<void> {
     );
     const promptAssembler = new PromptAssembler(promptRegistry);
     cohortRouter = new CohortRouter(promptRegistry, promptAssembler);
+    operationalMode = new OperationalModeService(pgPool, rPub, rSub);
   }
 
   const swarm = new SwarmCoordinator(
@@ -256,6 +259,7 @@ async function main(): Promise<void> {
     taskEventBus:   eventBus as any,
     interventionGateway: interventionGateway as any,
     hitlGateway,
+    ...(pgPool && operationalMode ? { pool: pgPool, operationalMode } : {}),
   });
 
   // ── Channel Gateway (optional) ────────────────────────────────────────────

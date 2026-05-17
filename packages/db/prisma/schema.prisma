@@ -140,8 +140,11 @@ model Tenant {
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
   createdBy        String?  @map("created_by") @db.Uuid
 
-  memberships TenantMembership[]
-  apiKeys     ApiKey[]
+  memberships     TenantMembership[]
+  apiKeys         ApiKey[]
+  tasks           Task[]
+  settings        TenantSettings?
+  taskFeedback    TaskFeedback[]
 
   @@map("tenants")
   @@schema("oweibo")
@@ -220,6 +223,110 @@ model AuditLog {
   details          Json?
 
   @@map("audit_log")
+  @@schema("oweibo")
+}
+
+// ── Phase A: prompt versioning + task tracking ──────────────────────────────
+
+// Tenant-scoped task. All prompt-version pins are written atomically with the INSERT.
+model Task {
+  id                       String    @id @default(uuid()) @db.Uuid
+  tenantId                 String    @map("tenant_id") @db.Uuid
+  userId                   String?   @map("user_id") @db.Uuid
+  sessionId                String?   @map("session_id")
+  taskMode                 String    @default("factory") @map("task_mode")
+  goalDescription          String    @map("goal_description")
+  goalContext              String?   @map("goal_context")
+  repoPath                 String?   @map("repo_path")
+  status                   String    @default("pending")
+  result                   Json?
+  error                    String?
+  tokensUsed               Int       @default(0) @map("tokens_used")
+  ttlSeconds               Int?      @map("ttl_seconds")
+  architectAssembledHash   String?   @map("architect_assembled_hash")
+  executorAssembledHash    String?   @map("executor_assembled_hash")
+  reviewerAssembledHash    String?   @map("reviewer_assembled_hash")
+  decomposerAssembledHash  String?   @map("decomposer_assembled_hash")
+  slotPinDetail            Json?     @map("slot_pin_detail")
+  cohortChannel            String    @default("stable") @map("cohort_channel")
+  projectId                String?   @map("project_id") @db.Uuid
+  createdAt                DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  startedAt                DateTime? @map("started_at") @db.Timestamptz
+  completedAt              DateTime? @map("completed_at") @db.Timestamptz
+
+  tenant   Tenant         @relation(fields: [tenantId], references: [id])
+  feedback TaskFeedback[]
+
+  @@map("tasks")
+  @@schema("oweibo")
+}
+
+// Platform-wide participation settings per tenant (no RLS on columns — full row is tenant-scoped)
+model TenantSettings {
+  tenantId                        String    @id @map("tenant_id") @db.Uuid
+  participateInPatternBank        Boolean   @default(false) @map("participate_in_pattern_bank")
+  patternBankEnabledAt            DateTime? @map("pattern_bank_enabled_at") @db.Timestamptz
+  patternBankEligibilityCheckedAt DateTime? @map("pattern_bank_eligibility_checked_at") @db.Timestamptz
+  updatedAt                       DateTime  @default(now()) @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@map("tenant_settings")
+  @@schema("oweibo")
+}
+
+// Content-addressed prompt slot versions. hash = SHA256(role:slot_id:template_version:text)
+model PromptVersion {
+  hash             String    @id
+  role             String
+  slotId           String    @map("slot_id")
+  templateVersion  String    @default("stable-v0") @map("template_version")
+  text             String
+  parentHash       String?   @map("parent_hash")
+  mutationStatus   String    @default("stable") @map("mutation_status")
+  freezeReason     String?   @map("freeze_reason")
+  evalScore        Json?     @map("eval_score")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedBy        String?   @map("updated_by")
+
+  parent   PromptVersion?  @relation("PromptVersionLineage", fields: [parentHash], references: [hash])
+  children PromptVersion[] @relation("PromptVersionLineage")
+  channels Channel[]
+
+  @@map("prompt_versions")
+  @@schema("oweibo")
+}
+
+// Per-role, per-slot channel pointer with optimistic-lock version.
+model Channel {
+  name        String    @map("name")
+  role        String
+  slotId      String    @map("slot_id")
+  promptHash  String    @map("prompt_hash")
+  version     BigInt    @default(0)
+  updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz
+  updatedBy   String?   @map("updated_by")
+
+  promptVersion PromptVersion @relation(fields: [promptHash], references: [hash])
+
+  @@id([name, role, slotId])
+  @@map("channels")
+  @@schema("oweibo")
+}
+
+// Thumbs feedback — tenant-scoped, written via POST /api/tasks/:id/feedback
+model TaskFeedback {
+  id        String   @id @default(uuid()) @db.Uuid
+  taskId    String   @map("task_id") @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  userId    String?  @map("user_id") @db.Uuid
+  signal    String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  task   Task   @relation(fields: [taskId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@map("task_feedback")
   @@schema("oweibo")
 }
 

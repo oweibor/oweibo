@@ -46,12 +46,14 @@ import { buildAllTemplates } from './rendering/templates/index.js';
 // ── Public types ──────────────────────────────────────────────────────────────
 
 export interface DocGenJob {
-  readonly tenantId:       string;
-  readonly sessionId:      string;
-  readonly rootPath:       string;
-  readonly outputDir?:     string;
-  readonly options?:       Partial<AnalysisOptions>;
+  readonly tenantId:        string;
+  readonly sessionId:       string;
+  readonly rootPath:        string;
+  readonly outputDir?:      string;
+  readonly options?:        Partial<AnalysisOptions>;
   readonly idempotencyKey?: string;
+  /** Internal retry counter for per-tenant concurrency back-pressure (not persisted). */
+  readonly _tenantRetries?: number;
 }
 
 export interface DryRunReport {

@@ -1,0 +1,27 @@
+{
+  "name": "@oweibo/gepa-velocity-tracker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "§10.7 — Weekly cron: compute per-slot frontier hypervolume gain and classify velocity tiers for the GEPA cost-of-learning governor.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build":      "tsc --project tsconfig.json",
+    "type-check": "tsc --noEmit",
+    "start":      "node dist/index.js",
+    "dev":        "tsx src/index.ts",
+    "test":       "vitest run",
+    "clean":      "rimraf dist"
+  },
+  "dependencies": {
+    "pg": "^8.13.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/pg":   "^8.11.10",
+    "rimraf":      "^5.0.0",
+    "tsx":         "^4.15.5",
+    "typescript":  "^5.5.4",
+    "vitest":      "^2.1.9"
+  }
+}

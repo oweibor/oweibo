@@ -5,6 +5,7 @@
  * to S3 for long-term archival. Each entry is hash-chained to the
  * previous entry for tamper detection.
  */
+import { CANONICAL_ROLES } from '@oweibo/core-contracts';
 import type { DecisionLog } from '@oweibo/core-contracts';
 import type { Redis } from 'ioredis';
 import { createHash } from 'crypto';
@@ -103,7 +104,7 @@ export class ImmutableAuditLogger {
     const entries = await this.getLog();
     // Key decisions are those made by architect or reviewer agents
     return entries.filter(e =>
-      e.agentRole === 'architect' || e.agentRole === 'reviewer' || e.stage === 'architect',
+      e.agentRole === CANONICAL_ROLES[0] || e.agentRole === CANONICAL_ROLES[2] || e.stage === CANONICAL_ROLES[0],
     );
   }
 }

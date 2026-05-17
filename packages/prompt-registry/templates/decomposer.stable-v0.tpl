@@ -1,0 +1,1 @@
+{{slot:subgoal_granularity_guide}}

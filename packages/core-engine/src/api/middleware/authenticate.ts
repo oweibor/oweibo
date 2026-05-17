@@ -22,12 +22,17 @@ interface JWTPayload {
   iat: number;
   exp: number;
   iss?: string;
+  /** Optional scope list (present on identity-service tokens). */
+  scopes?: string[];
+  /** ctx.tenantId form used by identity-service tokens. */
+  ctx?: { tenantId?: string };
 }
 
 /** Augmented request type exposed to downstream handlers. */
 export interface AuthenticatedRequest extends Request {
   userId: string;
   tenantId: string;
+  scopes: string[];
 }
 
 export function createAuthMiddleware(config: AuthConfig) {
@@ -67,7 +72,8 @@ export function createAuthMiddleware(config: AuthConfig) {
       // Attach to request for downstream handlers
       const authedReq = req as unknown as AuthenticatedRequest;
       authedReq.userId   = payload.sub;
-      authedReq.tenantId = payload.tenantId;
+      authedReq.tenantId = payload.tenantId ?? payload.ctx?.tenantId ?? '';
+      authedReq.scopes   = payload.scopes ?? [];
       next();
     } catch {
       res.status(401).json({ error: 'invalid_token' });

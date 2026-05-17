@@ -1,8 +1,9 @@
 // packages/core-engine/src/pipeline/stages/01-architect.stage.ts
+import { CANONICAL_ROLES } from '@oweibo/core-contracts';
 import type { IPipelineStage, IStageContext, IStageResult } from '@oweibo/core-contracts';
 
 export class ArchitectStage implements IPipelineStage {
-  readonly name = 'architect';
+  readonly name = CANONICAL_ROLES[0];
 
   async execute(ctx: IStageContext): Promise<IStageResult> {
     const { bundle, logger } = ctx;

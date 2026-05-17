@@ -1,0 +1,33 @@
+{
+  "name": "@oweibo/prompt-registry",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Content-addressed, frame-signed prompt slot registry for Oweibo (Phase A.3).",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "type-check": "tsc --noEmit",
+    "clean": "rimraf dist",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@oweibo/core-contracts": "workspace:*",
+    "langfuse": "^3.30.0",
+    "pg": "^8.13.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/pg": "^8.11.10",
+    "rimraf": "^5.0.0",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.0"
+  }
+}

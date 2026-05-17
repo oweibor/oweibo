@@ -265,6 +265,7 @@ export type AgentRole =
   | 'architect'
   | 'executor'
   | 'reviewer'
+  | 'decomposer'                   // Phase A.10: goal decomposer (replaces 'domain-specialist' in CanonicalRole)
   | 'critic'                       // pre-implementation: validates test quality (CriticGateStage 03b)
   | 'domain-specialist'
   | 'documentation-writer'         // v8: user guide, dev docs, API reference

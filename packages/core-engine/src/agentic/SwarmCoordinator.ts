@@ -1,17 +1,18 @@
 // packages/core-engine/src/agentic/SwarmCoordinator.ts
+// DONE: Phase A.4 — CohortRouter integration + startTask() with atomic DB pin
 // Multi-agent swarm dispatcher (§16d.3)
 import { randomUUID } from 'crypto';
 import type {
-  IAgent, AgentMessage, ISubGoal, Plan, ISecurityContext,
+  IAgent, AgentMessage, ISubGoal, Plan, ISecurityContext, IAgentTask,
 } from '@oweibo/core-contracts';
 import type { LangfuseTraceClient } from 'langfuse';
+import type { Pool } from 'pg';
+import { GenericAgent } from './BaseAgent.js';
 import {
-  GenericAgent,
-  ARCHITECT_SYSTEM_PROMPT,
-  EXECUTOR_SYSTEM_PROMPT,
-  REVIEWER_SYSTEM_PROMPT,
-  DOMAIN_SPECIALIST_SYSTEM_PROMPT,
-} from './BaseAgent.js';
+  CohortRouter, STABLE_V0_FALLBACKS,
+} from '../infrastructure/CohortRouter.js';
+import { CANONICAL_ROLES } from '@oweibo/core-contracts';
+import type { CanonicalRole } from '@oweibo/core-contracts';
 import { ConflictResolver } from './ConflictResolver.js';
 import { tracedToolCall } from '../observability/LangfuseTracer.js';
 import { InstrumentedLLMClient } from './InstrumentedLLMClient.js';
@@ -26,6 +27,7 @@ import type { GoalDecomposer } from './GoalDecomposer.js';
 import type { DistributedContextStore } from './DistributedContextStore.js';
 import type { SessionStore } from '../ingestion/SessionStore.js';
 import type { ArtifactFile } from './DocumentationAgent.js';
+import type { ProductionSafetyChecker } from '../safety/ProductionSafetyChecker.js';
 
 export interface SwarmResult {
   subGoalResults: Record<string, unknown>;
@@ -59,8 +61,102 @@ export class SwarmCoordinator {
     private readonly decomposer:          GoalDecomposer,
     private readonly contextStore:        DistributedContextStore,
     private readonly sessions:            SessionStore,
+    private readonly pgPool?:             Pool,
+    private readonly cohortRouter?:       CohortRouter,
+    /** D.7: optional production safety checker — fires on 5% sample of executor output. */
+    private readonly safetyChecker?:     ProductionSafetyChecker,
   ) {
     this.conflictResolver = conflictResolver;
+  }
+
+  /**
+   * Entry point for CognitiveEngine (Phase A.4+).
+   * Resolves prompts via CohortRouter, writes all assembled hashes atomically
+   * with the task INSERT into oweibo.tasks, then runs the swarm.
+   *
+   * Invariant §2.3: hash columns and task INSERT are in the same Postgres transaction.
+   */
+  async startTask(
+    task:      IAgentTask,
+    plan:      Plan,
+    subGoals:  ISubGoal[],
+    secCtx:    ISecurityContext,
+    trace:     LangfuseTraceClient,
+    sessionId?: string,
+  ): Promise<SwarmResult> {
+    const channel = 'stable-v0'; // Phase D.1 will derive from tenant cohort settings
+
+    // Resolve all four role prompts
+    const resolved = this.cohortRouter
+      ? await this.cohortRouter.resolveAllRoles(task.id, channel)
+      : null;
+
+    const prompts: Record<CanonicalRole, string> = {
+      architect:  resolved?.architect?.promptText  ?? (STABLE_V0_FALLBACKS['architect'] as string),
+      executor:   resolved?.executor?.promptText   ?? (STABLE_V0_FALLBACKS['executor']  as string),
+      reviewer:   resolved?.reviewer?.promptText   ?? (STABLE_V0_FALLBACKS['reviewer']  as string),
+      decomposer: resolved?.decomposer?.promptText ?? (STABLE_V0_FALLBACKS['decomposer'] as string),
+    };
+
+    // Atomically write task row + assembled hashes (invariant §2.3)
+    if (this.pgPool) {
+      const client = await this.pgPool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(
+          `INSERT INTO oweibo.tasks
+             (id, tenant_id, user_id, session_id, task_mode, goal_description, goal_context,
+              repo_path, status, cohort_channel,
+              architect_assembled_hash, executor_assembled_hash,
+              reviewer_assembled_hash, decomposer_assembled_hash,
+              slot_pin_detail, started_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'running',$9,$10,$11,$12,$13,$14,NOW())
+           ON CONFLICT (id) DO UPDATE SET
+             status = 'running',
+             cohort_channel            = EXCLUDED.cohort_channel,
+             architect_assembled_hash  = EXCLUDED.architect_assembled_hash,
+             executor_assembled_hash   = EXCLUDED.executor_assembled_hash,
+             reviewer_assembled_hash   = EXCLUDED.reviewer_assembled_hash,
+             decomposer_assembled_hash = EXCLUDED.decomposer_assembled_hash,
+             slot_pin_detail           = EXCLUDED.slot_pin_detail,
+             started_at                = NOW()`,
+          [
+            task.id, task.tenantId, task.userId ?? null,
+            sessionId ?? null, task.taskMode,
+            task.goal.description, task.goal.context ?? null,
+            task.repoPath ?? null, channel,
+            resolved?.architect?.assembledHash  ?? 'stable-v0',
+            resolved?.executor?.assembledHash   ?? 'stable-v0',
+            resolved?.reviewer?.assembledHash   ?? 'stable-v0',
+            resolved?.decomposer?.assembledHash ?? 'stable-v0',
+            resolved ? JSON.stringify({
+              architect:  resolved.architect?.slotPins,
+              executor:   resolved.executor?.slotPins,
+              reviewer:   resolved.reviewer?.slotPins,
+              decomposer: resolved.decomposer?.slotPins,
+            }) : null,
+          ],
+        );
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+    }
+
+    const resolvedMeta = resolved ? {
+      channel: channel,
+      hashes:  {
+        architect:  resolved.architect?.assembledHash  ?? 'stable-v0',
+        executor:   resolved.executor?.assembledHash   ?? 'stable-v0',
+        reviewer:   resolved.reviewer?.assembledHash   ?? 'stable-v0',
+        decomposer: resolved.decomposer?.assembledHash ?? 'stable-v0',
+      } as Record<CanonicalRole, string>,
+    } : undefined;
+
+    return this.coordinate(task.id, task.tenantId, plan, subGoals, secCtx, trace, sessionId, prompts, resolvedMeta);
   }
 
   async coordinate(
@@ -70,16 +166,19 @@ export class SwarmCoordinator {
     subGoals:  ISubGoal[],
     secCtx:    ISecurityContext,
     trace:     LangfuseTraceClient,
-    sessionId?: string,
+    sessionId?:      string,
+    agentPrompts?:   Record<CanonicalRole, string>,
+    resolvedMeta?:   { channel: string; hashes: Record<CanonicalRole, string> },
   ): Promise<SwarmResult> {
     const pubId = sessionId ?? taskId;
-    const makeLlm = (): ILLMClient =>
-      new InstrumentedLLMClient(this.baseLlm.baseUrl, this.baseLlm.model, trace);
+    const makeLlm = (role: string): ILLMClient =>
+      new InstrumentedLLMClient(this.baseLlm.baseUrl, this.baseLlm.model, trace, taskId, role);
 
-    const architect  = new GenericAgent('architect',         makeLlm(), this.memory, ARCHITECT_SYSTEM_PROMPT,         trace, taskId, tenantId);
-    const executor   = new GenericAgent('executor',          makeLlm(), this.memory, EXECUTOR_SYSTEM_PROMPT,          trace, taskId, tenantId);
-    const reviewer   = new GenericAgent('reviewer',          makeLlm(), this.memory, REVIEWER_SYSTEM_PROMPT,          trace, taskId, tenantId);
-    const specialist = new GenericAgent('domain-specialist', makeLlm(), this.memory, DOMAIN_SPECIALIST_SYSTEM_PROMPT, trace, taskId, tenantId);
+    const p = agentPrompts ?? STABLE_V0_FALLBACKS;
+    const architect  = new GenericAgent(CANONICAL_ROLES[0], makeLlm(CANONICAL_ROLES[0]), this.memory, p.architect,  trace, taskId, tenantId);
+    const executor   = new GenericAgent(CANONICAL_ROLES[1], makeLlm(CANONICAL_ROLES[1]), this.memory, p.executor,   trace, taskId, tenantId);
+    const reviewer   = new GenericAgent(CANONICAL_ROLES[2], makeLlm(CANONICAL_ROLES[2]), this.memory, p.reviewer,   trace, taskId, tenantId);
+    const decomposer = new GenericAgent(CANONICAL_ROLES[3], makeLlm(CANONICAL_ROLES[3]), this.memory, p.decomposer, trace, taskId, tenantId);
 
     const allMessages:    AgentMessage[] = [];
     const subGoalResults: Record<string, unknown> = {};
@@ -118,13 +217,24 @@ export class SwarmCoordinator {
       }
 
       const groupResults = await Promise.all(
-        group.map(sg => this.executeSubGoal(sg, taskId, pubId, architect, executor, reviewer, specialist, secCtx, trace, allMessages)),
+        group.map(sg => this.executeSubGoal(sg, taskId, pubId, architect, executor, reviewer, decomposer, secCtx, trace, allMessages)),
       );
 
       for (const gr of groupResults) {
         subGoalResults[gr.subGoalDescription] = gr.result;
         tokensUsed += gr.tokensUsed;
         allMessages.push(...gr.messages);
+
+        // D.7: async safety check on executor output — fire-and-forget, never blocks
+        if (this.safetyChecker && resolvedMeta) {
+          const outputText = typeof gr.result === 'string' ? gr.result : JSON.stringify(gr.result);
+          this.safetyChecker.sampleAndCheck(outputText, {
+            channel:    resolvedMeta.channel,
+            promptHash: resolvedMeta.hashes.executor,
+            role:       CANONICAL_ROLES[1],
+            taskId,
+          });
+        }
 
         if (!gr.reviewPassed) {
           reviewPassed = false;
@@ -167,7 +277,7 @@ export class SwarmCoordinator {
     architect:    IAgent,
     executor:     IAgent,
     reviewer:     IAgent,
-    specialist:   IAgent,
+    decomposer:   IAgent,
     secCtx:       ISecurityContext,
     trace:        LangfuseTraceClient,
     allMessages:  AgentMessage[],

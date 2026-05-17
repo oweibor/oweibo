@@ -80,15 +80,8 @@ export abstract class BaseAgent implements IAgent {
   }
 }
 
-// ─── System prompts (referenced by SwarmCoordinator) ─────────────────────────
-export const ARCHITECT_SYSTEM_PROMPT =
-  'You are the Architect agent. Decompose goals into a precise, ordered plan.';
-export const EXECUTOR_SYSTEM_PROMPT =
-  'You are the Executor agent. Carry out plan steps faithfully and report results.';
-export const REVIEWER_SYSTEM_PROMPT =
-  'You are the Reviewer agent. Audit executor outputs and challenge defects.';
-export const DOMAIN_SPECIALIST_SYSTEM_PROMPT =
-  'You are a Domain Specialist. Provide expertise specific to the requested domain.';
+// DONE: Phase A.4 — static prompt constants removed; prompts now come from CohortRouter.
+// Stable-v0 fallback strings live in CohortRouter.STABLE_V0_FALLBACKS.
 
 /** Concrete generic agent — used by SwarmCoordinator for the four standard roles. */
 export class GenericAgent extends BaseAgent {

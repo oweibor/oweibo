@@ -44,7 +44,7 @@ export class CognitiveEngine {
   async processTask(task: IAgentTask): Promise<IAgentTaskResult> {
     const trace      = await startAgentTrace(task.id, task.goal.description, task.userId);
     const auditLogger = new ImmutableAuditLogger(task.id);
-    const llm: ILLMClient = new InstrumentedLLMClient(this.baseLlm.baseUrl, this.baseLlm.model, trace);
+    const llm: ILLMClient = new InstrumentedLLMClient(this.baseLlm.baseUrl, this.baseLlm.model, trace, task.id, 'orchestrator');
     const secCtx     = { permissions: task.securityContext?.permissions ?? ['kilo:submit', 'workspace:write'] } as ISecurityContext;
     const sessionId  = task.sessionId ?? task.id;
 
@@ -113,11 +113,11 @@ export class CognitiveEngine {
       await this.eventBus.publish(sessionId, { taskId: task.id, type: 'stage-completed', message: `Plan selected: ${selectedPlan.strategy}`, progress: 20 });
 
       // 3. Decompose sub-goals
-      const subGoals = await this.decomposer.decompose({ description: selectedPlan.strategy, context: task.goal.description });
+      const subGoals = await this.decomposer.decompose({ description: selectedPlan.strategy, context: task.goal.description }, trace);
 
-      // 4. Dispatch to swarm
+      // 4. Dispatch to swarm (Phase A.4: startTask() resolves prompts + pins atomically)
       await this.eventBus.publish(sessionId, { taskId: task.id, type: 'stage-started', message: 'Generating your application...', progress: 25 });
-      const swarmResult = await this.swarm.coordinate(task.id, task.tenantId, selectedPlan, subGoals, secCtx, trace, sessionId);
+      const swarmResult = await this.swarm.startTask(task, selectedPlan, subGoals, secCtx, trace, sessionId);
 
       tokensUsed += swarmResult.tokensUsed;
       this.policy.assertTokenBudget(tokensUsed, task.id);

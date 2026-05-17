@@ -12,9 +12,12 @@ import swaggerUi from 'swagger-ui-express';
 import { createTasksRouter } from './routes/tasks.routes.js';
 import { createHITLRouter } from './routes/hitl.routes.js';
 import { createSkillsRouter } from './routes/skills.routes.js';
+import { createPlatformRouter } from './routes/platform.routes.js';
 import { createAuthMiddleware } from './middleware/authenticate.js';
 import { openapiSpec } from './openapi.js';
 import type { SecretsManager } from '../secrets/SecretsManager.js';
+import type { Pool } from 'pg';
+import type { OperationalModeService } from '../infrastructure/OperationalModeService.js';
 
 export interface ServerConfig {
   readonly port: number;
@@ -66,6 +69,9 @@ export async function createServer(
     interventionGateway: Parameters<typeof createTasksRouter>[0]['interventionGateway'];
     hitlGateway: Parameters<typeof createHITLRouter>[0]['hitlGateway'];
     taskStore?: Parameters<typeof createTasksRouter>[0]['taskStore'];
+    /** Optional — when provided, mounts /api/v1/platform routes. */
+    pool?: Pool;
+    operationalMode?: OperationalModeService;
   },
   config: Partial<ServerConfig> = {},
 ): Promise<{ app: import('express').Application; port: number }> {
@@ -117,6 +123,13 @@ export async function createServer(
   }));
   v1.use('/hitl', createHITLRouter({ hitlGateway: deps.hitlGateway }));
   v1.use('/skills', createSkillsRouter());
+
+  if (deps.pool && deps.operationalMode) {
+    v1.use('/platform', createPlatformRouter({
+      pool:            deps.pool,
+      operationalMode: deps.operationalMode,
+    }));
+  }
 
   app.use('/api/v1', v1);
 

@@ -1,0 +1,26 @@
+{
+  "name": "@oweibo/pattern-aggregator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cross-tenant pattern aggregation service (Phase B.5). Subscribes to platform.lesson.submitted, validates HMAC, strips tenant identity, applies k-anonymity gate, and writes to oweibo.platform_lessons.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@oweibo/core-contracts": "workspace:*",
+    "@oweibo/db": "workspace:*",
+    "ioredis": "^5.3.2",
+    "pg": "^8.11.3",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/pg": "^8.11.6",
+    "tsx": "^4.15.5",
+    "typescript": "^5.5.4"
+  }
+}

@@ -81,7 +81,7 @@ const SetTenantCohortSchema = zod_1.z.object({
 // ── Router factory ────────────────────────────────────────────────────────────
 function createPlatformRouter(deps) {
     const router = (0, express_1.Router)();
-    const { pool, operationalMode, promotionGate, mutationGovernance, cohortAdmin, gepaInspector } = deps;
+    const { pool, operationalMode, promotionGate, mutationGovernance, cohortAdmin, gepaInspector, privacyAudit } = deps;
     // ── GET /platform/operational-mode ────────────────────────────────────────
     router.get('/operational-mode', async (_req, res) => {
         const state = await operationalMode.getModeState();
@@ -458,6 +458,24 @@ function createPlatformRouter(deps) {
         }
         const slots = await gepaInspector.velocityTiers();
         res.json({ slots });
+    });
+    // ── GET /platform/privacy/audit (B.7) ─────────────────────────────────────
+    // Returns the entire payload the audit page needs in one round-trip:
+    // overview, dlp rejects timeline + by-stage, blocked buckets, equity violations.
+    router.get('/privacy/audit', async (req, res) => {
+        if (!privacyAudit) {
+            res.status(503).json({ error: 'privacy_audit_unavailable' });
+            return;
+        }
+        const days = Math.min(parseInt(String(req.query['days'] ?? '14'), 10) || 14, 60);
+        const [overview, timeline, byStage, blocked, equity] = await Promise.all([
+            privacyAudit.overview(),
+            privacyAudit.dlpRejectsTimeline(days),
+            privacyAudit.dlpRejectsByStage(days),
+            privacyAudit.blockedBuckets(50),
+            privacyAudit.equityViolations(),
+        ]);
+        res.json({ overview, timeline, byStage, blocked, equity, days });
     });
     return router;
 }

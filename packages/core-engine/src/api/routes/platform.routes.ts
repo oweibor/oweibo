@@ -31,6 +31,7 @@ import type { PromotionGateService } from '../../bandit/PromotionGateService.js'
 import type { MutationGovernanceService } from '../../governance/MutationGovernanceService.js';
 import type { CohortAdminService } from '../../infrastructure/CohortAdminService.js';
 import type { GepaInspectorService } from '../../bandit/GepaInspectorService.js';
+import type { PrivacyAuditService } from '../../distillation/PrivacyAuditService.js';
 
 // ── Scope guard ───────────────────────────────────────────────────────────────
 
@@ -107,9 +108,10 @@ export function createPlatformRouter(deps: {
   mutationGovernance?:   MutationGovernanceService;
   cohortAdmin?:          CohortAdminService;
   gepaInspector?:        GepaInspectorService;
+  privacyAudit?:         PrivacyAuditService;
 }): Router {
   const router = Router();
-  const { pool, operationalMode, promotionGate, mutationGovernance, cohortAdmin, gepaInspector } = deps;
+  const { pool, operationalMode, promotionGate, mutationGovernance, cohortAdmin, gepaInspector, privacyAudit } = deps;
 
   // ── GET /platform/operational-mode ────────────────────────────────────────
 
@@ -626,6 +628,29 @@ export function createPlatformRouter(deps: {
       }
       const slots = await gepaInspector.velocityTiers();
       res.json({ slots });
+    },
+  );
+
+  // ── GET /platform/privacy/audit (B.7) ─────────────────────────────────────
+  // Returns the entire payload the audit page needs in one round-trip:
+  // overview, dlp rejects timeline + by-stage, blocked buckets, equity violations.
+
+  router.get(
+    '/privacy/audit',
+    async (req: Request, res: Response): Promise<void> => {
+      if (!privacyAudit) {
+        res.status(503).json({ error: 'privacy_audit_unavailable' });
+        return;
+      }
+      const days = Math.min(parseInt(String(req.query['days'] ?? '14'), 10) || 14, 60);
+      const [overview, timeline, byStage, blocked, equity] = await Promise.all([
+        privacyAudit.overview(),
+        privacyAudit.dlpRejectsTimeline(days),
+        privacyAudit.dlpRejectsByStage(days),
+        privacyAudit.blockedBuckets(50),
+        privacyAudit.equityViolations(),
+      ]);
+      res.json({ overview, timeline, byStage, blocked, equity, days });
     },
   );
 

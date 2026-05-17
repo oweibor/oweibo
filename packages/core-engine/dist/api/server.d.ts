@@ -7,6 +7,7 @@ import type { PromotionGateService } from '../bandit/PromotionGateService.js';
 import type { MutationGovernanceService } from '../governance/MutationGovernanceService.js';
 import type { CohortAdminService } from '../infrastructure/CohortAdminService.js';
 import type { GepaInspectorService } from '../bandit/GepaInspectorService.js';
+import type { PrivacyAuditService } from '../distillation/PrivacyAuditService.js';
 export interface ServerConfig {
     readonly port: number;
     readonly corsOrigins: string[];
@@ -31,6 +32,8 @@ export declare function createServer(deps: {
     cohortAdmin?: CohortAdminService;
     /** Optional — when provided, enables /api/v1/platform/prompts/* (C.8). */
     gepaInspector?: GepaInspectorService;
+    /** Optional — when provided, enables /api/v1/platform/privacy/audit (B.7). */
+    privacyAudit?: PrivacyAuditService;
 }, config?: Partial<ServerConfig>): Promise<{
     app: import('express').Application;
     port: number;

@@ -22,6 +22,7 @@ import type { PromotionGateService } from '../bandit/PromotionGateService.js';
 import type { MutationGovernanceService } from '../governance/MutationGovernanceService.js';
 import type { CohortAdminService } from '../infrastructure/CohortAdminService.js';
 import type { GepaInspectorService } from '../bandit/GepaInspectorService.js';
+import type { PrivacyAuditService } from '../distillation/PrivacyAuditService.js';
 
 export interface ServerConfig {
   readonly port: number;
@@ -84,6 +85,8 @@ export async function createServer(
     cohortAdmin?: CohortAdminService;
     /** Optional — when provided, enables /api/v1/platform/prompts/* (C.8). */
     gepaInspector?: GepaInspectorService;
+    /** Optional — when provided, enables /api/v1/platform/privacy/audit (B.7). */
+    privacyAudit?: PrivacyAuditService;
   },
   config: Partial<ServerConfig> = {},
 ): Promise<{ app: import('express').Application; port: number }> {
@@ -144,6 +147,7 @@ export async function createServer(
       ...(deps.mutationGovernance ? { mutationGovernance: deps.mutationGovernance } : {}),
       ...(deps.cohortAdmin        ? { cohortAdmin:        deps.cohortAdmin }        : {}),
       ...(deps.gepaInspector      ? { gepaInspector:      deps.gepaInspector }      : {}),
+      ...(deps.privacyAudit       ? { privacyAudit:       deps.privacyAudit }       : {}),
     }));
   }
 

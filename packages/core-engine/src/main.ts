@@ -41,6 +41,7 @@ import { PromotionGateService }    from './bandit/PromotionGateService.js';
 import { MutationGovernanceService } from './governance/MutationGovernanceService.js';
 import { CohortAdminService }       from './infrastructure/CohortAdminService.js';
 import { GepaInspectorService }     from './bandit/GepaInspectorService.js';
+import { PrivacyAuditService }      from './distillation/PrivacyAuditService.js';
 import { PromptRegistry }          from '@oweibo/prompt-registry';
 import { PromptAssembler }         from '@oweibo/prompt-registry';
 import { createServer }            from './api/server.js';
@@ -159,6 +160,7 @@ async function main(): Promise<void> {
   let mutationGovernance: MutationGovernanceService | undefined;
   let cohortAdmin: CohortAdminService | undefined;
   let gepaInspector: GepaInspectorService | undefined;
+  let privacyAudit: PrivacyAuditService | undefined;
   if (process.env['DATABASE_URL']) {
     pgPool = new Pool({ connectionString: process.env['DATABASE_URL'] });
     const promptRegistry = new PromptRegistry(
@@ -174,6 +176,7 @@ async function main(): Promise<void> {
     mutationGovernance = new MutationGovernanceService(pgPool);
     cohortAdmin = new CohortAdminService(pgPool);
     gepaInspector = new GepaInspectorService(pgPool);
+    privacyAudit = new PrivacyAuditService(pgPool);
   }
 
   const swarm = new SwarmCoordinator(
@@ -280,6 +283,7 @@ async function main(): Promise<void> {
     ...(mutationGovernance ? { mutationGovernance } : {}),
     ...(cohortAdmin        ? { cohortAdmin }        : {}),
     ...(gepaInspector      ? { gepaInspector }      : {}),
+    ...(privacyAudit       ? { privacyAudit }       : {}),
   });
 
   // ── Channel Gateway (optional) ────────────────────────────────────────────

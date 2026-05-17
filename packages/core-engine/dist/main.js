@@ -42,6 +42,7 @@ const BanditService_js_1 = require("./bandit/BanditService.js");
 const PromotionGateService_js_1 = require("./bandit/PromotionGateService.js");
 const MutationGovernanceService_js_1 = require("./governance/MutationGovernanceService.js");
 const CohortAdminService_js_1 = require("./infrastructure/CohortAdminService.js");
+const GepaInspectorService_js_1 = require("./bandit/GepaInspectorService.js");
 const prompt_registry_1 = require("@oweibo/prompt-registry");
 const prompt_registry_2 = require("@oweibo/prompt-registry");
 const server_js_1 = require("./api/server.js");
@@ -141,6 +142,7 @@ async function main() {
     let promotionGate;
     let mutationGovernance;
     let cohortAdmin;
+    let gepaInspector;
     if (process.env['DATABASE_URL']) {
         pgPool = new pg_1.Pool({ connectionString: process.env['DATABASE_URL'] });
         const promptRegistry = new prompt_registry_1.PromptRegistry(pgPool, process.env['LANGFUSE_SECRET_KEY'], process.env['LANGFUSE_PUBLIC_KEY']);
@@ -151,6 +153,7 @@ async function main() {
         promotionGate = new PromotionGateService_js_1.PromotionGateService(pgPool, banditService);
         mutationGovernance = new MutationGovernanceService_js_1.MutationGovernanceService(pgPool);
         cohortAdmin = new CohortAdminService_js_1.CohortAdminService(pgPool);
+        gepaInspector = new GepaInspectorService_js_1.GepaInspectorService(pgPool);
     }
     const swarm = new SwarmCoordinator_js_1.SwarmCoordinator(llmBase, memory, policyEngine, anomaly, auditLogger, conflictResolver, eventBus, interventionGateway, decomposer, contextStore, sessionStore, pgPool, cohortRouter, undefined, // safetyChecker — wired in a future revision
     cohortAdmin);
@@ -222,6 +225,7 @@ async function main() {
         ...(promotionGate ? { promotionGate } : {}),
         ...(mutationGovernance ? { mutationGovernance } : {}),
         ...(cohortAdmin ? { cohortAdmin } : {}),
+        ...(gepaInspector ? { gepaInspector } : {}),
     });
     // ── Channel Gateway (optional) ────────────────────────────────────────────
     try {

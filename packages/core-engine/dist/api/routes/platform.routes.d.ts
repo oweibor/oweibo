@@ -25,11 +25,13 @@ import { OperationalModeService } from '../../infrastructure/OperationalModeServ
 import type { PromotionGateService } from '../../bandit/PromotionGateService.js';
 import type { MutationGovernanceService } from '../../governance/MutationGovernanceService.js';
 import type { CohortAdminService } from '../../infrastructure/CohortAdminService.js';
+import type { GepaInspectorService } from '../../bandit/GepaInspectorService.js';
 export declare function createPlatformRouter(deps: {
     pool: Pool;
     operationalMode: OperationalModeService;
     promotionGate?: PromotionGateService;
     mutationGovernance?: MutationGovernanceService;
     cohortAdmin?: CohortAdminService;
+    gepaInspector?: GepaInspectorService;
 }): Router;
 //# sourceMappingURL=platform.routes.d.ts.map

@@ -21,6 +21,7 @@ import type { OperationalModeService } from '../infrastructure/OperationalModeSe
 import type { PromotionGateService } from '../bandit/PromotionGateService.js';
 import type { MutationGovernanceService } from '../governance/MutationGovernanceService.js';
 import type { CohortAdminService } from '../infrastructure/CohortAdminService.js';
+import type { GepaInspectorService } from '../bandit/GepaInspectorService.js';
 
 export interface ServerConfig {
   readonly port: number;
@@ -81,6 +82,8 @@ export async function createServer(
     mutationGovernance?: MutationGovernanceService;
     /** Optional — when provided, enables /api/v1/platform/cohorts/* (D.1). */
     cohortAdmin?: CohortAdminService;
+    /** Optional — when provided, enables /api/v1/platform/prompts/* (C.8). */
+    gepaInspector?: GepaInspectorService;
   },
   config: Partial<ServerConfig> = {},
 ): Promise<{ app: import('express').Application; port: number }> {
@@ -140,6 +143,7 @@ export async function createServer(
       ...(deps.promotionGate      ? { promotionGate:      deps.promotionGate }      : {}),
       ...(deps.mutationGovernance ? { mutationGovernance: deps.mutationGovernance } : {}),
       ...(deps.cohortAdmin        ? { cohortAdmin:        deps.cohortAdmin }        : {}),
+      ...(deps.gepaInspector      ? { gepaInspector:      deps.gepaInspector }      : {}),
     }));
   }
 

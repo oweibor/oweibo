@@ -30,6 +30,7 @@ import {
 import type { PromotionGateService } from '../../bandit/PromotionGateService.js';
 import type { MutationGovernanceService } from '../../governance/MutationGovernanceService.js';
 import type { CohortAdminService } from '../../infrastructure/CohortAdminService.js';
+import type { GepaInspectorService } from '../../bandit/GepaInspectorService.js';
 
 // ── Scope guard ───────────────────────────────────────────────────────────────
 
@@ -105,9 +106,10 @@ export function createPlatformRouter(deps: {
   promotionGate?:        PromotionGateService;
   mutationGovernance?:   MutationGovernanceService;
   cohortAdmin?:          CohortAdminService;
+  gepaInspector?:        GepaInspectorService;
 }): Router {
   const router = Router();
-  const { pool, operationalMode, promotionGate, mutationGovernance, cohortAdmin } = deps;
+  const { pool, operationalMode, promotionGate, mutationGovernance, cohortAdmin, gepaInspector } = deps;
 
   // ── GET /platform/operational-mode ────────────────────────────────────────
 
@@ -540,6 +542,90 @@ export function createPlatformRouter(deps: {
         return;
       }
       res.json(result);
+    },
+  );
+
+  // ── GET /platform/prompts/runs (C.8) ──────────────────────────────────────
+
+  router.get(
+    '/prompts/runs',
+    async (req: Request, res: Response): Promise<void> => {
+      if (!gepaInspector) {
+        res.status(503).json({ error: 'gepa_inspector_unavailable' });
+        return;
+      }
+      const limit = Math.min(parseInt(String(req.query['limit'] ?? '14'), 10) || 14, 60);
+      const runs = await gepaInspector.listRuns(limit);
+      res.json({ runs });
+    },
+  );
+
+  // ── GET /platform/prompts/candidates (C.8) ────────────────────────────────
+
+  router.get(
+    '/prompts/candidates',
+    async (req: Request, res: Response): Promise<void> => {
+      if (!gepaInspector) {
+        res.status(503).json({ error: 'gepa_inspector_unavailable' });
+        return;
+      }
+      const role   = typeof req.query['role']   === 'string' ? req.query['role']   : undefined;
+      const slotId = typeof req.query['slot']   === 'string' ? req.query['slot']   : undefined;
+      const limit  = Math.min(parseInt(String(req.query['limit'] ?? '50'), 10) || 50, 200);
+      const filter: { role?: string; slotId?: string; limit?: number } = { limit };
+      if (role)   filter.role = role;
+      if (slotId) filter.slotId = slotId;
+      const candidates = await gepaInspector.listCandidates(filter);
+      res.json({ candidates });
+    },
+  );
+
+  // ── GET /platform/prompts/frontier/:slot/:role (C.8) ──────────────────────
+
+  router.get(
+    '/prompts/frontier/:slot/:role',
+    async (req: Request, res: Response): Promise<void> => {
+      if (!gepaInspector) {
+        res.status(503).json({ error: 'gepa_inspector_unavailable' });
+        return;
+      }
+      const slotId = req.params['slot'];
+      const role   = req.params['role'];
+      if (!slotId || !role) {
+        res.status(400).json({ error: 'missing_params' });
+        return;
+      }
+      const frontier = await gepaInspector.slotFrontier(slotId, role);
+      res.json(frontier);
+    },
+  );
+
+  // ── GET /platform/prompts/costs (C.8) ─────────────────────────────────────
+
+  router.get(
+    '/prompts/costs',
+    async (req: Request, res: Response): Promise<void> => {
+      if (!gepaInspector) {
+        res.status(503).json({ error: 'gepa_inspector_unavailable' });
+        return;
+      }
+      const days = Math.min(parseInt(String(req.query['days'] ?? '14'), 10) || 14, 90);
+      const series = await gepaInspector.costSeries(days);
+      res.json({ series, days });
+    },
+  );
+
+  // ── GET /platform/prompts/velocity (C.8) ──────────────────────────────────
+
+  router.get(
+    '/prompts/velocity',
+    async (_req: Request, res: Response): Promise<void> => {
+      if (!gepaInspector) {
+        res.status(503).json({ error: 'gepa_inspector_unavailable' });
+        return;
+      }
+      const slots = await gepaInspector.velocityTiers();
+      res.json({ slots });
     },
   );
 

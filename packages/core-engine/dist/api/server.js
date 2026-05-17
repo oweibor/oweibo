@@ -99,6 +99,7 @@ async function createServer(deps, config = {}) {
             ...(deps.promotionGate ? { promotionGate: deps.promotionGate } : {}),
             ...(deps.mutationGovernance ? { mutationGovernance: deps.mutationGovernance } : {}),
             ...(deps.cohortAdmin ? { cohortAdmin: deps.cohortAdmin } : {}),
+            ...(deps.gepaInspector ? { gepaInspector: deps.gepaInspector } : {}),
         }));
     }
     app.use('/api/v1', v1);

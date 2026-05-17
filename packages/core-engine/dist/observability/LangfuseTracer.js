@@ -22,9 +22,9 @@ async function getLangfuseClient() {
         _langfuse = new Langfuse({
             secretKey,
             publicKey,
-            baseUrl: process.env.LANGFUSE_BASE_URL ?? 'https://cloud.langfuse.com',
-            flushAt: 10,
-            flushInterval: 5000,
+            baseUrl: process.env['LANGFUSE_BASE_URL'] ?? 'https://cloud.langfuse.com',
+            flushAt: parseInt(process.env['LANGFUSE_FLUSH_AT'] ?? '10', 10),
+            flushInterval: parseInt(process.env['LANGFUSE_FLUSH_INTERVAL_MS'] ?? '5000', 10),
         });
         return _langfuse;
     }

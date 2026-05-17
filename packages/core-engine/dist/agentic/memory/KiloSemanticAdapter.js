@@ -192,6 +192,19 @@ class KiloSemanticAdapter {
         };
         await Promise.all(ALL_COLLECTIONS.map((collection) => this.deps.qdrant.delete(collection, { wait: true, filter })));
     }
+    async purgeUser(tenantId, userId) {
+        if (!tenantId)
+            throw new Error('KiloSemanticAdapter.purgeUser: tenantId is required');
+        if (!userId)
+            throw new Error('KiloSemanticAdapter.purgeUser: userId is required');
+        const filter = {
+            must: [
+                { key: 'tenant_id', match: { value: tenantId } },
+                { key: 'user_id', match: { value: userId } },
+            ],
+        };
+        await Promise.all(ALL_COLLECTIONS.map((collection) => this.deps.qdrant.delete(collection, { wait: true, filter })));
+    }
     // ── helpers ──────────────────────────────────────────────────────────────
     toRanked(collection, point, tenantId) {
         const payload = point.payload;

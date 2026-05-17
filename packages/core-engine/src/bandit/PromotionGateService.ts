@@ -9,6 +9,8 @@
 //   - requires_human_approval: if true, rejects unless caller passes humanApproved=true
 
 import type { Pool } from 'pg';
+import type { CanonicalRole } from '@oweibo/core-contracts';
+import type { BanditService } from './BanditService.js';
 
 export interface PromotionCriteria {
   fromChannel:       string;
@@ -17,6 +19,27 @@ export interface PromotionCriteria {
   armId:             string;
   promptHash:        string;
   humanApproved?:    boolean;
+}
+
+export interface PendingPromotion {
+  armId:        string;
+  slotId:       string;
+  role:         CanonicalRole;
+  promptHash:   string;
+  fromChannel:  string;
+  toChannel:    string;
+  /** Full gate result evaluated with humanApproved=true — i.e., what the outcome would be if approved. */
+  gateResult:   PromotionGateResult;
+  /** Previously-decided rows for this arm in this direction (most-recent first). */
+  priorDecisions: PromotionDecisionRecord[];
+}
+
+export interface PromotionDecisionRecord {
+  id:           string;
+  decision:     'approved' | 'rejected';
+  decidedBy:    string;
+  decidedAt:    string;
+  reason:       string;
 }
 
 export interface GateCheck {
@@ -34,7 +57,11 @@ export interface PromotionGateResult {
 }
 
 export class PromotionGateService {
-  constructor(private readonly pool: Pool) {}
+  constructor(
+    private readonly pool: Pool,
+    /** Optional — required only for `recordDecision({decision:'approved'})`. */
+    private readonly bandit?: BanditService,
+  ) {}
 
   /**
    * Evaluate all gate checks for a proposed promotion.
@@ -162,5 +189,213 @@ export class PromotionGateService {
 
     const blockedBy = checks.filter(c => !c.passed).map(c => c.name);
     return { allowed: blockedBy.length === 0, checks, blockedBy };
+  }
+
+  /**
+   * List arms whose only remaining blocker is the human_approval gate
+   * (i.e. promotion would succeed if a human approves now).
+   *
+   * Scans every (from,to) channel pair whose rule has `requires_human_approval=true`,
+   * for every arm currently active on the from-channel that hasn't already been
+   * decided (approved OR rejected) in this direction. Default: beta→stable.
+   */
+  async listPending(): Promise<PendingPromotion[]> {
+    // Find every promotion direction that requires human approval
+    const dirRes = await this.pool.query<{ from_channel: string; to_channel: string }>(
+      `SELECT from_channel, to_channel
+       FROM oweibo.cohort_promotion_rules
+       WHERE requires_human_approval = TRUE`,
+    );
+    if (dirRes.rowCount === 0) return [];
+
+    const pending: PendingPromotion[] = [];
+
+    for (const dir of dirRes.rows) {
+      // Active arms on the from-channel
+      const armsRes = await this.pool.query<{
+        arm_id:      string;
+        slot_id:     string;
+        prompt_hash: string;
+      }>(
+        `SELECT arm_id, slot_id, prompt_hash
+         FROM oweibo.bandit_arms
+         WHERE channel = $1 AND active = TRUE
+         ORDER BY slot_id, arm_id`,
+        [dir.from_channel],
+      );
+
+      for (const arm of armsRes.rows) {
+        // Skip arms already decided in this direction
+        const decidedRes = await this.pool.query<{ cnt: string }>(
+          `SELECT COUNT(*) AS cnt FROM oweibo.promotion_approvals
+           WHERE slot_id = $1 AND arm_id = $2
+             AND from_channel = $3 AND to_channel = $4`,
+          [arm.slot_id, arm.arm_id, dir.from_channel, dir.to_channel],
+        );
+        if (parseInt(decidedRes.rows[0]?.cnt ?? '0', 10) > 0) continue;
+
+        // Lookup the role for this slot
+        const roleRes = await this.pool.query<{ role: string }>(
+          `SELECT role FROM oweibo.prompt_versions WHERE hash = $1 LIMIT 1`,
+          [arm.prompt_hash],
+        );
+        const role = (roleRes.rows[0]?.role ?? 'architect') as CanonicalRole;
+
+        // Run gates with humanApproved=true to see if the only blocker is the human gate
+        const result = await this.evaluate({
+          fromChannel:   dir.from_channel,
+          toChannel:     dir.to_channel,
+          slotId:        arm.slot_id,
+          armId:         arm.arm_id,
+          promptHash:    arm.prompt_hash,
+          humanApproved: true,
+        });
+
+        // Surface candidates that would promote if approved (allowed=true with humanApproved=true)
+        // AND candidates blocked only on human_approval when humanApproved=false (so reviewer sees both states)
+        const withoutApproval = await this.evaluate({
+          fromChannel:   dir.from_channel,
+          toChannel:     dir.to_channel,
+          slotId:        arm.slot_id,
+          armId:         arm.arm_id,
+          promptHash:    arm.prompt_hash,
+          humanApproved: false,
+        });
+        const onlyBlockerIsHuman =
+          withoutApproval.blockedBy.length === 1 &&
+          withoutApproval.blockedBy[0] === 'human_approval';
+        if (!result.allowed && !onlyBlockerIsHuman) continue;
+
+        pending.push({
+          armId:          arm.arm_id,
+          slotId:         arm.slot_id,
+          role,
+          promptHash:     arm.prompt_hash,
+          fromChannel:    dir.from_channel,
+          toChannel:      dir.to_channel,
+          gateResult:     result,
+          priorDecisions: [],   // none — we filtered them out above
+        });
+      }
+    }
+    return pending;
+  }
+
+  /**
+   * Record a human approve/reject decision and, on approve, flip the channel pointer.
+   *
+   * Approval path: re-evaluates gates with `humanApproved=true`; if all pass,
+   * calls BanditService.promoteArm() (optimistic-lock on channels.version) then
+   * writes the decision row. Throws if BanditService wasn't provided or if the
+   * gate would still block for non-human reasons.
+   *
+   * Rejection path: writes the decision row without touching channels.
+   * The same arm can later become eligible again — the rejection is just an
+   * audit record that prevents re-surfacing this candidate in listPending().
+   */
+  async recordDecision(input: {
+    armId:        string;
+    slotId:       string;
+    role:         CanonicalRole;
+    promptHash:   string;
+    fromChannel:  string;
+    toChannel:    string;
+    decision:     'approved' | 'rejected';
+    decidedBy:    string;
+    reason:       string;
+  }): Promise<{ ok: true; gateResult: PromotionGateResult } | { ok: false; gateResult: PromotionGateResult }> {
+    const gateResult = await this.evaluate({
+      fromChannel:   input.fromChannel,
+      toChannel:     input.toChannel,
+      slotId:        input.slotId,
+      armId:         input.armId,
+      promptHash:    input.promptHash,
+      humanApproved: input.decision === 'approved',
+    });
+
+    if (input.decision === 'approved') {
+      if (!gateResult.allowed) {
+        // Gate still blocks for reasons other than human approval — do not record or promote
+        return { ok: false, gateResult };
+      }
+      if (!this.bandit) {
+        throw new Error('PromotionGateService.recordDecision: BanditService required for approval');
+      }
+      // Read current channel version for the optimistic lock
+      const verRes = await this.pool.query<{ version: string }>(
+        `SELECT version FROM oweibo.channels
+         WHERE name = $1 AND role = $2 AND slot_id = $3`,
+        [input.toChannel, input.role, input.slotId],
+      );
+      const version = BigInt(verRes.rows[0]?.version ?? '0');
+      const promoted = await this.bandit.promoteArm({
+        role:           input.role,
+        slotId:         input.slotId,
+        channel:        input.toChannel,
+        promptHash:     input.promptHash,
+        currentVersion: version,
+        updatedBy:      input.decidedBy,
+      });
+      if (!promoted) {
+        // Lost the optimistic lock — the channel changed under us; do not record
+        throw new Error(
+          `PromotionGateService.recordDecision: channel ${input.toChannel}/${input.role}/${input.slotId} changed concurrently — refresh and retry`,
+        );
+      }
+    }
+
+    await this.pool.query(
+      `INSERT INTO oweibo.promotion_approvals
+         (arm_id, slot_id, role, from_channel, to_channel, prompt_hash,
+          decision, decided_by, reason, gate_snapshot)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [
+        input.armId, input.slotId, input.role,
+        input.fromChannel, input.toChannel, input.promptHash,
+        input.decision, input.decidedBy, input.reason,
+        JSON.stringify(gateResult),
+      ],
+    );
+    return { ok: true, gateResult };
+  }
+
+  /** Most-recent decisions, newest first. Used by the admin-web history panel. */
+  async listRecentDecisions(limit = 50): Promise<Array<PromotionDecisionRecord & {
+    armId: string; slotId: string; role: string;
+    fromChannel: string; toChannel: string; promptHash: string;
+  }>> {
+    const res = await this.pool.query<{
+      id:           string;
+      arm_id:       string;
+      slot_id:      string;
+      role:         string;
+      from_channel: string;
+      to_channel:   string;
+      prompt_hash:  string;
+      decision:     'approved' | 'rejected';
+      decided_by:   string;
+      decided_at:   string;
+      reason:       string;
+    }>(
+      `SELECT id, arm_id, slot_id, role, from_channel, to_channel, prompt_hash,
+              decision, decided_by, decided_at, reason
+       FROM oweibo.promotion_approvals
+       ORDER BY decided_at DESC
+       LIMIT $1`,
+      [limit],
+    );
+    return res.rows.map(r => ({
+      id:          r.id,
+      armId:       r.arm_id,
+      slotId:      r.slot_id,
+      role:        r.role,
+      fromChannel: r.from_channel,
+      toChannel:   r.to_channel,
+      promptHash:  r.prompt_hash,
+      decision:    r.decision,
+      decidedBy:   r.decided_by,
+      decidedAt:   r.decided_at,
+      reason:      r.reason,
+    }));
   }
 }

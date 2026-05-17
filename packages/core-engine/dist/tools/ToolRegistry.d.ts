@@ -1,4 +1,5 @@
 import type { IToolDefinition, IToolInvocationResult, ISecurityContext } from '@oweibo/core-contracts';
+import type { TaskContext } from '@oweibo/observability';
 type QdrantClient = {
     upsert(collection: string, args: {
         points: unknown[];
@@ -39,7 +40,7 @@ export declare class ToolRegistry {
     constructor(qdrant: QdrantClient, embedFn?: ((text: string) => Promise<number[]>) | undefined);
     register(tool: ExtendedToolDefinition): Promise<void>;
     semanticSearch(query: string, topK?: number): Promise<readonly IToolDefinition[]>;
-    invoke(name: string, input: unknown, securityContext: ISecurityContext): Promise<IToolInvocationResult>;
+    invoke(name: string, input: unknown, securityContext: ISecurityContext, taskCtx?: TaskContext): Promise<IToolInvocationResult>;
     list(): readonly IToolDefinition[];
     private nameToId;
     private embed;

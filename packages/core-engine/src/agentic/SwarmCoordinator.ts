@@ -175,10 +175,11 @@ export class SwarmCoordinator {
       new InstrumentedLLMClient(this.baseLlm.baseUrl, this.baseLlm.model, trace, taskId, role);
 
     const p = agentPrompts ?? STABLE_V0_FALLBACKS;
-    const architect  = new GenericAgent(CANONICAL_ROLES[0], makeLlm(CANONICAL_ROLES[0]), this.memory, p.architect,  trace, taskId, tenantId);
-    const executor   = new GenericAgent(CANONICAL_ROLES[1], makeLlm(CANONICAL_ROLES[1]), this.memory, p.executor,   trace, taskId, tenantId);
-    const reviewer   = new GenericAgent(CANONICAL_ROLES[2], makeLlm(CANONICAL_ROLES[2]), this.memory, p.reviewer,   trace, taskId, tenantId);
-    const decomposer = new GenericAgent(CANONICAL_ROLES[3], makeLlm(CANONICAL_ROLES[3]), this.memory, p.decomposer, trace, taskId, tenantId);
+    const [rArchitect, rExecutor, rReviewer, rDecomposer] = CANONICAL_ROLES as readonly [CanonicalRole, CanonicalRole, CanonicalRole, CanonicalRole];
+    const architect  = new GenericAgent(rArchitect,  makeLlm(rArchitect),  this.memory, p.architect,  trace, taskId, tenantId);
+    const executor   = new GenericAgent(rExecutor,   makeLlm(rExecutor),   this.memory, p.executor,   trace, taskId, tenantId);
+    const reviewer   = new GenericAgent(rReviewer,   makeLlm(rReviewer),   this.memory, p.reviewer,   trace, taskId, tenantId);
+    const decomposer = new GenericAgent(rDecomposer, makeLlm(rDecomposer), this.memory, p.decomposer, trace, taskId, tenantId);
 
     const allMessages:    AgentMessage[] = [];
     const subGoalResults: Record<string, unknown> = {};

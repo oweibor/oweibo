@@ -1,6 +1,9 @@
 import { createTasksRouter } from './routes/tasks.routes.js';
 import { createHITLRouter } from './routes/hitl.routes.js';
 import type { SecretsManager } from '../secrets/SecretsManager.js';
+import type { Pool } from 'pg';
+import type { OperationalModeService } from '../infrastructure/OperationalModeService.js';
+import type { PromotionGateService } from '../bandit/PromotionGateService.js';
 export interface ServerConfig {
     readonly port: number;
     readonly corsOrigins: string[];
@@ -13,6 +16,12 @@ export declare function createServer(deps: {
     taskEventBus: Parameters<typeof createTasksRouter>[0]['taskEventBus'];
     interventionGateway: Parameters<typeof createTasksRouter>[0]['interventionGateway'];
     hitlGateway: Parameters<typeof createHITLRouter>[0]['hitlGateway'];
+    taskStore?: Parameters<typeof createTasksRouter>[0]['taskStore'];
+    /** Optional — when provided, mounts /api/v1/platform routes. */
+    pool?: Pool;
+    operationalMode?: OperationalModeService;
+    /** Optional — when provided, enables /api/v1/platform/promotions/* (D.6). */
+    promotionGate?: PromotionGateService;
 }, config?: Partial<ServerConfig>): Promise<{
     app: import('express').Application;
     port: number;

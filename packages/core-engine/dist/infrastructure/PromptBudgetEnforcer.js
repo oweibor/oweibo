@@ -30,14 +30,16 @@
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PromptBudgetEnforcer = void 0;
+const node_events_1 = require("node:events");
 // ── Implementation ────────────────────────────────────────────────────────────
-class PromptBudgetEnforcer {
+class PromptBudgetEnforcer extends node_events_1.EventEmitter {
     modelRouter;
     eventBus;
     contextWindow;
     reservedTokens;
     costPerMillion;
     constructor(modelRouter, eventBus, config = {}) {
+        super();
         this.modelRouter = modelRouter;
         this.eventBus = eventBus;
         this.contextWindow = config.contextWindowTokens ?? 200_000;
@@ -134,6 +136,8 @@ class PromptBudgetEnforcer {
             message: `Estimated prompt: ${total.toLocaleString()} tokens (~$${estimatedCostUsd.toFixed(4)})`,
             payload: { estimatedTokens: total, estimatedCostUsd, sessionId },
         });
+        // Emit tokens-consumed so PromptBudgetEnforcerAdapter can credit actual spend (B1).
+        this.emit('tokens-consumed', total);
         return {
             systemPrompt: assembleSystem(prompt.systemPrompt, repoMap, projectRules, skills),
             messages: history,

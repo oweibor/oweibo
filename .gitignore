@@ -34,6 +34,10 @@ watchtower/
 # Build artifacts (Prisma generates at install time; not a publishable dist)
 packages/db/dist/
 
+# Next.js build artifacts (admin-web)
+apps/admin-web/.next/
+apps/admin-web/next-env.d.ts
+
 # TS build info (generated, not source)
 *.tsbuildinfo
 

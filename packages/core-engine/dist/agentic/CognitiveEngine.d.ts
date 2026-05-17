@@ -1,7 +1,7 @@
 import type { IAgentTask, IAgentTaskResult } from '@oweibo/core-contracts';
 import { MultiStrategyPlanner } from './MultiStrategyPlanner.js';
 import { GoalDecomposer } from './GoalDecomposer.js';
-import { LongTermMemoryStore } from './LongTermMemoryStore.js';
+import type { ISemanticMemoryStore } from '@oweibo/core-contracts';
 import { PolicyEngine } from '../governance/PolicyEngine.js';
 import { AnomalyDetector } from '../observability/AnomalyDetector.js';
 import { ContextPruner } from './ContextPruner.js';
@@ -30,7 +30,7 @@ export declare class CognitiveEngine {
     constructor(baseLlm: {
         baseUrl: string;
         model: string;
-    }, planner: MultiStrategyPlanner, decomposer: GoalDecomposer, memory: LongTermMemoryStore, policy: PolicyEngine, anomaly: AnomalyDetector, contextStore: DistributedContextStore, contextPruner: ContextPruner, swarm: SwarmCoordinator, eventBus: TaskEventBus, sessions: SessionStore, delivery: OutputDeliveryService, heartbeat: TaskHeartbeat, generalCodingOrchestrator: GeneralCodingOrchestrator);
+    }, planner: MultiStrategyPlanner, decomposer: GoalDecomposer, memory: ISemanticMemoryStore, policy: PolicyEngine, anomaly: AnomalyDetector, contextStore: DistributedContextStore, contextPruner: ContextPruner, swarm: SwarmCoordinator, eventBus: TaskEventBus, sessions: SessionStore, delivery: OutputDeliveryService, heartbeat: TaskHeartbeat, generalCodingOrchestrator: GeneralCodingOrchestrator);
     processTask(task: IAgentTask): Promise<IAgentTaskResult>;
 }
 //# sourceMappingURL=CognitiveEngine.d.ts.map

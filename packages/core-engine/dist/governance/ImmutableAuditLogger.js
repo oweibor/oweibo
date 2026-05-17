@@ -1,6 +1,14 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ImmutableAuditLogger = void 0;
+/**
+ * ImmutableAuditLogger — tamper-evident audit trail (§16d).
+ *
+ * Writes decision logs to a Redis stream and periodically flushes
+ * to S3 for long-term archival. Each entry is hash-chained to the
+ * previous entry for tamper detection.
+ */
+const core_contracts_1 = require("@oweibo/core-contracts");
 const crypto_1 = require("crypto");
 class ImmutableAuditLogger {
     taskId;
@@ -73,7 +81,7 @@ class ImmutableAuditLogger {
     async getKeyDecisions() {
         const entries = await this.getLog();
         // Key decisions are those made by architect or reviewer agents
-        return entries.filter(e => e.agentRole === 'architect' || e.agentRole === 'reviewer' || e.stage === 'architect');
+        return entries.filter(e => e.agentRole === core_contracts_1.CANONICAL_ROLES[0] || e.agentRole === core_contracts_1.CANONICAL_ROLES[2] || e.stage === core_contracts_1.CANONICAL_ROLES[0]);
     }
 }
 exports.ImmutableAuditLogger = ImmutableAuditLogger;

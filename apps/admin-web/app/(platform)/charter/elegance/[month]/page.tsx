@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { use, useState, useEffect } from 'react';
 import { PageHeader } from '@/components/PageHeader';
 
 type Grade = 'red' | 'yellow' | 'green';
@@ -74,8 +74,8 @@ function GradeSelector({
   );
 }
 
-export default function EleganceMonthPage({ params }: { params: { month: string } }) {
-  const { month } = params;
+export default function EleganceMonthPage({ params }: { params: Promise<{ month: string }> }) {
+  const { month } = use(params);
   const [tasks, setTasks] = useState<TaskOutput[]>([]);
   const [grades, setGrades] = useState<Record<string, GradeState>>({});
   const [loading, setLoading] = useState(true);

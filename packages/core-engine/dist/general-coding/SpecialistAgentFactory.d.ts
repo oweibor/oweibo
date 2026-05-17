@@ -1,7 +1,7 @@
 import { BaseAgent } from '../agentic/BaseAgent.js';
 import type { IAgentTask, ISecurityContext, AgentRole, FileClassifierRule, AgentMessage } from '@oweibo/core-contracts';
 import type { ILLMClient } from '@oweibo/core-contracts';
-import type { LongTermMemoryStore } from '../agentic/LongTermMemoryStore.js';
+import type { ISemanticMemoryStore } from '@oweibo/core-contracts';
 import type { VaultClient } from '../infrastructure/VaultClient.js';
 import type { LangfuseTraceClient, Langfuse } from 'langfuse';
 import type { EditPlan } from './ConversationalLoop.js';
@@ -38,7 +38,7 @@ export declare class SpecialistAgentFactory {
     /** Gap 9: In-memory + Redis budget cache — 60 s TTL */
     private readonly budgetCache;
     private static readonly BUDGET_CACHE_TTL_MS;
-    constructor(llm: ILLMClient, memory: LongTermMemoryStore, vault: VaultClient, langfuse: Langfuse, applicator: EditApplicator, verifier: VerificationRunner, redis: Redis, tenantRulesLoader: TenantRulesLoader);
+    constructor(llm: ILLMClient, memory: ISemanticMemoryStore, vault: VaultClient, langfuse: Langfuse, applicator: EditApplicator, verifier: VerificationRunner, redis: Redis, tenantRulesLoader: TenantRulesLoader);
     /**
      * loadTenantRulesForClassifier — returns the tenant's FileClassifierRules
      * for use in FileClassifier.classify(filePath, tenantRules).
@@ -90,7 +90,7 @@ export declare class SpecialistAgent extends BaseAgent {
     private readonly specialistSystemPrompt;
     readonly agentId: string;
     readonly memoryScope: string;
-    constructor(role: AgentRole, agentId: string, memoryScope: string, specialistSystemPrompt: string, llm: ILLMClient, memory: LongTermMemoryStore, trace: LangfuseTraceClient, taskId: string, tenantId: string);
+    constructor(role: AgentRole, agentId: string, memoryScope: string, specialistSystemPrompt: string, llm: ILLMClient, memory: ISemanticMemoryStore, trace: LangfuseTraceClient, taskId: string, tenantId: string);
     proposeEdit(instruction: string, fileContents: Record<string, string>, repoMapContext: string, onChunk: (chunk: string, fileHint: string) => void): Promise<import('./GeneralCodingAgent.js').EditProposal>;
     process(message: AgentMessage): Promise<AgentMessage>;
 }

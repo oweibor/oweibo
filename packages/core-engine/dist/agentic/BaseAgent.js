@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.GenericAgent = exports.DOMAIN_SPECIALIST_SYSTEM_PROMPT = exports.REVIEWER_SYSTEM_PROMPT = exports.EXECUTOR_SYSTEM_PROMPT = exports.ARCHITECT_SYSTEM_PROMPT = exports.BaseAgent = void 0;
+exports.GenericAgent = exports.BaseAgent = void 0;
 const crypto_1 = require("crypto");
 class BaseAgent {
     llm;
@@ -24,20 +24,21 @@ class BaseAgent {
         this.memoryScope = `${role}:${taskId}`;
     }
     async recall(query, topK = 5) {
-        const entries = await this.memory.recall(this.tenantId, query, { topK });
+        const entries = await this.memory.recall({ tenantId: this.tenantId, query, topK });
         if (entries.length === 0)
             return '';
-        return entries.map(e => `[Memory] ${e.entry.summary}`).join('\n');
+        return entries.map(e => `[Memory] ${e.summary}`).join('\n');
     }
     async remember(content, metadata) {
         await this.memory.store({
-            tenantId: this.tenantId,
-            scope: this.memoryScope,
-            type: 'tool-heuristic',
-            tier: 'episodic',
+            scope: {
+                tenantId: this.tenantId,
+                taskId: this.taskId,
+            },
+            kind: 'tool-heuristic',
             summary: content,
-            detail: metadata ?? {},
-            relevanceTags: [],
+            detail: metadata,
+            importance: 0.5,
         });
     }
     respond(original, payload) {
@@ -64,11 +65,8 @@ class BaseAgent {
     }
 }
 exports.BaseAgent = BaseAgent;
-// ─── System prompts (referenced by SwarmCoordinator) ─────────────────────────
-exports.ARCHITECT_SYSTEM_PROMPT = 'You are the Architect agent. Decompose goals into a precise, ordered plan.';
-exports.EXECUTOR_SYSTEM_PROMPT = 'You are the Executor agent. Carry out plan steps faithfully and report results.';
-exports.REVIEWER_SYSTEM_PROMPT = 'You are the Reviewer agent. Audit executor outputs and challenge defects.';
-exports.DOMAIN_SPECIALIST_SYSTEM_PROMPT = 'You are a Domain Specialist. Provide expertise specific to the requested domain.';
+// DONE: Phase A.4 — static prompt constants removed; prompts now come from CohortRouter.
+// Stable-v0 fallback strings live in CohortRouter.STABLE_V0_FALLBACKS.
 /** Concrete generic agent — used by SwarmCoordinator for the four standard roles. */
 class GenericAgent extends BaseAgent {
     async process(message) {

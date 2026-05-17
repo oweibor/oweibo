@@ -36,6 +36,8 @@ import { ModelRouter }             from './infrastructure/ModelRouter.js';
 import { Pool }                    from 'pg';
 import { CohortRouter }            from './infrastructure/CohortRouter.js';
 import { OperationalModeService }  from './infrastructure/OperationalModeService.js';
+import { BanditService }           from './bandit/BanditService.js';
+import { PromotionGateService }    from './bandit/PromotionGateService.js';
 import { PromptRegistry }          from '@oweibo/prompt-registry';
 import { PromptAssembler }         from '@oweibo/prompt-registry';
 import { createServer }            from './api/server.js';
@@ -150,6 +152,7 @@ async function main(): Promise<void> {
   let pgPool: Pool | undefined;
   let cohortRouter: CohortRouter | undefined;
   let operationalMode: OperationalModeService | undefined;
+  let promotionGate: PromotionGateService | undefined;
   if (process.env['DATABASE_URL']) {
     pgPool = new Pool({ connectionString: process.env['DATABASE_URL'] });
     const promptRegistry = new PromptRegistry(
@@ -160,6 +163,8 @@ async function main(): Promise<void> {
     const promptAssembler = new PromptAssembler(promptRegistry);
     cohortRouter = new CohortRouter(promptRegistry, promptAssembler);
     operationalMode = new OperationalModeService(pgPool, rPub, rSub);
+    const banditService = new BanditService(pgPool, operationalMode);
+    promotionGate = new PromotionGateService(pgPool, banditService);
   }
 
   const swarm = new SwarmCoordinator(
@@ -260,6 +265,7 @@ async function main(): Promise<void> {
     interventionGateway: interventionGateway as any,
     hitlGateway,
     ...(pgPool && operationalMode ? { pool: pgPool, operationalMode } : {}),
+    ...(promotionGate ? { promotionGate } : {}),
   });
 
   // ── Channel Gateway (optional) ────────────────────────────────────────────

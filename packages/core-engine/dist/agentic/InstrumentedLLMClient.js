@@ -4,24 +4,68 @@ exports.InstrumentedLLMClient = void 0;
 /**
  * InstrumentedLLMClient — wraps the base LLM HTTP client with Langfuse tracing.
  * Every generate() call produces a Langfuse generation span capturing:
- *   - model, prompt, completion, tokens, latency
+ *   - model, prompt, completion, tokens, latency, taskId, role, slotId
  * Stateless — safe to instantiate once per agent per task.
  */
 class InstrumentedLLMClient {
     baseUrl;
     model;
     trace;
-    constructor(baseUrl, model, trace) {
+    taskId;
+    role;
+    slotId;
+    constructor(baseUrl, model, trace, taskId = '', role = 'unknown', slotId) {
         this.baseUrl = baseUrl;
         this.model = model;
         this.trace = trace;
+        this.taskId = taskId;
+        this.role = role;
+        this.slotId = slotId;
     }
+    static samplingRate = parseFloat(process.env['LANGFUSE_SAMPLING_RATE'] ?? '1.0');
     async generate(params) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let generation;
+        if (Math.random() <= InstrumentedLLMClient.samplingRate) {
+            try {
+                generation = this.trace.generation({
+                    name: `generate:${this.role}`,
+                    model: this.model,
+                    input: [
+                        { role: 'system', content: params.systemPrompt.slice(0, 500) },
+                        { role: 'user', content: params.userPrompt.slice(0, 500) },
+                    ],
+                    metadata: { taskId: this.taskId, role: this.role, slotId: this.slotId },
+                });
+            }
+            catch { /* non-fatal — Langfuse must never block the task path */ }
+        } // end sampling gate
         const startMs = Date.now();
-        const response = await this.callApi(params);
-        const latencyMs = Date.now() - startMs;
-        // TODO: trace.generation({ model, input, output, usage, latencyMs })
-        return { ...response, durationMs: latencyMs };
+        try {
+            const response = await this.callApi(params);
+            const latencyMs = Date.now() - startMs;
+            try {
+                generation?.end?.({
+                    output: response.output.slice(0, 1_000),
+                    usage: {
+                        promptTokens: response.promptTokens,
+                        completionTokens: response.completionTokens,
+                        totalTokens: (response.promptTokens ?? 0) + (response.completionTokens ?? 0),
+                    },
+                    metadata: { latencyMs },
+                });
+            }
+            catch { /* non-fatal */ }
+            return { ...response, durationMs: latencyMs };
+        }
+        catch (err) {
+            const latencyMs = Date.now() - startMs;
+            try {
+                generation?.end?.({ output: String(err), level: 'ERROR', metadata: { latencyMs } });
+            }
+            catch { /* non-fatal */ }
+            throw err;
+        }
     }
     async *stream(params) {
         const res = await fetch(`${this.baseUrl}/api/chat`, {
@@ -92,7 +136,11 @@ class InstrumentedLLMClient {
             const embedJson = await embedRes.json();
             return { output: '', embedding: embedJson.embedding };
         }
-        return { output };
+        return {
+            output,
+            promptTokens: json.prompt_eval_count,
+            completionTokens: json.eval_count,
+        };
     }
 }
 exports.InstrumentedLLMClient = InstrumentedLLMClient;

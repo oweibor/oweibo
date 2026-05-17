@@ -4,6 +4,7 @@ exports.GeneralCodingOrchestrator = void 0;
 // packages/core-engine/src/general-coding/GeneralCodingOrchestrator.ts
 // Reactive Executive — v9.5 (§16f.1)
 const crypto_1 = require("crypto");
+const assertRepoAccess_js_1 = require("../infrastructure/assertRepoAccess.js");
 /** Threshold above which a partial failure triggers full task-failed rather than retry. */
 const FAILURE_BUDGET = 0.30;
 /**
@@ -53,9 +54,10 @@ class GeneralCodingOrchestrator {
     interventions;
     contextStore;
     warmPool;
+    vault;
     constructor(indexer, repoMap, rules, skills, loop, synthesizer, fileClassifier, // NEW v9.5.1
     specialistFactory, // NEW v9.5.1
-    eventBus, interventions, contextStore, warmPool) {
+    eventBus, interventions, contextStore, warmPool, vault) {
         this.indexer = indexer;
         this.repoMap = repoMap;
         this.rules = rules;
@@ -68,12 +70,13 @@ class GeneralCodingOrchestrator {
         this.interventions = interventions;
         this.contextStore = contextStore;
         this.warmPool = warmPool;
+        this.vault = vault;
     }
     async handle(task, secCtx, trace, sessionId) {
         if (!task.repoPath)
             throw new Error('[GeneralCodingOrchestrator] repoPath is required for general-coding tasks');
-        // 1. Authorise repoPath against tenant's allowedRepoPaths in Vault
-        await this.assertRepoAccess(task.repoPath, task.tenantId, secCtx);
+        // 1. Authorise repoPath against tenant's allowedRepoPaths in Vault (Phase 1.5 — shared primitive)
+        await (0, assertRepoAccess_js_1.assertRepoAccess)(this.vault, task.tenantId, task.repoPath, secCtx);
         // 2. Namespace injection guard (v9.1)
         const sanitizedSessionId = this.deriveSecureCollectionSuffix(task.tenantId, sessionId);
         const collectionName = `general-repo:${task.tenantId}:${sanitizedSessionId}`;
@@ -388,11 +391,7 @@ class GeneralCodingOrchestrator {
             }
         }
     }
-    async assertRepoAccess(repoPath, tenantId, secCtx) {
-        if (!secCtx.permissions.includes('repo:read')) {
-            throw new Error(`[GeneralCodingOrchestrator] Tenant ${tenantId} does not have repo:read permission`);
-        }
-    }
+    // assertRepoAccess delegated to infrastructure/assertRepoAccess.ts (Phase 1.5)
     /**
      * appendSynthesisNode — Gap 9. Injects a terminal DAG node that runs after
      * every other node completes. Dispatching it flows through dispatchNode()

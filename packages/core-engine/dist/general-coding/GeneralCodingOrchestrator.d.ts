@@ -12,6 +12,7 @@ import type { TaskEventBus } from '../ingestion/TaskEventBus.js';
 import type { TaskInterventionGateway } from '../ingestion/TaskInterventionGateway.js';
 import type { DistributedContextStore } from '../agentic/DistributedContextStore.js';
 import type { WarmPoolManager } from '../sandbox/WarmPoolManager.js';
+import type { VaultClient } from '../infrastructure/VaultClient.js';
 export interface GeneralCodingResult {
     status: 'success' | 'failed' | 'partial';
     appliedEdits: string[];
@@ -66,9 +67,10 @@ export declare class GeneralCodingOrchestrator {
     private readonly interventions;
     private readonly contextStore;
     private readonly warmPool;
+    private readonly vault;
     constructor(indexer: GeneralRepoIndexer, repoMap: RepoMapBuilder, rules: ProjectRulesLoader, skills: SkillRegistry, loop: ConversationalLoop, synthesizer: SynthesisAgent, fileClassifier: FileClassifier, // NEW v9.5.1
     specialistFactory: SpecialistAgentFactory, // NEW v9.5.1
-    eventBus: TaskEventBus, interventions: TaskInterventionGateway, contextStore: DistributedContextStore, warmPool: WarmPoolManager);
+    eventBus: TaskEventBus, interventions: TaskInterventionGateway, contextStore: DistributedContextStore, warmPool: WarmPoolManager, vault: VaultClient);
     handle(task: IAgentTask, secCtx: ISecurityContext, trace: LangfuseTraceClient, sessionId: string): Promise<GeneralCodingResult>;
     /**
      * runReactiveLoop — the core of the v9.5 reactive executive.
@@ -112,7 +114,6 @@ export declare class GeneralCodingOrchestrator {
      * Mutates plan.nodes in-place (plan is not yet persisted when this is called).
      */
     private stampSpecialistRoles;
-    private assertRepoAccess;
     /**
      * appendSynthesisNode — Gap 9. Injects a terminal DAG node that runs after
      * every other node completes. Dispatching it flows through dispatchNode()

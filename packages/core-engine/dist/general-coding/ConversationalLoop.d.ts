@@ -10,10 +10,10 @@ import type { TaskInterventionGateway } from '../ingestion/TaskInterventionGatew
 import type { SessionStore } from '../ingestion/SessionStore.js';
 import type { DistributedContextStore } from '../agentic/DistributedContextStore.js';
 import type { GeneralCodingResult } from './GeneralCodingOrchestrator.js';
-import type { IMemorySystem } from '../agentic/IMemorySystem.js';
+import type { IMemoryOrchestrator } from '@oweibo/core-contracts';
 import type { UserProfileStore } from '../agentic/UserProfileStore.js';
 import type { PreferenceNudgeService } from '../agentic/PreferenceNudgeService.js';
-import type { PromptBudgetEnforcer } from '../agentic/PromptBudgetEnforcer.js';
+import type { PromptBudgetEnforcer } from '../infrastructure/PromptBudgetEnforcer.js';
 /**
  * EditPlanNode — one unit of work in the DAG EditPlan.
  *
@@ -88,12 +88,12 @@ export declare class ConversationalLoop {
     private readonly eventBus;
     private readonly interventions;
     private readonly contextStore;
-    private readonly memorySystem;
+    private readonly memoryOrchestrator;
     private readonly userProfileStore;
     private readonly preferenceNudge;
     private readonly budgetEnforcer;
     private static readonly MAX_VERIFY_ITERATIONS;
-    constructor(agent: GeneralCodingAgent, planner: EditPlanner, applicator: EditApplicator, verifier: VerificationRunner, indexer: GeneralRepoIndexer, sessions: SessionStore, eventBus: TaskEventBus, interventions: TaskInterventionGateway, contextStore: DistributedContextStore, memorySystem: IMemorySystem, userProfileStore: UserProfileStore, preferenceNudge: PreferenceNudgeService, budgetEnforcer: PromptBudgetEnforcer);
+    constructor(agent: GeneralCodingAgent, planner: EditPlanner, applicator: EditApplicator, verifier: VerificationRunner, indexer: GeneralRepoIndexer, sessions: SessionStore, eventBus: TaskEventBus, interventions: TaskInterventionGateway, contextStore: DistributedContextStore, memoryOrchestrator: IMemoryOrchestrator, userProfileStore: UserProfileStore, preferenceNudge: PreferenceNudgeService, budgetEnforcer: PromptBudgetEnforcer);
     /**
      * planTurn — produces an EditPlan from the task goal without executing anything.
      * The plan is published as a 'plan-ready' event and execution is blocked until

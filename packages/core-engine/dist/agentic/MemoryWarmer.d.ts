@@ -27,24 +27,26 @@
  * original and promoted copy but summaries match.
  *
  * Token truncation is NOT performed here — that is PromptBudgetEnforcer's job.
+ *
+ * Phase 2b: Migrated from legacy LongTermMemoryStore to ISemanticMemoryStore.
  */
-import type { LongTermMemoryStore, MemoryEntry } from './LongTermMemoryStore.js';
+import type { ISemanticMemoryStore, RankedMemoryEntry } from '@oweibo/core-contracts';
 import type { ShortTermMemoryStore, STMEntry } from './ShortTermMemoryStore.js';
 export interface WarmResult {
-    entry: MemoryEntry | STMEntry;
+    entry: RankedMemoryEntry | STMEntry;
     score: number;
     source: 'ltm' | 'stm';
 }
 export declare class MemoryWarmer {
     private readonly ltm;
     private readonly stm;
-    constructor(ltm: LongTermMemoryStore, stm: ShortTermMemoryStore);
+    constructor(ltm: ISemanticMemoryStore, stm: ShortTermMemoryStore);
     /**
      * warmForTask — assemble the warm-memory block for a task.
      *
      * @param tenantId        — tenant for Qdrant collection scoping
      * @param sessionId       — STM session to recall from
-     * @param agentScope      — '{role}:{taskId}' LTM scope for agent-specific memories
+     * @param agentScope      — '{role}:{taskId}' — unused in contract API (kept for compat)
      * @param taskDescription — query text for all four recall channels
      * @param projectId       — optional project; enables the project scope channel
      * @param topK            — entries per channel AND final slice (default: 6)

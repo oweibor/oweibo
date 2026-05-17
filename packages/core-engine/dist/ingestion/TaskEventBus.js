@@ -18,11 +18,8 @@ class TaskEventBus {
         };
         await this.publish_(`task-events:${sessionId}`, JSON.stringify(full));
     }
-    /**
-     * subscribe — register a handler for all events on a session channel.
-     * Returns an unsubscribe function; call it on cleanup.
-     */
-    async subscribe(sessionId, handler) {
+    subscribe(a, b, c) {
+        const [sessionId, handler] = typeof b === 'function' ? [a, b] : [b, c];
         return this.subscribe_(`task-events:${sessionId}`, (raw) => {
             try {
                 const event = JSON.parse(raw);

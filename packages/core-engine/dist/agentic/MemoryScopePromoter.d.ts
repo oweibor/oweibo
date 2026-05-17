@@ -1,18 +1,20 @@
 /**
- * MemoryScopePromoter — scheduled background job that promotes high-confidence
- * procedural memories to tenant-wide scope.
+ * MemoryScopePromoter — scheduled background job that promotes high-recall
+ * memories to tenant-wide scope.
  *
- * A procedural memory is a candidate for promotion when:
- *   - tier === 'procedural'
- *   - successCount >= config.promotionThreshold
- *   - promotedToId is null (not yet promoted — idempotency lock)
+ * A memory is a candidate for promotion when:
+ *   - recall_count >= config.promotionThreshold
+ *   - promoted_at is null (not yet promoted — idempotency lock)
  *
  * Promotion writes a new Qdrant point at scope 'tenant:{tenantId}' (a copy of
- * the source entry with a fresh UUID), then marks the original with promotedToId
- * pointing at the new entry. Step 4 always follows step 3: if the upsert fails,
+ * the source entry with a fresh UUID), then marks the original with promoted_at
+ * pointing at the new entry. Step 3 always follows step 2: if the upsert fails,
  * the original remains unmarked and the next cycle will retry it safely.
  *
  * Concurrency: up to config.maxConcurrentTenants tenants run in parallel (p-limit v3).
+ *
+ * Phase 2b: Migrated from legacy MemoryEntry/MemoryTier to contract types.
+ *           Promotion now uses recall_count instead of successCount/tier.
  */
 import type { Logger } from './MemoryDecayService.js';
 type QdrantClient = any;
@@ -37,14 +39,13 @@ export declare class MemoryScopePromoter {
     /**
      * promoteTenant — scroll for promotion candidates and promote each one.
      *
-     * Filter: tier=procedural AND successCount >= promotionThreshold AND
-     *         promotedToId IS NULL (not yet promoted).
+     * Filter: recall_count >= promotionThreshold AND promoted_at IS NULL.
      * Cap: stops after maxPromotionsPerCycle entries to bound each cycle's I/O.
      *
      * Per candidate:
-     *   3. qdrant.upsert() — write new point at tenant-wide scope.
-     *   4. qdrant.setPayload() — mark original with promotedToId (idempotency lock).
-     *      Step 4 only runs if step 3 succeeds; a failed upsert leaves the original
+     *   2. qdrant.upsert() — write new point at tenant-wide scope.
+     *   3. qdrant.setPayload() — mark original with promoted_at (idempotency lock).
+     *      Step 3 only runs if step 2 succeeds; a failed upsert leaves the original
      *      unmarked so the next cycle will retry it safely.
      */
     private promoteTenant;

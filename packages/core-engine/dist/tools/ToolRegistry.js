@@ -4,6 +4,7 @@ exports.ToolRegistry = exports.SchemaValidationError = exports.PermissionDeniedE
 // packages/core-engine/src/tools/ToolRegistry.ts
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const Ajv = require('ajv');
+const observability_1 = require("@oweibo/observability");
 const ajv = new Ajv({ strict: false });
 class PermissionDeniedError extends Error {
     constructor(toolName, required, provided) {
@@ -68,7 +69,7 @@ class ToolRegistry {
             return [...this.tools.values()].slice(0, topK);
         }
     }
-    async invoke(name, input, securityContext) {
+    async invoke(name, input, securityContext, taskCtx) {
         const tool = this.tools.get(name);
         if (!tool)
             throw new Error(`[ToolRegistry] Unknown tool: "${name}"`);
@@ -82,27 +83,31 @@ class ToolRegistry {
         if (!validate(input)) {
             throw new SchemaValidationError(name, 'input', ajv.errorsText(validate.errors) ?? '');
         }
-        const startMs = Date.now();
-        let output;
-        try {
-            output = tool.handler ? await tool.handler(input) : undefined;
-        }
-        catch (err) {
-            return {
-                toolName: name,
-                status: 'error',
-                durationMs: Date.now() - startMs,
-                error: err instanceof Error ? err.message : String(err),
-                tokensUsed: 0,
-            };
-        }
-        if (tool.outputSchema) {
-            const validateOut = ajv.compile(tool.outputSchema);
-            if (!validateOut(output)) {
-                throw new SchemaValidationError(name, 'output', ajv.errorsText(validateOut.errors) ?? '');
+        const spanCtx = taskCtx ?? { tenantId: '', userId: '', taskId: '' };
+        const spanOpts = { toolName: name, toolType: 'function' };
+        return (0, observability_1.withToolSpan)(spanOpts, spanCtx, async () => {
+            const startMs = Date.now();
+            let output;
+            try {
+                output = tool.handler ? await tool.handler(input) : undefined;
             }
-        }
-        return { toolName: name, status: 'success', output, durationMs: Date.now() - startMs, tokensUsed: 0 };
+            catch (err) {
+                return {
+                    toolName: name,
+                    status: 'error',
+                    durationMs: Date.now() - startMs,
+                    error: err instanceof Error ? err.message : String(err),
+                    tokensUsed: 0,
+                };
+            }
+            if (tool.outputSchema) {
+                const validateOut = ajv.compile(tool.outputSchema);
+                if (!validateOut(output)) {
+                    throw new SchemaValidationError(name, 'output', ajv.errorsText(validateOut.errors) ?? '');
+                }
+            }
+            return { toolName: name, status: 'success', output, durationMs: Date.now() - startMs, tokensUsed: 0 };
+        });
     }
     list() {
         return [...this.tools.values()];

@@ -19,7 +19,7 @@ const CognitiveEngine_js_1 = require("./agentic/CognitiveEngine.js");
 const SwarmCoordinator_js_1 = require("./agentic/SwarmCoordinator.js");
 const GoalDecomposer_js_1 = require("./agentic/GoalDecomposer.js");
 const MultiStrategyPlanner_js_1 = require("./agentic/MultiStrategyPlanner.js");
-const LongTermMemoryStore_js_1 = require("./agentic/LongTermMemoryStore.js");
+const MemoryWiring_js_1 = require("./agentic/memory/MemoryWiring.js");
 const ContextPruner_js_1 = require("./agentic/ContextPruner.js");
 const TaskHeartbeat_js_1 = require("./agentic/TaskHeartbeat.js");
 const HeartbeatScanner_js_1 = require("./agentic/HeartbeatScanner.js");
@@ -35,7 +35,20 @@ const GeneralCodingOrchestrator_js_1 = require("./general-coding/GeneralCodingOr
 const SkillRegistry_js_1 = require("./general-coding/project/SkillRegistry.js");
 const RemoteSkillFetcher_js_1 = require("./general-coding/project/RemoteSkillFetcher.js");
 const ModelRouter_js_1 = require("./infrastructure/ModelRouter.js");
+const pg_1 = require("pg");
+const CohortRouter_js_1 = require("./infrastructure/CohortRouter.js");
+const OperationalModeService_js_1 = require("./infrastructure/OperationalModeService.js");
+const BanditService_js_1 = require("./bandit/BanditService.js");
+const PromotionGateService_js_1 = require("./bandit/PromotionGateService.js");
+const prompt_registry_1 = require("@oweibo/prompt-registry");
+const prompt_registry_2 = require("@oweibo/prompt-registry");
 const server_js_1 = require("./api/server.js");
+const DocGeneratorPipeline_js_1 = require("./doc-generator/DocGeneratorPipeline.js");
+const DocGeneratorQueue_js_1 = require("./doc-generator/queue/DocGeneratorQueue.js");
+const DocGeneratorWorker_js_1 = require("./doc-generator/queue/DocGeneratorWorker.js");
+const SessionReaper_js_1 = require("./doc-generator/queue/SessionReaper.js");
+const RedisTaskEventBus_js_1 = require("./infrastructure/eventbus/RedisTaskEventBus.js");
+const AuditLogger_js_1 = require("./doc-generator/observability/AuditLogger.js");
 async function main() {
     // ── Infrastructure ────────────────────────────────────────────────────────
     const vault = new VaultClient_js_1.NullVaultClient();
@@ -90,13 +103,50 @@ async function main() {
     const sandboxFactory = new SandboxFactory_js_1.SandboxFactory(secrets);
     const warmPool = new TieredWarmPoolManager_js_1.TieredWarmPoolManager(sandboxFactory);
     warmPool.start();
+    // ── Memory subsystem (4-tier orchestrator + background services) ─────────
+    // Tier 1 + 2 + 3 always wired; tier 4 (Qdrant) wired when QDRANT_URL is set
+    // and an embedder is available.
+    const memorySubsystem = await (0, MemoryWiring_js_1.wireMemorySubsystem)({
+        redis,
+        ...(process.env.QDRANT_URL ? { qdrantUrl: process.env.QDRANT_URL } : {}),
+        ...(process.env.QDRANT_API_KEY ? { qdrantApiKey: process.env.QDRANT_API_KEY } : {}),
+        ...(process.env.OLLAMA_URL ? { ollamaUrl: process.env.OLLAMA_URL } : {}),
+        ...(process.env.OWEIBO_EMBED_MODEL ? { embedModel: process.env.OWEIBO_EMBED_MODEL } : {}),
+        ...(process.env.OWEIBO_EMBED_DIM ? { vectorDimension: Number(process.env.OWEIBO_EMBED_DIM) } : {}),
+    });
+    memorySubsystem.start();
+    // Legacy ISemanticMemoryStore reference for SwarmCoordinator/CognitiveEngine
+    // — these still take the tier-4 store directly during the broader migration
+    // to consume IMemoryOrchestrator. When the semantic tier isn't wired they
+    // get a no-op store that records nothing (matches the orchestrator's
+    // graceful-degradation contract).
+    const memory = memorySubsystem.semantic ?? {
+        store: async () => ({ id: '', scope: { tenantId: '' }, kind: 'domain-fact', summary: '', importance: 0, createdAt: '', updatedAt: '', recallCount: 0 }),
+        recall: async () => [],
+        purgeTenant: async () => undefined,
+        purgeProject: async () => undefined,
+        purgeUser: async () => undefined,
+    };
     // ── Agentic core ─────────────────────────────────────────────────────────
-    const memory = new LongTermMemoryStore_js_1.LongTermMemoryStore(null, null);
     const planner = new MultiStrategyPlanner_js_1.MultiStrategyPlanner(makeLLM());
     const decomposer = new GoalDecomposer_js_1.GoalDecomposer(makeLLM());
     const pruner = new ContextPruner_js_1.ContextPruner(contextStore);
     const conflictResolver = new ConflictResolver_js_1.ConflictResolver(makeLLM(), hitlGateway);
-    const swarm = new SwarmCoordinator_js_1.SwarmCoordinator(llmBase, memory, policyEngine, anomaly, auditLogger, conflictResolver, eventBus, interventionGateway, decomposer, contextStore, sessionStore);
+    // ── Prompt registry + cohort router (Phase A.4) ───────────────────────────
+    let pgPool;
+    let cohortRouter;
+    let operationalMode;
+    let promotionGate;
+    if (process.env['DATABASE_URL']) {
+        pgPool = new pg_1.Pool({ connectionString: process.env['DATABASE_URL'] });
+        const promptRegistry = new prompt_registry_1.PromptRegistry(pgPool, process.env['LANGFUSE_SECRET_KEY'], process.env['LANGFUSE_PUBLIC_KEY']);
+        const promptAssembler = new prompt_registry_2.PromptAssembler(promptRegistry);
+        cohortRouter = new CohortRouter_js_1.CohortRouter(promptRegistry, promptAssembler);
+        operationalMode = new OperationalModeService_js_1.OperationalModeService(pgPool, rPub, rSub);
+        const banditService = new BanditService_js_1.BanditService(pgPool, operationalMode);
+        promotionGate = new PromotionGateService_js_1.PromotionGateService(pgPool, banditService);
+    }
+    const swarm = new SwarmCoordinator_js_1.SwarmCoordinator(llmBase, memory, policyEngine, anomaly, auditLogger, conflictResolver, eventBus, interventionGateway, decomposer, contextStore, sessionStore, pgPool, cohortRouter);
     // ── Heartbeat ─────────────────────────────────────────────────────────────
     const heartbeat = new TaskHeartbeat_js_1.TaskHeartbeat(redis);
     const scanner = new HeartbeatScanner_js_1.HeartbeatScanner(redis, async () => undefined, async () => undefined);
@@ -111,6 +161,49 @@ async function main() {
     // ── CognitiveEngine ───────────────────────────────────────────────────────
     const engine = new CognitiveEngine_js_1.CognitiveEngine(llmBase, planner, decomposer, memory, policyEngine, anomaly, contextStore, pruner, swarm, eventBus, sessionStore, delivery, heartbeat, generalCodingOrchestrator);
     queue.startWorker?.(engine, 5);
+    // ── Doc-generator subsystem (B3 multi-pod startup guard) ────────────────────
+    //
+    // B3: If DOC_GEN_EVENT_BUS_MODE=redis, a separate Redis pub/sub pair is required so
+    // SSE events published by pod-A are received by clients connected to pod-B.
+    // We validate the pub/sub connection before accepting traffic (fail-fast).
+    // If the env var is absent or 'memory', the in-memory TaskEventBus is used — this
+    // works correctly for single-replica deployments.
+    const docGenEventBusMode = process.env['DOC_GEN_EVENT_BUS_MODE'] ?? 'memory';
+    let docGenEventBus = eventBus;
+    let docGenWorker;
+    let docGenReaper;
+    if (docGenEventBusMode === 'redis') {
+        // Separate clients required by Redis pub/sub protocol — must not reuse main redis.
+        const docPub = new RedisClass(redisUrl, { maxRetriesPerRequest: null, lazyConnect: true });
+        const docSub = new RedisClass(redisUrl, { maxRetriesPerRequest: null, lazyConnect: true });
+        try {
+            await docPub.connect();
+            await docSub.connect();
+            console.log('[oweibo] Doc-gen event bus: Redis pub/sub connected (multi-pod mode)');
+        }
+        catch (err) {
+            console.error('[oweibo] B3 STARTUP GUARD FAILED: could not connect doc-gen Redis pub/sub:', err);
+            process.exit(1);
+        }
+        docGenEventBus = new RedisTaskEventBus_js_1.RedisTaskEventBus(docPub, docSub, console);
+    }
+    else {
+        console.log('[oweibo] Doc-gen event bus: in-memory (single-pod mode)');
+    }
+    const docGenQueue = new DocGeneratorQueue_js_1.DocGeneratorQueue(redis, {
+        dailyTokenQuota: Number(process.env['DOC_GEN_DAILY_TOKEN_QUOTA'] ?? 500_000),
+    });
+    const docGenAudit = new AuditLogger_js_1.AuditLogger();
+    const docGenPipeline = new DocGeneratorPipeline_js_1.DocGeneratorPipeline({
+        llm: makeLLM(),
+        eventBus: docGenEventBus,
+        logger: console,
+        globalTokenBudget: Number(process.env['DOC_GEN_GLOBAL_TOKEN_BUDGET'] ?? 80_000),
+    });
+    docGenWorker = new DocGeneratorWorker_js_1.DocGeneratorWorker(docGenPipeline, docGenQueue, redis, console);
+    docGenReaper = new SessionReaper_js_1.SessionReaper(docGenQueue, docGenEventBus, redis, console);
+    docGenReaper.start();
+    void docGenWorker.start();
     // ── HTTP server ───────────────────────────────────────────────────────────
     await (0, server_js_1.createServer)({
         secrets,
@@ -118,6 +211,8 @@ async function main() {
         taskEventBus: eventBus,
         interventionGateway: interventionGateway,
         hitlGateway,
+        ...(pgPool && operationalMode ? { pool: pgPool, operationalMode } : {}),
+        ...(promotionGate ? { promotionGate } : {}),
     });
     // ── Channel Gateway (optional) ────────────────────────────────────────────
     try {
@@ -138,8 +233,11 @@ async function main() {
     }
     // ── Graceful shutdown ─────────────────────────────────────────────────────
     const shutdown = async () => {
+        docGenWorker?.stop();
+        docGenReaper?.stop();
         scanner.stop();
         warmPool.stop();
+        memorySubsystem.stop();
         await redis.quit();
         process.exit(0);
     };

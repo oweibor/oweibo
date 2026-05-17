@@ -12,12 +12,12 @@ class ConversationalLoop {
     eventBus;
     interventions;
     contextStore;
-    memorySystem;
+    memoryOrchestrator;
     userProfileStore;
     preferenceNudge;
     budgetEnforcer;
     static MAX_VERIFY_ITERATIONS = 3;
-    constructor(agent, planner, applicator, verifier, indexer, sessions, eventBus, interventions, contextStore, memorySystem, userProfileStore, preferenceNudge, budgetEnforcer) {
+    constructor(agent, planner, applicator, verifier, indexer, sessions, eventBus, interventions, contextStore, memoryOrchestrator, userProfileStore, preferenceNudge, budgetEnforcer) {
         this.agent = agent;
         this.planner = planner;
         this.applicator = applicator;
@@ -27,7 +27,7 @@ class ConversationalLoop {
         this.eventBus = eventBus;
         this.interventions = interventions;
         this.contextStore = contextStore;
-        this.memorySystem = memorySystem;
+        this.memoryOrchestrator = memoryOrchestrator;
         this.userProfileStore = userProfileStore;
         this.preferenceNudge = preferenceNudge;
         this.budgetEnforcer = budgetEnforcer;
@@ -89,90 +89,81 @@ class ConversationalLoop {
         void this.budgetEnforcer;
         const appliedEdits = [];
         let tokensUsed = 0;
-        try {
-            for (let iteration = 0; iteration < ConversationalLoop.MAX_VERIFY_ITERATIONS; iteration++) {
-                await this.contextStore.save({ id: `gc-session:${task.id}`, status: 'running', turnIndex: iteration });
-                // 1. Semantic search for relevant context
-                const context = await this.indexer.search(collectionName, plan.instruction, 10);
-                // 2. Read current file contents for files in plan
-                const fileContents = await this.readFiles(plan.filesToChange, task.repoPath);
-                // 3. Generate proposal — streams 'edit-proposed' chunks via TaskEventBus (G13)
-                await this.eventBus.publish(sessionId, {
-                    taskId: task.id,
-                    type: 'stage-started',
-                    message: `Generating edits (attempt ${iteration + 1})…`,
-                    progress: 30 + iteration * 20,
-                });
-                const proposal = await this.agent.proposeEdit(plan.instruction, fileContents, context, (chunk, fileHint) => {
-                    void this.eventBus.publish(sessionId, {
-                        taskId: task.id,
-                        type: 'edit-proposed',
-                        message: fileHint ? `Editing ${fileHint}…` : 'Generating edits…',
-                        payload: { chunk, fileHint },
-                    });
-                });
-                tokensUsed += proposal.proposal.length * 800; // approximate
-                // 4. Apply changes atomically via git
-                const { commitHash, editedFiles } = await this.applicator.apply(task.repoPath, proposal, task.id, sessionId);
-                appliedEdits.push(...editedFiles);
-                await this.eventBus.publish(sessionId, {
-                    taskId: task.id,
-                    type: 'edit-applied',
-                    message: `Changes applied to ${editedFiles.length} file(s).`,
-                    payload: { commitHash, files: editedFiles },
-                });
-                // 5. Verify — tsc → eslint → targeted jest (G4)
-                const verifyResult = await this.verifier.run(task.repoPath, editedFiles, secCtx);
-                if (verifyResult.passed) {
-                    await this.contextStore.save({ id: `gc-session:${task.id}`, status: 'complete', turnIndex: iteration });
-                    await this.sessions.appendTask(sessionId, task.userId ?? '', {
-                        taskId: task.id,
-                        goal: plan.instruction,
-                        outcome: 'success',
-                        keyDecisions: [`edited: ${editedFiles.join(', ')}`, `commit: ${commitHash}`],
-                        deliveredAt: new Date().toISOString(),
-                    });
-                    // Persist turn memory and check for preference signals.
-                    await this.memorySystem.store({
-                        tenantId: task.tenantId,
-                        userId: task.userId,
-                        sessionId,
-                        scope: `session:${sessionId}`,
-                        type: 'successful-strategy',
-                        tier: 'episodic',
-                        summary: `Applied edits to ${editedFiles.join(', ')} — verification passed`,
-                        detail: { commitHash, editedFiles, iteration },
-                        relevanceTags: ['general-coding', 'edit'],
-                    });
-                    await this.preferenceNudge.maybeNudge({
-                        tenantId: task.tenantId,
-                        userId: task.userId,
-                        sessionId,
-                        turnIndex: iteration,
-                    });
-                    return { status: 'success', appliedEdits, commitHash, verificationPassed: true, tokensUsed };
-                }
-                // 6. Verification failed — feed errors back into next iteration
-                await this.eventBus.publish(sessionId, {
-                    taskId: task.id,
-                    type: 'verification-failed',
-                    message: `Verification found ${verifyResult.errors.length} error(s). Attempting fix…`,
-                    payload: { errors: verifyResult.errors },
-                });
-                plan = { ...plan, instruction: `${plan.instruction}\n\nFix the following errors:\n${verifyResult.errors.join('\n')}` };
-            }
+        for (let iteration = 0; iteration < ConversationalLoop.MAX_VERIFY_ITERATIONS; iteration++) {
+            await this.contextStore.save({ id: `gc-session:${task.id}`, status: 'running', turnIndex: iteration });
+            // 1. Semantic search for relevant context
+            const context = await this.indexer.search(collectionName, plan.instruction, 10);
+            // 2. Read current file contents for files in plan
+            const fileContents = await this.readFiles(plan.filesToChange, task.repoPath);
+            // 3. Generate proposal — streams 'edit-proposed' chunks via TaskEventBus (G13)
             await this.eventBus.publish(sessionId, {
                 taskId: task.id,
-                type: 'hitl-required',
-                message: 'Could not automatically fix all verification errors. Human review required.',
-                payload: {},
+                type: 'stage-started',
+                message: `Generating edits (attempt ${iteration + 1})…`,
+                progress: 30 + iteration * 20,
             });
-            return { status: 'partial', appliedEdits, verificationPassed: false, tokensUsed };
+            const proposal = await this.agent.proposeEdit(plan.instruction, fileContents, context, (chunk, fileHint) => {
+                void this.eventBus.publish(sessionId, {
+                    taskId: task.id,
+                    type: 'edit-proposed',
+                    message: fileHint ? `Editing ${fileHint}…` : 'Generating edits…',
+                    payload: { chunk, fileHint },
+                });
+            });
+            tokensUsed += proposal.proposal.length * 800; // approximate
+            // 4. Apply changes atomically via git
+            const { commitHash, editedFiles } = await this.applicator.apply(task.repoPath, proposal, task.id, sessionId);
+            appliedEdits.push(...editedFiles);
+            await this.eventBus.publish(sessionId, {
+                taskId: task.id,
+                type: 'edit-applied',
+                message: `Changes applied to ${editedFiles.length} file(s).`,
+                payload: { commitHash, files: editedFiles },
+            });
+            // 5. Verify — tsc → eslint → targeted jest (G4)
+            const verifyResult = await this.verifier.run(task.repoPath, editedFiles, secCtx);
+            if (verifyResult.passed) {
+                await this.contextStore.save({ id: `gc-session:${task.id}`, status: 'complete', turnIndex: iteration });
+                await this.sessions.appendTask(sessionId, task.userId ?? '', {
+                    taskId: task.id,
+                    goal: plan.instruction,
+                    outcome: 'success',
+                    keyDecisions: [`edited: ${editedFiles.join(', ')}`, `commit: ${commitHash}`],
+                    deliveredAt: new Date().toISOString(),
+                });
+                // Persist turn memory and check for preference signals.
+                await this.memoryOrchestrator.record({
+                    scope: { tenantId: task.tenantId, sessionId },
+                    kind: 'success-pattern',
+                    summary: `Applied edits to ${editedFiles.join(', ')} — verification passed`,
+                    detail: { commitHash, editedFiles, iteration },
+                    importance: 0.6,
+                    tags: ['general-coding', 'edit'],
+                });
+                await this.preferenceNudge.maybeNudge({
+                    tenantId: task.tenantId,
+                    userId: task.userId,
+                    sessionId,
+                    turnIndex: iteration,
+                });
+                return { status: 'success', appliedEdits, commitHash, verificationPassed: true, tokensUsed };
+            }
+            // 6. Verification failed — feed errors back into next iteration
+            await this.eventBus.publish(sessionId, {
+                taskId: task.id,
+                type: 'verification-failed',
+                message: `Verification found ${verifyResult.errors.length} error(s). Attempting fix…`,
+                payload: { errors: verifyResult.errors },
+            });
+            plan = { ...plan, instruction: `${plan.instruction}\n\nFix the following errors:\n${verifyResult.errors.join('\n')}` };
         }
-        finally {
-            // Always tear down the session — destroySession is idempotent and non-throwing.
-            await this.memorySystem.endSession(task.tenantId, sessionId);
-        }
+        await this.eventBus.publish(sessionId, {
+            taskId: task.id,
+            type: 'hitl-required',
+            message: 'Could not automatically fix all verification errors. Human review required.',
+            payload: {},
+        });
+        return { status: 'partial', appliedEdits, verificationPassed: false, tokensUsed };
     }
     async readFiles(paths, repoRoot) {
         const { readFile } = await import('fs/promises');

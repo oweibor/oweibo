@@ -16,6 +16,7 @@ export interface AuthConfig {
 export interface AuthenticatedRequest extends Request {
     userId: string;
     tenantId: string;
+    scopes: string[];
 }
 export declare function createAuthMiddleware(config: AuthConfig): (req: Request, res: Response, next: NextFunction) => void;
 //# sourceMappingURL=authenticate.d.ts.map

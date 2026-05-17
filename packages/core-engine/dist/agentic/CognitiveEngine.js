@@ -38,7 +38,7 @@ class CognitiveEngine {
     async processTask(task) {
         const trace = await (0, LangfuseTracer_js_1.startAgentTrace)(task.id, task.goal.description, task.userId);
         const auditLogger = new ImmutableAuditLogger_js_1.ImmutableAuditLogger(task.id);
-        const llm = new InstrumentedLLMClient_js_1.InstrumentedLLMClient(this.baseLlm.baseUrl, this.baseLlm.model, trace);
+        const llm = new InstrumentedLLMClient_js_1.InstrumentedLLMClient(this.baseLlm.baseUrl, this.baseLlm.model, trace, task.id, 'orchestrator');
         const secCtx = { permissions: task.securityContext?.permissions ?? ['kilo:submit', 'workspace:write'] };
         const sessionId = task.sessionId ?? task.id;
         let tokensUsed = 0;
@@ -76,13 +76,17 @@ class CognitiveEngine {
             // ── FACTORY PATH ────────────────────────────────────────────────────────
             // 1. Recall memories
             await this.eventBus.publish(sessionId, { taskId: task.id, type: 'stage-started', message: 'Analysing your requirements...', progress: 5 });
-            const recalled = await this.memory.recall(task.tenantId, task.goal.description, { types: ['successful-strategy', 'tool-heuristic'] });
+            const recalled = await this.memory.recall({
+                tenantId: task.tenantId,
+                query: task.goal.description,
+                kinds: ['success-pattern', 'tool-heuristic'],
+            });
             const recallEntry = { id: `${task.id}:recall`, timestamp: Date.now(), stage: 'memory', decision: 'recalled memories', rationale: `${recalled.length} entries`, requirementRef: task.goal.description, alternatives: [], rejectedReasons: [] };
             await auditLogger.log(recallEntry);
             decisionLog.push(recallEntry);
             // 2. Generate candidate plans
             await this.eventBus.publish(sessionId, { taskId: task.id, type: 'stage-started', message: 'Planning approach...', progress: 15 });
-            const goalWithContext = { ...task.goal, context: recalled.map(m => m.entry.summary).join('\n') };
+            const goalWithContext = { ...task.goal, context: recalled.map(m => m.summary).join('\n') };
             const plans = await this.planner.generatePlans(goalWithContext);
             this.anomaly.checkRetries(trace.id, task.id, 0);
             const selectedPlan = this.planner.selectBest(plans);
@@ -94,10 +98,10 @@ class CognitiveEngine {
             this.anomaly.checkTokenUsage(trace.id, task.id, tokensUsed, 'complex');
             await this.eventBus.publish(sessionId, { taskId: task.id, type: 'stage-completed', message: `Plan selected: ${selectedPlan.strategy}`, progress: 20 });
             // 3. Decompose sub-goals
-            const subGoals = await this.decomposer.decompose({ description: selectedPlan.strategy, context: task.goal.description });
-            // 4. Dispatch to swarm
+            const subGoals = await this.decomposer.decompose({ description: selectedPlan.strategy, context: task.goal.description }, trace);
+            // 4. Dispatch to swarm (Phase A.4: startTask() resolves prompts + pins atomically)
             await this.eventBus.publish(sessionId, { taskId: task.id, type: 'stage-started', message: 'Generating your application...', progress: 25 });
-            const swarmResult = await this.swarm.coordinate(task.id, task.tenantId, selectedPlan, subGoals, secCtx, trace, sessionId);
+            const swarmResult = await this.swarm.startTask(task, selectedPlan, subGoals, secCtx, trace, sessionId);
             tokensUsed += swarmResult.tokensUsed;
             this.policy.assertTokenBudget(tokensUsed, task.id);
             // 5. Prune and persist context
@@ -108,7 +112,7 @@ class CognitiveEngine {
             }
             // 6. Score, consolidate, deliver
             (0, LangfuseTracer_js_1.scoreTask)(trace, { testPassRate: swarmResult.reviewPassed ? 1 : 0, planFeasibility: selectedPlan.feasibilityScore, tokensEfficiency: Math.max(0, 1 - tokensUsed / 100_000) });
-            await this.memory.consolidateFromTask(selectedPlan, decisionLog, task.tenantId);
+            // consolidation is handled by MemoryOrchestrator at a higher level — skip legacy path
             await this.eventBus.publish(sessionId, { taskId: task.id, type: 'stage-started', message: 'Packaging and delivering your app...', progress: 90 });
             const bundle = swarmResult.subGoalResults['export'];
             if (bundle && task.deliveryConfig) {

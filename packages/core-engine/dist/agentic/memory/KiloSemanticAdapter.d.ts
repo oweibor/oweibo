@@ -38,7 +38,7 @@
  * either itself, so kilo can pass its existing services and other consumers
  * can wire their own.
  */
-import type { ISemanticMemoryStore, MemoryEntry, ProjectId, RankedMemoryEntry, RecallQuery, StoreMemoryInput, TenantId } from '@oweibo/core-contracts';
+import type { ISemanticMemoryStore, MemoryEntry, ProjectId, RankedMemoryEntry, RecallQuery, StoreMemoryInput, TenantId, UserId } from '@oweibo/core-contracts';
 type QdrantClientLike = any;
 export type Embedder = (text: string) => Promise<number[]>;
 export interface KiloSemanticAdapterDeps {
@@ -52,6 +52,7 @@ export declare class KiloSemanticAdapter implements ISemanticMemoryStore {
     recall(query: RecallQuery): Promise<readonly RankedMemoryEntry[]>;
     purgeTenant(tenantId: TenantId): Promise<void>;
     purgeProject(tenantId: TenantId, projectId: ProjectId): Promise<void>;
+    purgeUser(tenantId: TenantId, userId: UserId): Promise<void>;
     private toRanked;
 }
 export {};

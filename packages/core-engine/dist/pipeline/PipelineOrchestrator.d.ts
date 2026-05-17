@@ -1,5 +1,5 @@
 import type { ArtifactBundle, PipelineTaskInput, PipelineTaskOutput, ISandbox, ILLMClient } from '@oweibo/core-contracts';
-import type { LongTermMemoryStore } from '../agentic/LongTermMemoryStore.js';
+import type { ISemanticMemoryStore } from '@oweibo/core-contracts';
 import type { PromptRegistry } from '../observability/PromptRegistry.js';
 import type { TaskEventBus } from '../ingestion/TaskEventBus.js';
 import type { LangfuseTraceClient } from 'langfuse';
@@ -7,7 +7,7 @@ import type { Redis } from 'ioredis';
 export interface PipelineOrchestratorDeps {
     sandbox: ISandbox;
     llm: ILLMClient;
-    memory: LongTermMemoryStore;
+    memory: ISemanticMemoryStore;
     promptRegistry: PromptRegistry;
     eventBus: TaskEventBus;
     /** Redis client used by EntropyTracker for cross-worker rule-of-3 detection (G17). */

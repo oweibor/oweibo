@@ -1,10 +1,13 @@
 /**
- * platform.routes.ts — Platform governance routes (§17.5.1, §18.8.3).
+ * platform.routes.ts — Platform governance routes (§17.5.1, §18.8.3, §9.5).
  *
  * GET  /platform/operational-mode         — current mode state + transition history
  * POST /platform/operational-mode         — set mode (platform:admin)
  * GET  /platform/charter/thresholds       — current drift threshold config + recent events
  * POST /platform/charter/thresholds       — update thresholds (platform:admin)
+ * GET  /platform/promotions/pending       — list arms awaiting human approval (D.6)
+ * GET  /platform/promotions/recent        — recent approve/reject history (D.6)
+ * POST /platform/promotions/decide        — approve or reject a promotion (platform:admin)
  *
  * Scope guard: POST endpoints require 'platform:admin' in the JWT scopes claim.
  * If scopes are absent (older tokens), fall back to PLATFORM_ADMIN_KEY header.
@@ -17,6 +20,7 @@ import {
   OperationalModeService,
   MODE_NAMES,
 } from '../../infrastructure/OperationalModeService.js';
+import type { PromotionGateService } from '../../bandit/PromotionGateService.js';
 
 // ── Scope guard ───────────────────────────────────────────────────────────────
 
@@ -60,14 +64,26 @@ const SetThresholdsSchema = z.object({
   changedBy:       z.string().optional(),
 });
 
+const PromotionDecisionSchema = z.object({
+  armId:       z.string().min(1).max(200),
+  slotId:      z.string().min(1).max(100),
+  role:        z.enum(['architect', 'executor', 'reviewer', 'decomposer']),
+  promptHash:  z.string().min(1).max(200),
+  fromChannel: z.string().min(1).max(100),
+  toChannel:   z.string().min(1).max(100),
+  decision:    z.enum(['approved', 'rejected']),
+  reason:      z.string().min(1).max(1000),
+});
+
 // ── Router factory ────────────────────────────────────────────────────────────
 
 export function createPlatformRouter(deps: {
   pool:               Pool;
   operationalMode:    OperationalModeService;
+  promotionGate?:     PromotionGateService;
 }): Router {
   const router = Router();
-  const { pool, operationalMode } = deps;
+  const { pool, operationalMode, promotionGate } = deps;
 
   // ── GET /platform/operational-mode ────────────────────────────────────────
 
@@ -271,6 +287,74 @@ export function createPlatformRouter(deps: {
       }
 
       res.json({ ok: true });
+    },
+  );
+
+  // ── GET /platform/promotions/pending (D.6) ────────────────────────────────
+
+  router.get(
+    '/promotions/pending',
+    async (_req: Request, res: Response): Promise<void> => {
+      if (!promotionGate) {
+        res.status(503).json({ error: 'promotion_gate_unavailable' });
+        return;
+      }
+      const pending = await promotionGate.listPending();
+      res.json({ pending });
+    },
+  );
+
+  // ── GET /platform/promotions/recent (D.6) ─────────────────────────────────
+
+  router.get(
+    '/promotions/recent',
+    async (req: Request, res: Response): Promise<void> => {
+      if (!promotionGate) {
+        res.status(503).json({ error: 'promotion_gate_unavailable' });
+        return;
+      }
+      const limit = Math.min(parseInt(String(req.query['limit'] ?? '50'), 10) || 50, 200);
+      const recent = await promotionGate.listRecentDecisions(limit);
+      res.json({ recent });
+    },
+  );
+
+  // ── POST /platform/promotions/decide (D.6) ────────────────────────────────
+
+  router.post(
+    '/promotions/decide',
+    (req, res, next) => requirePlatformAdmin(req as AuthenticatedRequest, res, next),
+    async (req: Request, res: Response): Promise<void> => {
+      if (!promotionGate) {
+        res.status(503).json({ error: 'promotion_gate_unavailable' });
+        return;
+      }
+      const authed = req as AuthenticatedRequest;
+      const parsed = PromotionDecisionSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_body', issues: parsed.error.issues });
+        return;
+      }
+      try {
+        const result = await promotionGate.recordDecision({
+          ...parsed.data,
+          decidedBy: authed.userId,
+        });
+        if (!result.ok) {
+          res.status(409).json({
+            error:      'gate_blocked',
+            message:    'Promotion still blocked for non-human reasons — review gate result and retry',
+            gateResult: result.gateResult,
+          });
+          return;
+        }
+        res.json({ ok: true, gateResult: result.gateResult });
+      } catch (err) {
+        res.status(409).json({
+          error:   'decision_failed',
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
     },
   );
 

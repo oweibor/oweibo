@@ -1,10 +1,10 @@
 "use strict";
 /**
- * MemoryConsolidator — scheduled background job that clusters recent episodic
- * memories by shared relevance tags and synthesises each cluster into a single
+ * MemoryConsolidator — scheduled background job that clusters recent semantic
+ * memories by shared tags and synthesises each cluster into a single
  * tenant-wide semantic entry.
  *
- * R-11 fix: each entry is bucketed under ALL of its relevanceTags, not just
+ * R-11 fix: each entry is bucketed under ALL of its tags, not just
  * the first one. This means a memory tagged ['typescript', 'auth'] contributes
  * to both the 'typescript' cluster and the 'auth' cluster, so cross-cutting
  * insights are not lost.
@@ -12,14 +12,17 @@
  * Consolidation pipeline per cluster:
  *   1. summariseCluster() — LLM call (stubbed; wire ModelRouter in §9).
  *   2. Parse JSON response, stripping ```json fences.
- *   3. qdrant.upsert() — write new tier:'semantic' / type:'domain-knowledge' point.
- *   4. Fire-and-forget setPayload() on all source entries setting consolidatedAt,
+ *   3. qdrant.upsert() — write new kind:'domain-fact' point with tenant scope.
+ *   4. Fire-and-forget setPayload() on all source entries setting consolidated_at,
  *      preventing them from being reprocessed in future cycles.
  *
  * Retry: summariseCluster() failures retry once; if both attempts fail the
- * cluster is skipped without writing consolidatedAt (safe to retry next cycle).
+ * cluster is skipped without writing consolidated_at (safe to retry next cycle).
  *
  * Concurrency: up to config.maxConcurrentTenants tenants in parallel (p-limit v3).
+ *
+ * Phase 2b: Migrated from legacy MemoryEntry to contract types.
+ * Phase 3:  Uses the contract `tags` field for clustering.
  */
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
@@ -35,14 +38,26 @@ exports.DEFAULT_CONSOLIDATOR_CONFIG = {
     maxClustersPerCycle: 20,
     maxConcurrentTenants: 10,
 };
+// ─── Kinds excluded from consolidation ────────────────────────────────────────
+/**
+ * These kinds are owned by other tiers and should never appear in the semantic
+ * store. If they do, skip them during consolidation.
+ */
+const EXCLUDED_KINDS = new Set([
+    'user-preference',
+    'project-invariant',
+    'conversation-summary',
+]);
 // ─── Service ──────────────────────────────────────────────────────────────────
 class MemoryConsolidator {
     qdrant;
+    embedder;
     config;
     tenantIds;
     logger;
-    constructor(qdrant, config, tenantIds, logger) {
+    constructor(qdrant, embedder, config, tenantIds, logger) {
         this.qdrant = qdrant;
+        this.embedder = embedder;
         this.config = config;
         this.tenantIds = tenantIds;
         this.logger = logger;
@@ -61,30 +76,34 @@ class MemoryConsolidator {
     }
     // ── Private implementation ─────────────────────────────────────────────────
     /**
-     * consolidateTenant — scroll for unconsolidated episodic entries within the
+     * consolidateTenant — scroll for unconsolidated entries within the
      * time window, cluster them by tag, and consolidate qualifying clusters.
      */
     async consolidateTenant(tenantId) {
         const collection = TenantKeyBuilder_js_1.TenantKeyBuilder.ltmCollection(tenantId);
-        const windowStart = Date.now() - this.config.windowDays * 86_400_000;
-        // Scroll for episodic entries created within the window that have not yet
-        // been consolidated (consolidatedAt IS NULL).
+        const windowStart = new Date(Date.now() - this.config.windowDays * 86_400_000).toISOString();
+        // Scroll for entries created within the window that have not yet been consolidated.
         const page = await this.qdrant.scroll(collection, {
             limit: 1_000, // generous cap — clusters are bounded downstream
             with_payload: true,
             with_vector: false,
             filter: {
                 must: [
-                    { key: 'tier', match: { value: 'episodic' } },
-                    { key: 'consolidatedAt', is_null: true },
-                    { key: 'createdAt', range: { gte: windowStart } },
+                    { key: 'consolidated_at', is_null: true },
+                    { key: 'created_at', range: { gte: windowStart } },
+                ],
+                must_not: [
+                    ...Array.from(EXCLUDED_KINDS).map(k => ({ key: 'kind', match: { value: k } })),
                 ],
             },
         });
-        const entries = (page.points ?? []).map(p => p.payload);
+        const entries = (page.points ?? []).map(p => ({
+            id: p.id,
+            payload: p.payload,
+        }));
         if (entries.length === 0)
             return;
-        // Cluster by relevanceTags (R-11: each entry appears under ALL its tags).
+        // Cluster by tags (R-11: each entry appears under ALL its tags).
         const clusters = this.clusterByTags(entries);
         // Filter to qualifying clusters, sort largest-first (highest value first),
         // take at most maxClustersPerCycle — ensures the LLM budget cap is respected.
@@ -102,7 +121,7 @@ class MemoryConsolidator {
         }
     }
     /**
-     * clusterByTags — bucket entries by each of their relevanceTags.
+     * clusterByTags — bucket entries by each of their tags.
      *
      * R-11 fix: a memory tagged ['typescript', 'auth'] is pushed into BOTH the
      * 'typescript' bucket and the 'auth' bucket. Using only tags[0] would miss
@@ -111,7 +130,8 @@ class MemoryConsolidator {
     clusterByTags(entries) {
         const map = new Map();
         for (const entry of entries) {
-            for (const tag of entry.relevanceTags) {
+            const tags = Array.isArray(entry.payload.tags) ? entry.payload.tags : [];
+            for (const tag of tags) {
                 const bucket = map.get(tag) ?? [];
                 bucket.push(entry);
                 map.set(tag, bucket);
@@ -123,7 +143,7 @@ class MemoryConsolidator {
      * consolidateCluster — synthesise a tag cluster into a single semantic entry.
      *
      * summariseCluster() is attempted up to twice. Both failures → skip cluster
-     * without writing consolidatedAt (safe to retry on the next cycle).
+     * without writing consolidated_at (safe to retry on the next cycle).
      * JSON parse failures after both attempts → same skip-and-warn behaviour.
      */
     async consolidateCluster(tenantId, tag, entries) {
@@ -131,11 +151,11 @@ class MemoryConsolidator {
         // ── Summarise (with one retry) ─────────────────────────────────────────
         let raw;
         try {
-            raw = await this.summariseCluster(entries);
+            raw = await this.summariseCluster(entries.map(e => e.payload));
         }
-        catch (firstErr) {
+        catch {
             try {
-                raw = await this.summariseCluster(entries);
+                raw = await this.summariseCluster(entries.map(e => e.payload));
             }
             catch (secondErr) {
                 this.logger.warn('[MemoryConsolidator] summariseCluster failed twice — skipping cluster', { tenantId, tag, clusterSize: entries.length, error: secondErr.message });
@@ -160,35 +180,33 @@ class MemoryConsolidator {
         }
         // ── Upsert the new semantic entry ──────────────────────────────────────
         const newId = (0, crypto_1.randomUUID)();
-        const now = Date.now();
+        const now = new Date().toISOString();
+        const vector = await this.embedder(summary);
         const consolidated = {
-            id: newId,
-            tenantId,
-            scope: `tenant:${tenantId}`,
-            type: 'domain-knowledge',
-            tier: 'semantic',
+            tenant_id: tenantId,
+            kind: 'domain-fact',
             summary,
             detail: { sourceTag: tag, sourceCount: entries.length },
-            relevanceTags: [tag],
-            successCount: 0,
-            missCount: 0,
-            confidence: 0,
-            createdAt: now,
-            lastAccessedAt: now,
-            lastReinforcedAt: now,
+            tags: [tag],
+            importance: 0.5,
+            created_at: now,
+            updated_at: now,
+            recall_count: 0,
+            _source: 'oweibo-memory-consolidator/v2',
         };
         await this.qdrant.upsert(collection, {
-            points: [{ id: newId, payload: consolidated }],
+            wait: true,
+            points: [{ id: newId, vector, payload: consolidated }],
         });
         // ── Mark source entries as consolidated (fire-and-forget) ──────────────
         // Prevents reprocessing in future cycles. Failure here is acceptable — the
         // worst case is that the same entries get summarised again next cycle, which
         // produces a harmless duplicate semantic entry rather than data loss.
         void Promise.all(entries.map(e => this.qdrant.setPayload(collection, {
-            payload: { consolidatedAt: now },
+            payload: { consolidated_at: now },
             points: [e.id],
         }))).catch((err) => {
-            this.logger.warn('[MemoryConsolidator] setPayload (consolidatedAt) partially failed', { tenantId, tag, error: err.message });
+            this.logger.warn('[MemoryConsolidator] setPayload (consolidated_at) partially failed', { tenantId, tag, error: err.message });
         });
         this.logger.debug('[MemoryConsolidator] cluster consolidated', {
             tenantId,
@@ -198,7 +216,7 @@ class MemoryConsolidator {
         });
     }
     /**
-     * summariseCluster — produce a JSON summary for a cluster of episodic entries.
+     * summariseCluster — produce a JSON summary for a cluster of entries.
      *
      * // TODO: wire ModelRouter (§9) — replace stub body with a structured LLM call
      * // that returns JSON { summary: string } describing what the cluster represents.

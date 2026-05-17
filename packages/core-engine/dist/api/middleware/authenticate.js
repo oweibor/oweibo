@@ -34,7 +34,8 @@ function createAuthMiddleware(config) {
             // Attach to request for downstream handlers
             const authedReq = req;
             authedReq.userId = payload.sub;
-            authedReq.tenantId = payload.tenantId;
+            authedReq.tenantId = payload.tenantId ?? payload.ctx?.tenantId ?? '';
+            authedReq.scopes = payload.scopes ?? [];
             next();
         }
         catch {
@@ -53,7 +54,13 @@ function verifyJWT(token, secret) {
     const expectedSig = (0, crypto_1.createHmac)('sha256', secret)
         .update(data)
         .digest('base64url');
-    if (expectedSig !== signatureB64) {
+    // Constant-time comparison to defeat signature-timing oracles.
+    // Length check first because timingSafeEqual throws on length mismatch;
+    // an attacker controls signatureB64 so we must not let that exception
+    // become the timing leak.
+    const a = Buffer.from(expectedSig, 'utf8');
+    const b = Buffer.from(signatureB64, 'utf8');
+    if (a.length !== b.length || !(0, crypto_1.timingSafeEqual)(a, b)) {
         throw new Error('Invalid signature');
     }
     const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf-8'));

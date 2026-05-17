@@ -1,8 +1,10 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ArchitectStage = void 0;
+// packages/core-engine/src/pipeline/stages/01-architect.stage.ts
+const core_contracts_1 = require("@oweibo/core-contracts");
 class ArchitectStage {
-    name = 'architect';
+    name = core_contracts_1.CANONICAL_ROLES[0];
     async execute(ctx) {
         const { bundle, logger } = ctx;
         if (!bundle.files || bundle.files.length === 0) {

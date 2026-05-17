@@ -1,7 +1,10 @@
-import type { AgentMessage, ISubGoal, Plan, ISecurityContext } from '@oweibo/core-contracts';
+import type { AgentMessage, ISubGoal, Plan, ISecurityContext, IAgentTask } from '@oweibo/core-contracts';
 import type { LangfuseTraceClient } from 'langfuse';
+import type { Pool } from 'pg';
+import { CohortRouter } from '../infrastructure/CohortRouter.js';
+import type { CanonicalRole } from '@oweibo/core-contracts';
 import { ConflictResolver } from './ConflictResolver.js';
-import type { LongTermMemoryStore } from './LongTermMemoryStore.js';
+import type { ISemanticMemoryStore } from '@oweibo/core-contracts';
 import type { PolicyEngine } from '../governance/PolicyEngine.js';
 import type { AnomalyDetector } from '../observability/AnomalyDetector.js';
 import type { ImmutableAuditLogger } from '../governance/ImmutableAuditLogger.js';
@@ -11,6 +14,7 @@ import type { GoalDecomposer } from './GoalDecomposer.js';
 import type { DistributedContextStore } from './DistributedContextStore.js';
 import type { SessionStore } from '../ingestion/SessionStore.js';
 import type { ArtifactFile } from './DocumentationAgent.js';
+import type { ProductionSafetyChecker } from '../safety/ProductionSafetyChecker.js';
 export interface SwarmResult {
     subGoalResults: Record<string, unknown>;
     agentMessages: AgentMessage[];
@@ -38,12 +42,29 @@ export declare class SwarmCoordinator {
     private readonly decomposer;
     private readonly contextStore;
     private readonly sessions;
+    private readonly pgPool?;
+    private readonly cohortRouter?;
+    /** D.7: optional production safety checker — fires on 5% sample of executor output. */
+    private readonly safetyChecker?;
     private readonly conflictResolver;
     constructor(baseLlm: {
         baseUrl: string;
         model: string;
-    }, memory: LongTermMemoryStore, policy: PolicyEngine, anomaly: AnomalyDetector, auditLogger: ImmutableAuditLogger, conflictResolver: ConflictResolver, eventBus: TaskEventBus, interventionGateway: TaskInterventionGateway, decomposer: GoalDecomposer, contextStore: DistributedContextStore, sessions: SessionStore);
-    coordinate(taskId: string, tenantId: string, plan: Plan, subGoals: ISubGoal[], secCtx: ISecurityContext, trace: LangfuseTraceClient, sessionId?: string): Promise<SwarmResult>;
+    }, memory: ISemanticMemoryStore, policy: PolicyEngine, anomaly: AnomalyDetector, auditLogger: ImmutableAuditLogger, conflictResolver: ConflictResolver, eventBus: TaskEventBus, interventionGateway: TaskInterventionGateway, decomposer: GoalDecomposer, contextStore: DistributedContextStore, sessions: SessionStore, pgPool?: Pool | undefined, cohortRouter?: CohortRouter | undefined, 
+    /** D.7: optional production safety checker — fires on 5% sample of executor output. */
+    safetyChecker?: ProductionSafetyChecker | undefined);
+    /**
+     * Entry point for CognitiveEngine (Phase A.4+).
+     * Resolves prompts via CohortRouter, writes all assembled hashes atomically
+     * with the task INSERT into oweibo.tasks, then runs the swarm.
+     *
+     * Invariant §2.3: hash columns and task INSERT are in the same Postgres transaction.
+     */
+    startTask(task: IAgentTask, plan: Plan, subGoals: ISubGoal[], secCtx: ISecurityContext, trace: LangfuseTraceClient, sessionId?: string): Promise<SwarmResult>;
+    coordinate(taskId: string, tenantId: string, plan: Plan, subGoals: ISubGoal[], secCtx: ISecurityContext, trace: LangfuseTraceClient, sessionId?: string, agentPrompts?: Record<CanonicalRole, string>, resolvedMeta?: {
+        channel: string;
+        hashes: Record<CanonicalRole, string>;
+    }): Promise<SwarmResult>;
     private executeSubGoal;
     private topologicalSort;
 }

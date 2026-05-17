@@ -20,6 +20,8 @@ export interface TaskEvent {
     readonly progress?: number;
     readonly payload?: Record<string, unknown>;
     readonly timestamp?: string;
+    /** Tenant scope — used by RedisTaskEventBus to route to the correct pub/sub channel (HIGH-8). */
+    readonly tenantId?: string;
 }
 export type TaskEventHandler = (event: TaskEvent) => void | Promise<void>;
 export declare class TaskEventBus {
@@ -33,7 +35,12 @@ export declare class TaskEventBus {
     /**
      * subscribe — register a handler for all events on a session channel.
      * Returns an unsubscribe function; call it on cleanup.
+     *
+     * Overloads:
+     *   subscribe(sessionId, handler)            — existing callers (tenantId unused for in-memory bus)
+     *   subscribe(tenantId, sessionId, handler)  — docsRouter / RedisTaskEventBus-compatible signature (HIGH-9)
      */
+    subscribe(tenantId: string, sessionId: string, handler: TaskEventHandler): Promise<() => Promise<void>>;
     subscribe(sessionId: string, handler: TaskEventHandler): Promise<() => Promise<void>>;
 }
 //# sourceMappingURL=TaskEventBus.d.ts.map

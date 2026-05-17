@@ -27,6 +27,7 @@
  * The enforcer is stateless — a new instance may be created per LLM call, or a single
  * instance may be shared across calls (all state is in the AssembledPrompt arguments).
  */
+import { EventEmitter } from 'node:events';
 import type { ModelRouter } from './ModelRouter.js';
 import type { TaskEventBus } from '../ingestion/TaskEventBus.js';
 export interface AssembledPrompt {
@@ -72,7 +73,7 @@ export interface PromptBudgetConfig {
     /** Input cost in USD per million tokens (for cost-estimated event). Default: 15. */
     costPerMillionInputTokens?: number;
 }
-export declare class PromptBudgetEnforcer {
+export declare class PromptBudgetEnforcer extends EventEmitter {
     private readonly modelRouter;
     private readonly eventBus;
     private readonly contextWindow;

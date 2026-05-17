@@ -1,6 +1,6 @@
 import { BaseAgent } from '../agentic/BaseAgent.js';
 import type { ILLMClient } from '@oweibo/core-contracts';
-import type { LongTermMemoryStore } from '../agentic/LongTermMemoryStore.js';
+import type { ISemanticMemoryStore } from '@oweibo/core-contracts';
 import type { LangfuseTraceClient } from 'langfuse';
 export interface EditProposal {
     proposal: Array<{
@@ -27,7 +27,7 @@ export declare class GeneralCodingAgent extends BaseAgent {
     private readonly repoMapPrefix;
     private readonly projectRulesPrefix;
     private readonly skillsPrefix;
-    constructor(llm: ILLMClient, memory: LongTermMemoryStore, trace: LangfuseTraceClient, taskId: string, tenantId: string, repoMapPrefix: string, projectRulesPrefix: string, skillsPrefix: string);
+    constructor(llm: ILLMClient, memory: ISemanticMemoryStore, trace: LangfuseTraceClient, taskId: string, tenantId: string, repoMapPrefix: string, projectRulesPrefix: string, skillsPrefix: string);
     process(message: import('@oweibo/core-contracts').AgentMessage): Promise<import('@oweibo/core-contracts').AgentMessage>;
     /**
      * proposeEdit — generates a unified diff for a single instruction.

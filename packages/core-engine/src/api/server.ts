@@ -18,6 +18,7 @@ import { openapiSpec } from './openapi.js';
 import type { SecretsManager } from '../secrets/SecretsManager.js';
 import type { Pool } from 'pg';
 import type { OperationalModeService } from '../infrastructure/OperationalModeService.js';
+import type { PromotionGateService } from '../bandit/PromotionGateService.js';
 
 export interface ServerConfig {
   readonly port: number;
@@ -72,6 +73,8 @@ export async function createServer(
     /** Optional — when provided, mounts /api/v1/platform routes. */
     pool?: Pool;
     operationalMode?: OperationalModeService;
+    /** Optional — when provided, enables /api/v1/platform/promotions/* (D.6). */
+    promotionGate?: PromotionGateService;
   },
   config: Partial<ServerConfig> = {},
 ): Promise<{ app: import('express').Application; port: number }> {
@@ -128,6 +131,7 @@ export async function createServer(
     v1.use('/platform', createPlatformRouter({
       pool:            deps.pool,
       operationalMode: deps.operationalMode,
+      ...(deps.promotionGate ? { promotionGate: deps.promotionGate } : {}),
     }));
   }
 

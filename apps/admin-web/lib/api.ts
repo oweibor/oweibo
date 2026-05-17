@@ -4,7 +4,7 @@
  * Use from Server Components and Route Handlers.
  * Reads the session token from cookies on every call (no singleton state).
  */
-import { getSessionToken } from './auth.js';
+import { getSessionToken } from './auth';
 
 const IDENTITY_URL = process.env['IDENTITY_URL'] ?? 'http://localhost:3110';
 const PIPELINE_URL = process.env['PIPELINE_URL'] ?? 'http://localhost:3100/api/v1';

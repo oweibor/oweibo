@@ -7,12 +7,13 @@ import { pipelineApi } from '@/lib/api';
 
 export async function GET(
   _req: NextRequest,
-  { params }: { params: { month: string } },
+  { params }: { params: Promise<{ month: string }> },
 ) {
   try {
     await requireScope('platform:charter:read');
+    const { month } = await params;
     const data = await pipelineApi.get<{ tasks: unknown[] }>(
-      `/charter/elegance/${params.month}/outputs`,
+      `/charter/elegance/${month}/outputs`,
     );
     return NextResponse.json(data);
   } catch (err: unknown) {

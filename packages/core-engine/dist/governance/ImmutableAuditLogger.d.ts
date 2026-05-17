@@ -1,10 +1,3 @@
-/**
- * ImmutableAuditLogger — tamper-evident audit trail (§16d).
- *
- * Writes decision logs to a Redis stream and periodically flushes
- * to S3 for long-term archival. Each entry is hash-chained to the
- * previous entry for tamper detection.
- */
 import type { DecisionLog } from '@oweibo/core-contracts';
 import type { Redis } from 'ioredis';
 export interface AuditEntry extends DecisionLog {

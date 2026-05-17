@@ -7,8 +7,8 @@ exports.createTasksRouter = createTasksRouter;
  * POST /tasks              — submit a new task
  * POST /tasks/:id/clarify  — respond to clarification questions
  * GET  /tasks/:id/events   — SSE stream of task events
- * POST /tasks/:id/redirect — mid-task intervention (redirect/pause/cancel)
- * GET  /tasks/:id          — get task status
+ * POST /tasks/:id/redirect — mid-task intervention (redirect/pause/cancel/add-constraint)
+ * GET  /tasks/:id          — get task status (stage, progress, timestamps, error)
  *
  * tenantId is NEVER accepted from the request body. It is always taken from
  * the authenticated JWT (req.tenantId injected by createAuthMiddleware).
@@ -36,6 +36,9 @@ const ClarifySchema = zod_1.z.object({
 const InterventionSchema = zod_1.z.object({
     type: zod_1.z.enum(['redirect', 'pause', 'cancel', 'add-constraint']),
     payload: zod_1.z.string().optional(),
+});
+const FeedbackSchema = zod_1.z.object({
+    signal: zod_1.z.enum(['thumbs_up', 'thumbs_down']),
 });
 // ---------------------------------------------------------------------------
 // Helper
@@ -168,18 +171,65 @@ function createTasksRouter(deps) {
             next(err);
         }
     });
-    // GET /tasks/:id — get task status
-    router.get('/:id', async (req, res) => {
-        const { tenantId } = authed(req);
-        // Ownership check
-        if (deps.taskStore) {
-            const ownerTenantId = await deps.taskStore.getTenantId(req.params['id']);
-            if (ownerTenantId !== null && ownerTenantId !== tenantId) {
-                res.status(404).json({ error: 'not_found', message: `Task ${req.params['id']} not found` });
+    // POST /tasks/:id/feedback — thumbs up/down signal (Phase A.7)
+    router.post('/:id/feedback', async (req, res, next) => {
+        try {
+            const body = FeedbackSchema.parse(req.body);
+            const { userId, tenantId } = authed(req);
+            const taskId = req.params['id'];
+            // Ownership check — null means task not found; cross-tenant also returns 404.
+            if (deps.taskStore) {
+                const ownerTenantId = await deps.taskStore.getTenantId(taskId);
+                if (ownerTenantId === null || ownerTenantId !== tenantId) {
+                    res.status(404).json({ error: 'not_found', message: `Task ${taskId} not found` });
+                    return;
+                }
+            }
+            let feedbackId;
+            if (deps.feedbackStore) {
+                feedbackId = await deps.feedbackStore.record(taskId, tenantId, userId, body.signal);
+            }
+            // Publish event for TenantDistillationWorker (Phase B.3)
+            if (deps.eventPublisher) {
+                await deps.eventPublisher.publish('task.feedback', {
+                    taskId, tenantId, signal: body.signal, feedbackId,
+                    ts: new Date().toISOString(),
+                });
+            }
+            res.status(201).json({ taskId, signal: body.signal, feedbackId });
+        }
+        catch (err) {
+            if (err instanceof zod_1.z.ZodError) {
+                res.status(400).json({ error: 'validation_error', details: err.errors });
                 return;
             }
+            next(err);
         }
-        res.json({ taskId: req.params['id'], status: 'unknown' });
+    });
+    // GET /tasks/:id — get task status
+    router.get('/:id', async (req, res, next) => {
+        try {
+            const { tenantId } = authed(req);
+            const taskId = req.params['id'];
+            if (!deps.taskStore) {
+                res.status(503).json({ error: 'service_unavailable', message: 'Task store not configured' });
+                return;
+            }
+            const ownerTenantId = await deps.taskStore.getTenantId(taskId);
+            if (ownerTenantId === null || ownerTenantId !== tenantId) {
+                res.status(404).json({ error: 'not_found', message: `Task ${taskId} not found` });
+                return;
+            }
+            const taskStatus = await deps.taskStore.getStatus(taskId);
+            if (!taskStatus) {
+                res.status(404).json({ error: 'not_found', message: `Task ${taskId} not found` });
+                return;
+            }
+            res.json({ taskId, ...taskStatus });
+        }
+        catch (err) {
+            next(err);
+        }
     });
     return router;
 }

@@ -7,15 +7,16 @@ import { pipelineApi } from '@/lib/api';
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: { month: string } },
+  { params }: { params: Promise<{ month: string }> },
 ) {
   try {
     await requireScope('platform:charter:write');
     const user = await getSessionUser();
     const body = await req.json() as Record<string, unknown>;
+    const { month } = await params;
 
     const result = await pipelineApi.post<{ escalated: boolean; reasons: string[] }>(
-      `/charter/elegance/${params.month}/grade`,
+      `/charter/elegance/${month}/grade`,
       { ...body, reviewerId: user?.user_id ?? 'unknown' },
     );
 

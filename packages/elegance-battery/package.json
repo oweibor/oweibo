@@ -1,0 +1,29 @@
+{
+  "name": "@oweibo/elegance-battery",
+  "version": "0.1.0",
+  "private": true,
+  "description": "D.14 — Monthly elegance battery: fixed task fixtures, runner, and auto-escalation.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "types":   "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build":      "tsc --project tsconfig.json",
+    "type-check": "tsc --noEmit",
+    "clean":      "rimraf dist"
+  },
+  "dependencies": {
+    "pg": "^8.13.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/pg":   "^8.11.10",
+    "rimraf":      "^5.0.0",
+    "typescript":  "^5.5.4"
+  }
+}

@@ -33,6 +33,10 @@ import { GeneralCodingOrchestrator } from './general-coding/GeneralCodingOrchest
 import { SkillRegistry }           from './general-coding/project/SkillRegistry.js';
 import { RemoteSkillFetcher }      from './general-coding/project/RemoteSkillFetcher.js';
 import { ModelRouter }             from './infrastructure/ModelRouter.js';
+import { Pool }                    from 'pg';
+import { CohortRouter }            from './infrastructure/CohortRouter.js';
+import { PromptRegistry }          from '@oweibo/prompt-registry';
+import { PromptAssembler }         from '@oweibo/prompt-registry';
 import { createServer }            from './api/server.js';
 import { DocGeneratorPipeline }    from './doc-generator/DocGeneratorPipeline.js';
 import { DocGeneratorQueue }       from './doc-generator/queue/DocGeneratorQueue.js';
@@ -140,9 +144,25 @@ async function main(): Promise<void> {
   const pruner     = new ContextPruner(contextStore);
 
   const conflictResolver = new ConflictResolver(makeLLM(), hitlGateway);
+
+  // ── Prompt registry + cohort router (Phase A.4) ───────────────────────────
+  let pgPool: Pool | undefined;
+  let cohortRouter: CohortRouter | undefined;
+  if (process.env['DATABASE_URL']) {
+    pgPool = new Pool({ connectionString: process.env['DATABASE_URL'] });
+    const promptRegistry = new PromptRegistry(
+      pgPool,
+      process.env['LANGFUSE_SECRET_KEY'],
+      process.env['LANGFUSE_PUBLIC_KEY'],
+    );
+    const promptAssembler = new PromptAssembler(promptRegistry);
+    cohortRouter = new CohortRouter(promptRegistry, promptAssembler);
+  }
+
   const swarm = new SwarmCoordinator(
     llmBase, memory, policyEngine, anomaly, auditLogger,
     conflictResolver, eventBus, interventionGateway, decomposer, contextStore, sessionStore,
+    pgPool, cohortRouter,
   );
 
   // ── Heartbeat ─────────────────────────────────────────────────────────────

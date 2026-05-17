@@ -27,6 +27,7 @@
     "@oweibo/observability":     "workspace:*",
     "ajv": "^8.17.1",
     "@oweibo/core-contracts": "workspace:*",
+    "@oweibo/prompt-registry": "workspace:*",
     "@qdrant/js-client-rest": "^1.17.0",
     "chokidar": "^3.6.0",
     "cors": "^2.8.5",
@@ -63,6 +64,8 @@
     "@types/uuid": "^10.0.0",
     "jest": "^29.0.0",
     "rimraf": "^5.0.0",
+    "supertest": "^7.0.0",
+    "@types/supertest": "^6.0.2",
     "ts-jest": "^29.0.0",
     "typescript": "^5.5.4"
   }

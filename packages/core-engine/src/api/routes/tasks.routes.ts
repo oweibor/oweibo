@@ -40,6 +40,10 @@ const InterventionSchema = z.object({
   payload: z.string().optional(),
 });
 
+const FeedbackSchema = z.object({
+  signal: z.enum(['thumbs_up', 'thumbs_down']),
+});
+
 // ---------------------------------------------------------------------------
 // Dependencies
 // ---------------------------------------------------------------------------
@@ -88,6 +92,18 @@ export interface TaskRouteDeps {
       completedAt?: string;
       error?: string;
     } | null>;
+  };
+  /** Phase A.7: thumbs feedback persistence + event emission. */
+  readonly feedbackStore?: {
+    record(
+      taskId:   string,
+      tenantId: string,
+      userId:   string | undefined,
+      signal:   'thumbs_up' | 'thumbs_down',
+    ): Promise<string>; // returns feedback row id
+  };
+  readonly eventPublisher?: {
+    publish(subject: string, payload: unknown): Promise<void>;
   };
 }
 
@@ -231,6 +247,45 @@ export function createTasksRouter(deps: TaskRouteDeps): Router {
       });
 
       res.json({ taskId: req.params['id']!, intervention: body.type, status: 'applied' });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        res.status(400).json({ error: 'validation_error', details: err.errors });
+        return;
+      }
+      next(err);
+    }
+  });
+
+  // POST /tasks/:id/feedback — thumbs up/down signal (Phase A.7)
+  router.post('/:id/feedback', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const body = FeedbackSchema.parse(req.body);
+      const { userId, tenantId } = authed(req);
+      const taskId = req.params['id']!;
+
+      // Ownership check — null means task not found; cross-tenant also returns 404.
+      if (deps.taskStore) {
+        const ownerTenantId = await deps.taskStore.getTenantId(taskId);
+        if (ownerTenantId === null || ownerTenantId !== tenantId) {
+          res.status(404).json({ error: 'not_found', message: `Task ${taskId} not found` });
+          return;
+        }
+      }
+
+      let feedbackId: string | undefined;
+      if (deps.feedbackStore) {
+        feedbackId = await deps.feedbackStore.record(taskId, tenantId, userId, body.signal);
+      }
+
+      // Publish event for TenantDistillationWorker (Phase B.3)
+      if (deps.eventPublisher) {
+        await deps.eventPublisher.publish('task.feedback', {
+          taskId, tenantId, signal: body.signal, feedbackId,
+          ts: new Date().toISOString(),
+        });
+      }
+
+      res.status(201).json({ taskId, signal: body.signal, feedbackId });
     } catch (err) {
       if (err instanceof z.ZodError) {
         res.status(400).json({ error: 'validation_error', details: err.errors });

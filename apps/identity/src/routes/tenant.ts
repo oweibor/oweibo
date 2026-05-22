@@ -298,6 +298,29 @@ router.get('/:tenantId/settings',
   }
 );
 
+// T.5.c: read-only calibration endpoint backing the admin CalibrationBadge.
+//   - Returns the score, threshold, summary, signals, and the flag state so
+//     the badge can render different copy depending on whether the
+//     autonomous gate is active.
+//   - Uses the same scope as settings:read — anyone who can see the trust
+//     mode can see the calibration that gates promoting it.
+router.get('/:tenantId/calibration',
+  requireScopes('tenant:settings:read'),
+  async (req, res) => {
+    const principal = req.principal as Principal;
+    const calibration = await computeGlobalCalibration(principal);
+    res.json({
+      tenantId: principal.ctx.tenantId,
+      score: calibration.score,
+      threshold: AUTONOMOUS_GATE_THRESHOLD,
+      summary: calibration.summary,
+      signals: calibration.signals,
+      gateEnabled: AUTONOMOUS_GATE_ENABLED,
+      meetsAutonomousThreshold: calibration.score >= AUTONOMOUS_GATE_THRESHOLD,
+    });
+  }
+);
+
 const UpdateSettingsSchema = z.object({
   trustModeDefault: z.enum(['supervised', 'graduated', 'autonomous']).optional(),
   features:         z.record(z.unknown()).optional(),

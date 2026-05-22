@@ -321,6 +321,74 @@ router.get('/:tenantId/calibration',
   }
 );
 
+// T.2.g: domain intake — read current state + submit interview answers.
+//
+// GET  /:tenantId/intake — current intake row or { state: 'absent' }.
+// POST /:tenantId/intake — submit answers, transition state to 'requested'
+//                          so the worker picks it up on the next pass.
+router.get('/:tenantId/intake',
+  requireScopes('tenant:settings:read'),
+  async (req, res) => {
+    const principal = req.principal as Principal;
+    const intake = await withTenantContext(principal, tx =>
+      tx.tenantDomainIntake.findUnique({ where: { tenantId: principal.ctx.tenantId } })
+    );
+    if (!intake) {
+      res.json({ state: 'absent' });
+      return;
+    }
+    res.json({
+      state: intake.intakeState,
+      classifiedDomain: intake.classifiedDomain,
+      classifiedConfidence: intake.classifiedConfidence,
+      recommendedTemplateSlug: intake.recommendedTemplateSlug,
+      recommendedConnectors: intake.recommendedConnectors,
+      recommendedSeedSkills: intake.recommendedSeedSkills,
+      interviewAnswers: intake.interviewAnswers,
+      completedAt: intake.completedAt,
+    });
+  }
+);
+
+const SubmitIntakeSchema = z.object({
+  interviewAnswers: z.array(z.object({
+    question: z.string().min(1).max(500),
+    answer: z.string().min(1).max(5000),
+  })).min(1).max(50),
+});
+
+router.post('/:tenantId/intake',
+  requireScopes('tenant:settings:write'),
+  audit('tenant.intake.submit', { resourceType: 'tenant' }),
+  async (req, res) => {
+    const parsed = SubmitIntakeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'validation_error', issues: parsed.error.flatten() });
+      return;
+    }
+    const principal = req.principal as Principal;
+    const interviewAnswersJson = JSON.parse(JSON.stringify(parsed.data.interviewAnswers));
+    const result = await withTenantContext(principal, tx =>
+      tx.tenantDomainIntake.upsert({
+        where: { tenantId: principal.ctx.tenantId },
+        update: {
+          intakeState: 'requested',
+          interviewAnswers: interviewAnswersJson,
+          startedAt: new Date(),
+          updatedAt: new Date(),
+        },
+        create: {
+          tenantId: principal.ctx.tenantId,
+          intakeState: 'requested',
+          interviewAnswers: interviewAnswersJson,
+          startedAt: new Date(),
+        },
+      })
+    );
+    res.status(202).json({ state: result.intakeState });
+  }
+);
+
 // T.2.f: list installed connector instances for a tenant. Credentials are
 // never returned by this endpoint — only metadata that's safe to display in
 // the admin UI. Credentials live in Vault and are read on demand by

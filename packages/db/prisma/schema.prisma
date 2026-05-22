@@ -361,6 +361,28 @@ model TenantActionClassState {
   @@schema("oweibo")
 }
 
+// T.2.g: per-tenant active domain intake (one row per tenant).
+model TenantDomainIntake {
+  tenantId                String    @id @map("tenant_id") @db.Uuid
+  intakeState             String    @default("pending") @map("intake_state")
+  classifiedDomain        String?   @map("classified_domain")
+  classifiedConfidence    Decimal?  @map("classified_confidence") @db.Decimal(4, 3)
+  primerDocCount          Int       @default(0) @map("primer_doc_count")
+  primerTokenCount        Int       @default(0) @map("primer_token_count")
+  repoScanSummary         Json?     @map("repo_scan_summary")
+  interviewAnswers        Json?     @map("interview_answers")
+  recommendedTemplateSlug String?   @map("recommended_template_slug")
+  recommendedConnectors   String[]  @map("recommended_connectors")
+  recommendedSeedSkills   String[]  @map("recommended_seed_skills")
+  startedAt               DateTime? @map("started_at") @db.Timestamptz
+  completedAt             DateTime? @map("completed_at") @db.Timestamptz
+  createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt               DateTime  @default(now()) @map("updated_at") @db.Timestamptz
+
+  @@map("tenant_domain_intake")
+  @@schema("oweibo")
+}
+
 // T.2.f: per-tenant connector instance. Credentials live in Vault at vault_path.
 model TenantConnector {
   id             String    @id @default(uuid()) @db.Uuid

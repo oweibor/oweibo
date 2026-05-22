@@ -17,6 +17,10 @@ import { withTenantContext } from '@oweibo/db';
 import type { Principal } from '@oweibo/db';
 import { authenticate, requirePlatformAdmin } from '../middleware/authenticate.js';
 import { audit } from '@oweibo/api-middleware';
+import {
+  TENANT_CREATED_V1_SUBJECT,
+  type TenantCreatedV1Payload,
+} from '@oweibo/core-contracts';
 
 const router = Router();
 router.use(authenticate);
@@ -37,7 +41,18 @@ const CreateTenantSchema = z.object({
   slug:   z.string().min(2).max(50).regex(/^[a-z0-9-]+$/),
   quotas: z.record(z.unknown()).optional(),
   features: z.record(z.unknown()).optional(),
+  /** T.0: optional bootstrap template; defaults to 'default'. T.6 expands the catalog. */
+  templateSlug: z.string().min(1).max(50).regex(/^[a-z0-9-]+$/).optional(),
 });
+
+/**
+ * T.0: bootstrap feature flag. When false, the tenant_bootstrap row is created
+ * with state='disabled' and no outbox event is emitted — preserves the pre-T.0
+ * behaviour byte-for-byte. Defaults to true (new behaviour on).
+ */
+function bootstrapEnabled(): boolean {
+  return process.env['TENANT_BOOTSTRAP_ENABLED'] !== 'false';
+}
 
 router.post('/api/v1/platform/tenants', audit('platform.tenant.create', { resourceType: 'tenant' }), async (req, res) => {
   const parsed = CreateTenantSchema.safeParse(req.body);
@@ -46,10 +61,13 @@ router.post('/api/v1/platform/tenants', audit('platform.tenant.create', { resour
     return;
   }
   const principal = req.principal as Principal;
-  const { name, slug, quotas, features } = parsed.data;
+  const { name, slug, quotas, features, templateSlug } = parsed.data;
+  const enabled = bootstrapEnabled();
+  const effectiveTemplate = templateSlug ?? 'default';
 
-  const tenant = await withTenantContext(principal, tx =>
-    tx.tenant.create({
+  const tenant = await withTenantContext(principal, async tx => {
+    // 1. Original tenant row — unchanged shape.
+    const created = await tx.tenant.create({
       data: {
         id: uuidv4(),
         name,
@@ -60,8 +78,46 @@ router.post('/api/v1/platform/tenants', audit('platform.tenant.create', { resour
           ? (principal.actAs?.sub ?? null)
           : principal.sub.startsWith('apikey:') ? null : principal.sub,
       },
-    })
-  );
+    });
+
+    // 2. tenant_settings — default row for downstream features to populate.
+    await tx.tenantSettings.create({
+      data: { tenantId: created.id },
+    });
+
+    // 3. tenant_bootstrap — lifecycle state. 'disabled' when flag is off so the
+    //    row is still present (lets the worker know the tenant predated T.0).
+    await tx.tenantBootstrap.create({
+      data: {
+        tenantId: created.id,
+        state: enabled ? 'pending' : 'disabled',
+        templateSlug: effectiveTemplate,
+      },
+    });
+
+    // 4. outbox — atomic with the tenant insert; OutboxRelay drains async.
+    if (enabled) {
+      const payload: TenantCreatedV1Payload = {
+        schemaVersion: '1',
+        tenantId: created.id,
+        slug: created.slug,
+        templateSlug: effectiveTemplate,
+        createdBy: created.createdBy,
+        createdAt: created.createdAt.toISOString(),
+      };
+      // Prisma's InputJsonValue rejects readonly types; round-trip through JSON
+      // to strip the readonly modifiers from TenantCreatedV1Payload.
+      await tx.outbox.create({
+        data: {
+          id: uuidv4(),
+          subject: TENANT_CREATED_V1_SUBJECT,
+          payload: JSON.parse(JSON.stringify(payload)),
+        },
+      });
+    }
+
+    return created;
+  });
   res.status(201).json({ tenant });
 });
 

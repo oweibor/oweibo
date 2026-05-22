@@ -145,6 +145,7 @@ model Tenant {
   tasks        Task[]
   settings     TenantSettings?
   taskFeedback TaskFeedback[]
+  bootstrap    TenantBootstrap?
 
   @@map("tenants")
   @@schema("oweibo")
@@ -357,6 +358,40 @@ model TenantActionClassState {
 
   @@id([tenantId, actionClass])
   @@map("tenant_action_class_state")
+  @@schema("oweibo")
+}
+
+// T.0: tenant bootstrap lifecycle state machine — one row per provisioned tenant.
+model TenantBootstrap {
+  tenantId     String    @id @map("tenant_id") @db.Uuid
+  state        String    @default("pending")
+  templateSlug String    @default("default") @map("template_slug")
+  attempts     Int       @default(0)
+  lastError    String?   @map("last_error")
+  startedAt    DateTime? @map("started_at") @db.Timestamptz
+  completedAt  DateTime? @map("completed_at") @db.Timestamptz
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@map("tenant_bootstrap")
+  @@schema("oweibo")
+}
+
+// T.0: per-step bootstrap status. PK (tenant_id, step_name) makes step retries safe.
+model TenantBootstrapStep {
+  tenantId    String    @map("tenant_id") @db.Uuid
+  stepName    String    @map("step_name")
+  status      String
+  attempts    Int       @default(0)
+  lastError   String?   @map("last_error")
+  result      Json?
+  startedAt   DateTime? @map("started_at") @db.Timestamptz
+  completedAt DateTime? @map("completed_at") @db.Timestamptz
+
+  @@id([tenantId, stepName])
+  @@map("tenant_bootstrap_steps")
   @@schema("oweibo")
 }
 

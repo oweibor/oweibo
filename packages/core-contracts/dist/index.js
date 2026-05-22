@@ -64,4 +64,6 @@ __exportStar(require("./events/billing.events.js"), exports);
 __exportStar(require("./events/inventory.events.js"), exports);
 __exportStar(require("./events/pos.events.js"), exports);
 __exportStar(require("./events/swarm.events.js"), exports);
+// ── T.0: tenant lifecycle events ─────────────────────────────────────────────
+__exportStar(require("./events/tenant.events.js"), exports);
 //# sourceMappingURL=index.js.map

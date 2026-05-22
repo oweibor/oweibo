@@ -39,4 +39,5 @@ export * from './events/billing.events.js';
 export * from './events/inventory.events.js';
 export * from './events/pos.events.js';
 export * from './events/swarm.events.js';
+export * from './events/tenant.events.js';
 //# sourceMappingURL=index.d.ts.map

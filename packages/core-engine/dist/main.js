@@ -47,6 +47,7 @@ const PrivacyAuditService_js_1 = require("./distillation/PrivacyAuditService.js"
 const ActionTrustLadder_js_1 = require("./action/ActionTrustLadder.js");
 const DryRunRegistry_js_1 = require("./action/DryRunRegistry.js");
 const ShadowExecutor_js_1 = require("./action/ShadowExecutor.js");
+const OutboxRelay_js_1 = require("./infrastructure/OutboxRelay.js");
 const prompt_registry_1 = require("@oweibo/prompt-registry");
 const prompt_registry_2 = require("@oweibo/prompt-registry");
 const server_js_1 = require("./api/server.js");
@@ -169,6 +170,12 @@ async function main() {
         actionTrustLadder = new ActionTrustLadder_js_1.ActionTrustLadder(pgPool);
         dryRunRegistry = new DryRunRegistry_js_1.DryRunRegistry(pgPool);
         shadowExecutor = new ShadowExecutor_js_1.ShadowExecutor(pgPool);
+        // T.0: outbox relay. Drains oweibo.outbox to Redis lifecycle channels
+        // (oweibo.lifecycle.<subject>). Polls every 2s; fail-open on Redis errors.
+        const outboxRelay = new OutboxRelay_js_1.OutboxRelay(pgPool, {
+            publish: (channel, body) => rPub(channel, body),
+        });
+        outboxRelay.start();
     }
     const swarm = new SwarmCoordinator_js_1.SwarmCoordinator(llmBase, memory, policyEngine, anomaly, auditLogger, conflictResolver, eventBus, interventionGateway, decomposer, contextStore, sessionStore, pgPool, cohortRouter, undefined, // safetyChecker — wired in a future revision
     cohortAdmin);

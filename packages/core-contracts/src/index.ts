@@ -55,3 +55,5 @@ export * from './events/billing.events.js';
 export * from './events/inventory.events.js';
 export * from './events/pos.events.js';
 export * from './events/swarm.events.js';
+// ── T.0: tenant lifecycle events ─────────────────────────────────────────────
+export * from './events/tenant.events.js';

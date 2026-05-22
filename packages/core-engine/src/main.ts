@@ -45,6 +45,7 @@ import { PrivacyAuditService }      from './distillation/PrivacyAuditService.js'
 import { ActionTrustLadder }        from './action/ActionTrustLadder.js';
 import { DryRunRegistry }           from './action/DryRunRegistry.js';
 import { ShadowExecutor }           from './action/ShadowExecutor.js';
+import { OutboxRelay }              from './infrastructure/OutboxRelay.js';
 import { PromptRegistry }          from '@oweibo/prompt-registry';
 import { PromptAssembler }         from '@oweibo/prompt-registry';
 import { createServer }            from './api/server.js';
@@ -189,6 +190,13 @@ async function main(): Promise<void> {
     actionTrustLadder = new ActionTrustLadder(pgPool);
     dryRunRegistry = new DryRunRegistry(pgPool);
     shadowExecutor = new ShadowExecutor(pgPool);
+
+    // T.0: outbox relay. Drains oweibo.outbox to Redis lifecycle channels
+    // (oweibo.lifecycle.<subject>). Polls every 2s; fail-open on Redis errors.
+    const outboxRelay = new OutboxRelay(pgPool, {
+      publish: (channel, body) => rPub(channel, body),
+    });
+    outboxRelay.start();
   }
 
   const swarm = new SwarmCoordinator(

@@ -1,0 +1,305 @@
+/**
+ * T.1: BootstrapWorker — drives the per-tenant bootstrap step pipeline.
+ *
+ * Consumes `oweibo.lifecycle.tenant.created.v1` events from Redis (published by
+ * OutboxRelay in T.0). For each event:
+ *   1. Loads the tenant_bootstrap row (must exist; created by the platform
+ *      handler in T.0).
+ *   2. If state is 'ready' or 'disabled', no-op — idempotent.
+ *   3. Otherwise transitions to 'running', then iterates STEP_PIPELINE.
+ *   4. Each step writes a tenant_bootstrap_steps row; the orchestrator owns
+ *      state transitions, retries, and dead-lettering.
+ *   5. If all steps end ok|skipped → tenant_bootstrap.state='ready'.
+ *      If any step exceeds maxAttemptsPerStep → state='failed' with last_error.
+ *
+ * Retry semantics: a step that returns 'failed' is re-executed on the next
+ * lifecycle event for the same tenant, or by the periodic reconciliation
+ * sweep. A step that throws is treated as 'failed'.
+ */
+import type { Pool, PoolClient } from 'pg';
+import type {
+  IBootstrapStep,
+  IBootstrapStepContext,
+  IBootstrapStepLogger,
+  StepStatus,
+} from './steps/IBootstrapStep.js';
+import { SeedMemoriesStep } from './steps/SeedMemoriesStep.js';
+import { SeedProjectStep } from './steps/SeedProjectStep.js';
+import { SeedSkillsStep } from './steps/SeedSkillsStep.js';
+import { SeedPriorsStep } from './steps/SeedPriorsStep.js';
+import { SeedGoalTemplatesStep } from './steps/SeedGoalTemplatesStep.js';
+
+export const STEP_PIPELINE: readonly IBootstrapStep[] = [
+  new SeedMemoriesStep(),
+  new SeedProjectStep(),
+  new SeedSkillsStep(),
+  new SeedPriorsStep(),
+  new SeedGoalTemplatesStep(),
+];
+
+export interface BootstrapWorkerOptions {
+  /** Max retries per step before marking the whole bootstrap 'failed'. */
+  maxAttemptsPerStep?: number;
+  logger?: IBootstrapStepLogger;
+  /** For tests — override the step pipeline. */
+  pipeline?: readonly IBootstrapStep[];
+}
+
+interface BootstrapRow {
+  tenant_id: string;
+  state: 'pending' | 'running' | 'ready' | 'failed' | 'disabled';
+  template_slug: string;
+  attempts: number;
+}
+
+interface StepRow {
+  attempts: number;
+  status: StepStatus | 'pending' | 'running';
+}
+
+const DEFAULT_MAX_ATTEMPTS = 3;
+
+export class BootstrapWorker {
+  private readonly maxAttempts: number;
+  private readonly logger: IBootstrapStepLogger;
+  private readonly pipeline: readonly IBootstrapStep[];
+
+  constructor(
+    private readonly pool: Pool,
+    private readonly features: (tenantId: string, tx: PoolClient) => Promise<Readonly<Record<string, unknown>>>,
+    opts: BootstrapWorkerOptions = {},
+  ) {
+    this.maxAttempts = opts.maxAttemptsPerStep ?? DEFAULT_MAX_ATTEMPTS;
+    this.logger = opts.logger ?? defaultLogger;
+    this.pipeline = opts.pipeline ?? STEP_PIPELINE;
+  }
+
+  /**
+   * Drives a single tenant through the pipeline. Idempotent — safe to invoke
+   * repeatedly for the same tenant id (steps that already returned 'ok' or
+   * 'skipped' are not re-executed; failed steps retry up to maxAttempts).
+   */
+  async handleTenantCreated(tenantId: string): Promise<'ready' | 'failed' | 'noop'> {
+    const bootstrap = await this.loadBootstrap(tenantId);
+    if (!bootstrap) {
+      this.logger.warn('BootstrapWorker: no tenant_bootstrap row', { tenantId });
+      return 'noop';
+    }
+    if (bootstrap.state === 'ready' || bootstrap.state === 'disabled') {
+      return 'noop';
+    }
+
+    await this.transitionState(tenantId, 'running', { incrementAttempts: true });
+
+    const features = await this.loadFeatures(tenantId);
+
+    let failed = false;
+    let lastError: string | undefined;
+
+    for (const step of this.pipeline) {
+      const existing = await this.loadStep(tenantId, step.name);
+      if (existing && (existing.status === 'ok' || existing.status === 'skipped')) {
+        continue;
+      }
+      if (existing && existing.attempts >= this.maxAttempts) {
+        failed = true;
+        lastError = `step ${step.name} exceeded max attempts`;
+        break;
+      }
+
+      await this.upsertStep(tenantId, step.name, 'running');
+      const ctx: IBootstrapStepContext = {
+        tenantId,
+        templateSlug: bootstrap.template_slug,
+        pool: this.pool,
+        logger: this.logger,
+        features,
+      };
+      let status: StepStatus;
+      let err: string | undefined;
+      try {
+        status = await step.execute(ctx);
+      } catch (e) {
+        status = 'failed';
+        err = e instanceof Error ? e.message : String(e);
+        this.logger.error('BootstrapWorker: step threw', { tenantId, step: step.name, error: err });
+      }
+      await this.upsertStep(tenantId, step.name, status, err);
+
+      if (status === 'failed') {
+        const updated = await this.loadStep(tenantId, step.name);
+        if (updated && updated.attempts >= this.maxAttempts) {
+          failed = true;
+          lastError = err ?? `step ${step.name} failed`;
+          break;
+        }
+        failed = true;
+        lastError = err ?? `step ${step.name} returned failed (will retry)`;
+        break;
+      }
+    }
+
+    const finalState = failed ? 'failed' : 'ready';
+    await this.transitionState(tenantId, finalState, { lastError, completed: finalState === 'ready' });
+    return finalState;
+  }
+
+  // ── Persistence helpers ─────────────────────────────────────────────────
+
+  private async loadBootstrap(tenantId: string): Promise<BootstrapRow | null> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await setScope(client, tenantId);
+      const result = await client.query<BootstrapRow>(
+        `SELECT tenant_id, state, template_slug, attempts
+           FROM oweibo.tenant_bootstrap
+          WHERE tenant_id = $1::uuid`,
+        [tenantId],
+      );
+      await client.query('COMMIT');
+      return result.rows[0] ?? null;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async loadStep(tenantId: string, stepName: string): Promise<StepRow | null> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await setScope(client, tenantId);
+      const result = await client.query<StepRow>(
+        `SELECT attempts, status
+           FROM oweibo.tenant_bootstrap_steps
+          WHERE tenant_id = $1::uuid AND step_name = $2`,
+        [tenantId, stepName],
+      );
+      await client.query('COMMIT');
+      return result.rows[0] ?? null;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async upsertStep(
+    tenantId: string,
+    stepName: string,
+    status: StepStatus | 'running',
+    lastError?: string,
+  ): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await setScope(client, tenantId);
+      const startedTouch = status === 'running' ? 'COALESCE(oweibo.tenant_bootstrap_steps.started_at, NOW())' : 'oweibo.tenant_bootstrap_steps.started_at';
+      const completedTouch = status === 'ok' || status === 'skipped' || status === 'failed' ? 'NOW()' : 'NULL';
+      await client.query(
+        `INSERT INTO oweibo.tenant_bootstrap_steps (
+           tenant_id, step_name, status, attempts, last_error, started_at, completed_at
+         ) VALUES (
+           $1::uuid, $2, $3, $4, $5, $6, $7
+         )
+         ON CONFLICT (tenant_id, step_name) DO UPDATE
+           SET status       = EXCLUDED.status,
+               attempts     = oweibo.tenant_bootstrap_steps.attempts + CASE WHEN EXCLUDED.status = 'running' THEN 1 ELSE 0 END,
+               last_error   = COALESCE(EXCLUDED.last_error, oweibo.tenant_bootstrap_steps.last_error),
+               started_at   = ${startedTouch},
+               completed_at = ${completedTouch === 'NULL' ? 'oweibo.tenant_bootstrap_steps.completed_at' : completedTouch}`,
+        [
+          tenantId,
+          stepName,
+          status,
+          status === 'running' ? 1 : 0,
+          lastError ?? null,
+          status === 'running' ? new Date() : null,
+          status === 'ok' || status === 'skipped' || status === 'failed' ? new Date() : null,
+        ],
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async transitionState(
+    tenantId: string,
+    state: BootstrapRow['state'],
+    opts: { incrementAttempts?: boolean; lastError?: string; completed?: boolean } = {},
+  ): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await setScope(client, tenantId);
+      const setStarted = state === 'running';
+      const setCompleted = opts.completed === true;
+      await client.query(
+        `UPDATE oweibo.tenant_bootstrap
+            SET state        = $2,
+                attempts     = attempts + ${opts.incrementAttempts ? 1 : 0},
+                last_error   = COALESCE($3, last_error),
+                started_at   = ${setStarted ? 'COALESCE(started_at, NOW())' : 'started_at'},
+                completed_at = ${setCompleted ? 'NOW()' : 'completed_at'},
+                updated_at   = NOW()
+          WHERE tenant_id = $1::uuid`,
+        [tenantId, state, opts.lastError ?? null],
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async loadFeatures(tenantId: string): Promise<Readonly<Record<string, unknown>>> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await setScope(client, tenantId);
+      const out = await this.features(tenantId, client);
+      await client.query('COMMIT');
+      return out;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+}
+
+async function setScope(client: PoolClient, tenantId: string): Promise<void> {
+  if (/^[0-9a-f-]{36}$/i.test(tenantId)) {
+    await client.query(`SET LOCAL app.tenant_id = '${tenantId}'`);
+  }
+  // The bootstrap worker reads platform-curated tenant rows; running as
+  // platform_admin avoids per-tenant RLS friction. This service is internal,
+  // not user-facing.
+  await client.query(`SET LOCAL ROLE platform_admin`).catch(() => undefined);
+}
+
+const defaultLogger: IBootstrapStepLogger = {
+  info:  (message, extra) => console.log(`[BootstrapWorker] ${message}`, extra ?? {}),
+  warn:  (message, extra) => console.warn(`[BootstrapWorker] ${message}`, extra ?? {}),
+  error: (message, extra) => console.error(`[BootstrapWorker] ${message}`, extra ?? {}),
+};
+
+/** Default features loader: reads tenants.features JSONB for the given tenant. */
+export async function defaultFeaturesLoader(tenantId: string, client: PoolClient): Promise<Readonly<Record<string, unknown>>> {
+  const result = await client.query<{ features: Record<string, unknown> | null }>(
+    `SELECT features FROM oweibo.tenants WHERE id = $1::uuid`,
+    [tenantId],
+  );
+  return result.rows[0]?.features ?? {};
+}

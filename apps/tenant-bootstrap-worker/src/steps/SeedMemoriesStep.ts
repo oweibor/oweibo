@@ -67,6 +67,16 @@ export class SeedMemoriesStep implements IBootstrapStep {
     if (!readBoolFlag(ctx.features, 'tenant.bootstrap.seed_memories.enabled')) {
       return 'skipped';
     }
+    // T.5.e: control-arm tenants explicitly bypass the seed install so the
+    // A/B trial measures the seed-install delta. The cohort label is set
+    // at tenant-create time by SeedCohortAssigner; reading it here keeps
+    // the step idempotent (same cohort → same outcome on every re-run).
+    if (ctx.seedCohort === 'control') {
+      ctx.logger.info('SeedMemoriesStep: skipping for A/B control cohort', {
+        tenantId: ctx.tenantId,
+      });
+      return 'skipped';
+    }
     if (!this.opts.writer || !this.opts.catalog) {
       // No writer / catalog wired — equivalent to the T.1 stub. Logged so
       // operators can tell the difference between "flag off" and "writer

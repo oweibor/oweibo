@@ -20,6 +20,10 @@ export interface IBootstrapStepContext {
   readonly logger: IBootstrapStepLogger;
   /** Per-tenant features JSONB; steps read their own feature flag from here. */
   readonly features: Readonly<Record<string, unknown>>;
+  /** T.5.e: seed-cohort label assigned at tenant-create time. Steps that
+   *  participate in the A/B trial (SeedMemoriesStep) read this to decide
+   *  whether to execute. Defaults to 'seeded' for tenants created before T.5.e. */
+  readonly seedCohort: 'seeded' | 'control' | 'exempt';
 }
 
 /** Terminal status returned by a step. */

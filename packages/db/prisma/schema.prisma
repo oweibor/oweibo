@@ -396,10 +396,12 @@ model TenantSeedFeedback {
 }
 
 // T.0: tenant bootstrap lifecycle state machine — one row per provisioned tenant.
+// T.5.e: seedCohort field added; 'seeded' / 'control' / 'exempt'.
 model TenantBootstrap {
   tenantId     String    @id @map("tenant_id") @db.Uuid
   state        String    @default("pending")
   templateSlug String    @default("default") @map("template_slug")
+  seedCohort   String    @default("seeded") @map("seed_cohort")
   attempts     Int       @default(0)
   lastError    String?   @map("last_error")
   startedAt    DateTime? @map("started_at") @db.Timestamptz

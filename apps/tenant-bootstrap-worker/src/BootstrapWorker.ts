@@ -50,6 +50,8 @@ interface BootstrapRow {
   state: 'pending' | 'running' | 'ready' | 'failed' | 'disabled';
   template_slug: string;
   attempts: number;
+  /** T.5.e: nullable so old rows without the column still parse correctly. */
+  seed_cohort: 'seeded' | 'control' | 'exempt' | null;
 }
 
 interface StepRow {
@@ -114,6 +116,8 @@ export class BootstrapWorker {
         pool: this.pool,
         logger: this.logger,
         features,
+        // T.5.e: cohort defaults to 'seeded' for rows that predate the column.
+        seedCohort: bootstrap.seed_cohort ?? 'seeded',
       };
       let status: StepStatus;
       let err: string | undefined;
@@ -152,7 +156,7 @@ export class BootstrapWorker {
       await client.query('BEGIN');
       await setScope(client, tenantId);
       const result = await client.query<BootstrapRow>(
-        `SELECT tenant_id, state, template_slug, attempts
+        `SELECT tenant_id, state, template_slug, attempts, seed_cohort
            FROM oweibo.tenant_bootstrap
           WHERE tenant_id = $1::uuid`,
         [tenantId],

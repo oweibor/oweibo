@@ -13,6 +13,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
+import { createHash } from 'crypto';
 import { withTenantContext } from '@oweibo/db';
 import type { Principal } from '@oweibo/db';
 import { authenticate, requirePlatformAdmin } from '../middleware/authenticate.js';
@@ -21,6 +22,34 @@ import {
   TENANT_CREATED_V1_SUBJECT,
   type TenantCreatedV1Payload,
 } from '@oweibo/core-contracts';
+
+/**
+ * T.5.e: deterministic seed-cohort assignment.
+ *
+ * SHA256(tenantId) mod 2: half of newly created tenants go into 'control'
+ * (no seed memories installed by T.2.a), half go into 'seeded' (full
+ * install). The split is uniform over valid UUIDs and reproducible across
+ * processes.
+ *
+ * Behavior is identical to packages/core-engine SeedCohortAssigner — the
+ * code is duplicated here to avoid pulling the full core-engine package
+ * into the identity service. Both must stay in sync.
+ *
+ * Flag SEED_AB_ENABLED=true activates the cohorting. When off (default),
+ * every tenant lands in 'seeded'.
+ */
+type SeedCohort = 'seeded' | 'control' | 'exempt';
+
+function seedAbEnabled(): boolean {
+  return process.env['SEED_AB_ENABLED'] === 'true';
+}
+
+function assignSeedCohort(tenantId: string, override?: SeedCohort): SeedCohort {
+  if (override) return override;
+  if (!seedAbEnabled()) return 'seeded';
+  const digest = createHash('sha256').update(tenantId).digest();
+  return (digest[0]! & 1) === 0 ? 'seeded' : 'control';
+}
 
 const router = Router();
 router.use(authenticate);
@@ -43,6 +72,9 @@ const CreateTenantSchema = z.object({
   features: z.record(z.unknown()).optional(),
   /** T.0: optional bootstrap template; defaults to 'default'. T.6 expands the catalog. */
   templateSlug: z.string().min(1).max(50).regex(/^[a-z0-9-]+$/).optional(),
+  /** T.5.e: optional cohort override. Used for internal/synthetic tenants
+   *  the platform team wants excluded from the A/B trial via 'exempt'. */
+  seedCohort: z.enum(['seeded', 'control', 'exempt']).optional(),
 });
 
 /**
@@ -61,7 +93,7 @@ router.post('/api/v1/platform/tenants', audit('platform.tenant.create', { resour
     return;
   }
   const principal = req.principal as Principal;
-  const { name, slug, quotas, features, templateSlug } = parsed.data;
+  const { name, slug, quotas, features, templateSlug, seedCohort: cohortOverride } = parsed.data;
   const enabled = bootstrapEnabled();
   const effectiveTemplate = templateSlug ?? 'default';
 
@@ -87,11 +119,15 @@ router.post('/api/v1/platform/tenants', audit('platform.tenant.create', { resour
 
     // 3. tenant_bootstrap — lifecycle state. 'disabled' when flag is off so the
     //    row is still present (lets the worker know the tenant predated T.0).
+    // T.5.e: seedCohort assigned deterministically; cohortOverride allows
+    //    platform admins to flag internal/synthetic tenants as 'exempt'.
+    const cohort = assignSeedCohort(created.id, cohortOverride);
     await tx.tenantBootstrap.create({
       data: {
         tenantId: created.id,
         state: enabled ? 'pending' : 'disabled',
         templateSlug: effectiveTemplate,
+        seedCohort: cohort,
       },
     });
 

@@ -25,6 +25,7 @@ function ctx(overrides: Partial<IBootstrapStepContext> = {}): IBootstrapStepCont
     pool: {} as Pool,
     logger: silentLogger,
     features: overrides.features ?? {},
+    seedCohort: 'seeded',
     ...overrides,
   } as IBootstrapStepContext;
 }
@@ -108,5 +109,46 @@ describe('SeedMemoriesStep', () => {
       features: { 'tenant.bootstrap.seed_memories.enabled': true, industry: 'fintech' },
     }));
     expect(catalog.forTenant).toHaveBeenCalledWith({ templateSlug: 'fintech-starter', industry: 'fintech' });
+  });
+
+  // ── T.5.e: seed-cohort gate ─────────────────────────────────────────────
+
+  it("returns 'skipped' for control-cohort tenants even when fully wired", async () => {
+    const writer: ISeedMemoryWriter = {
+      writeSeeds: jest.fn().mockResolvedValue({ inserted: ['s1'], skipped: [], failed: [] }),
+    };
+    const step = new SeedMemoriesStep({ writer, catalog: makeCatalog(TWO_SEEDS) });
+    const result = await step.execute(ctx({
+      seedCohort: 'control',
+      features: { 'tenant.bootstrap.seed_memories.enabled': true },
+    }));
+    expect(result).toBe('skipped');
+    expect(writer.writeSeeds).not.toHaveBeenCalled();
+  });
+
+  it("proceeds normally for 'seeded' cohort", async () => {
+    const writer: ISeedMemoryWriter = {
+      writeSeeds: jest.fn().mockResolvedValue({ inserted: ['s1', 's2'], skipped: [], failed: [] }),
+    };
+    const step = new SeedMemoriesStep({ writer, catalog: makeCatalog(TWO_SEEDS) });
+    const result = await step.execute(ctx({
+      seedCohort: 'seeded',
+      features: { 'tenant.bootstrap.seed_memories.enabled': true },
+    }));
+    expect(result).toBe('ok');
+    expect(writer.writeSeeds).toHaveBeenCalled();
+  });
+
+  it("proceeds normally for 'exempt' cohort (not a control arm)", async () => {
+    const writer: ISeedMemoryWriter = {
+      writeSeeds: jest.fn().mockResolvedValue({ inserted: ['s1'], skipped: [], failed: [] }),
+    };
+    const step = new SeedMemoriesStep({ writer, catalog: makeCatalog(TWO_SEEDS) });
+    const result = await step.execute(ctx({
+      seedCohort: 'exempt',
+      features: { 'tenant.bootstrap.seed_memories.enabled': true },
+    }));
+    expect(result).toBe('ok');
+    expect(writer.writeSeeds).toHaveBeenCalled();
   });
 });

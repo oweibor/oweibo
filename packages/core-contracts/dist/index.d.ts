@@ -28,6 +28,7 @@ export * from './interfaces/ILanguageAnalyzer.js';
 export * from './interfaces/IDocTemplate.js';
 export * from './interfaces/IVectorSearch.js';
 export * from './interfaces/ITokenBudget.js';
+export * from './interfaces/IGoalTemplateMatcher.js';
 export * from './secrets/ISecretsManager.js';
 export * from './browser.js';
 export * from './task.js';

@@ -46,6 +46,7 @@ __exportStar(require("./interfaces/ILanguageAnalyzer.js"), exports);
 __exportStar(require("./interfaces/IDocTemplate.js"), exports);
 __exportStar(require("./interfaces/IVectorSearch.js"), exports);
 __exportStar(require("./interfaces/ITokenBudget.js"), exports);
+__exportStar(require("./interfaces/IGoalTemplateMatcher.js"), exports);
 // ── Secrets ───────────────────────────────────────────────────────────────────
 __exportStar(require("./secrets/ISecretsManager.js"), exports);
 // ── Browser (v9.5+) ───────────────────────────────────────────────────────────

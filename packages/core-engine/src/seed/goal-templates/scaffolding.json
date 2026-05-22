@@ -1,0 +1,29 @@
+{
+  "entries": [
+    {
+      "templateId": "scaffold.nextjs-app-with-auth",
+      "catalogVersion": "1",
+      "triggerSummary": "Scaffold a new Next.js application with authentication, sign-in / sign-up flows, and a protected dashboard route.",
+      "subGoalSkeleton": [
+        { "description": "Create a new Next.js app with the app router and TypeScript", "toolName": "scaffold-next" },
+        { "description": "Add authentication: install and configure an auth provider", "dependsOn": ["Create a new Next.js app with the app router and TypeScript"] },
+        { "description": "Add sign-in and sign-up routes that call the auth provider", "dependsOn": ["Add authentication: install and configure an auth provider"] },
+        { "description": "Add a protected dashboard route that redirects unauthenticated users", "dependsOn": ["Add sign-in and sign-up routes that call the auth provider"] },
+        { "description": "Smoke-test the flow: sign up, sign out, sign in, visit dashboard", "dependsOn": ["Add a protected dashboard route that redirects unauthenticated users"] }
+      ],
+      "applicableTo": { "templates": ["nextjs-app", "*"] }
+    },
+    {
+      "templateId": "scaffold.cli-tool-typescript",
+      "catalogVersion": "1",
+      "triggerSummary": "Scaffold a new TypeScript CLI tool with argument parsing, a single command entry point, and a vitest test setup.",
+      "subGoalSkeleton": [
+        { "description": "Initialize a TypeScript project (tsconfig, package.json, vitest config)" },
+        { "description": "Add an argument parser (commander or yargs) and a single command", "dependsOn": ["Initialize a TypeScript project (tsconfig, package.json, vitest config)"] },
+        { "description": "Write a smoke test that invokes the command with --help", "dependsOn": ["Add an argument parser (commander or yargs) and a single command"] },
+        { "description": "Wire the dist binary in package.json bin map", "dependsOn": ["Add an argument parser (commander or yargs) and a single command"] }
+      ],
+      "applicableTo": { "templates": ["typescript-app", "cli-tool", "*"] }
+    }
+  ]
+}

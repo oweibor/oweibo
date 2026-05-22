@@ -361,6 +361,26 @@ model TenantActionClassState {
   @@schema("oweibo")
 }
 
+// T.2.d: platform-curated goal templates (cross-tenant catalog).
+// Schema notes:
+//   - trigger_embedding column is added by the migration, not Prisma: it is
+//     either VECTOR(1536) (pgvector) or BYTEA (fallback). Prisma's type
+//     model cannot represent vector(N) so the column is intentionally absent
+//     from this model; the matcher reads/writes via raw SQL.
+model GoalTemplate {
+  templateId      String   @id @map("template_id")
+  catalogVersion  String   @map("catalog_version")
+  triggerSummary  String   @map("trigger_summary")
+  subGoalSkeleton Json     @map("sub_goal_skeleton")
+  industries      String[]
+  templates       String[]
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  @@map("goal_templates")
+  @@schema("oweibo")
+}
+
 // T.2.a: per-tenant seed feedback for the suppression loop.
 model TenantSeedFeedback {
   tenantId    String   @map("tenant_id") @db.Uuid

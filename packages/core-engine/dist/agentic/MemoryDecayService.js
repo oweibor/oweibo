@@ -54,6 +54,10 @@ exports.DEFAULT_DECAY_CONFIG = {
     interBatchDelayMs: 200,
     maxConcurrentTenants: 10,
 };
+// T.2.a: predicate imported from a shared module so MemoryDecayService,
+// MemoryConsolidator, and MemoryWarmer agree on the same definition of
+// "platform-curated seed entry".
+const seedTags_js_1 = require("./memory/seedTags.js");
 // ─── Service ──────────────────────────────────────────────────────────────────
 class MemoryDecayService {
     qdrant;
@@ -113,6 +117,13 @@ class MemoryDecayService {
             const toEvict = [];
             for (const point of points) {
                 const payload = point.payload;
+                // T.2.a: skip platform-curated seed entries. They are exempt from
+                // both decay and eviction; only the explicit retirement flow (T.7)
+                // can remove them. Filed under tags, not kind, so this is a fast
+                // string-prefix check.
+                if ((0, seedTags_js_1.isSeedTagged)(payload.tags)) {
+                    continue;
+                }
                 // Kind-specific decay constant: λ = ln(2) / halfLifeDays
                 const kind = (payload.kind ?? 'domain-fact');
                 const halfLife = this.config.kindHalfLife[kind] ?? DEFAULT_HALF_LIFE_DAYS;

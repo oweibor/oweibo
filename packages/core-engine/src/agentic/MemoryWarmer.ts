@@ -33,6 +33,7 @@
 
 import type { ISemanticMemoryStore, RankedMemoryEntry } from '@oweibo/core-contracts';
 import type { ShortTermMemoryStore, STMEntry } from './ShortTermMemoryStore.js';
+import { isSuppressedSeedTagged } from './memory/seedTags.js';
 
 // ─── Score normalisation constants ────────────────────────────────────────────
 // These are fixed scale factors, not config — changing them requires understanding
@@ -138,19 +139,28 @@ export class MemoryWarmer {
       source: 'stm' as const,
     }));
 
-    // ── Merge, sort, deduplicate, slice ───────────────────────────────────────
+    // ── Merge, filter suppressed seeds, sort, deduplicate, slice ──────────────
 
     const all = [...agentWarm, ...projectWarm, ...stmWarm, ...tenantWarm];
 
+    // T.2.a: drop any entry carrying a `seed:suppressed:*` tag. Suppression is
+    // applied out-of-band by the seed-feedback worker when down_count crosses
+    // its threshold; this filter is the runtime enforcement. Organic entries
+    // (no seed: tag) and STM entries (no tags field) are unaffected.
+    const filtered = all.filter((r) => {
+      const tags = (r.entry as { tags?: readonly string[] }).tags;
+      return !isSuppressedSeedTagged(tags);
+    });
+
     // Sort descending by score first so that when we deduplicate we always keep
     // the highest-scored occurrence of each summary.
-    all.sort((a, b) => b.score - a.score);
+    filtered.sort((a, b) => b.score - a.score);
 
     // Deduplicate by entry.summary string equality.
     // Same semantic content can appear in multiple channels (original vs promoted
     // copy), and ids diverge between them while summaries remain identical.
     const seen    = new Set<string>();
-    const deduped = all.filter(r => {
+    const deduped = filtered.filter(r => {
       const fp = r.entry.summary;
       if (seen.has(fp)) return false;
       seen.add(fp);
@@ -160,3 +170,4 @@ export class MemoryWarmer {
     return deduped.slice(0, topK);
   }
 }
+

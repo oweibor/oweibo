@@ -32,6 +32,7 @@ exports.MemoryConsolidator = exports.DEFAULT_CONSOLIDATOR_CONFIG = void 0;
 const crypto_1 = require("crypto");
 const p_limit_1 = __importDefault(require("p-limit"));
 const TenantKeyBuilder_js_1 = require("../infra/TenantKeyBuilder.js");
+const seedTags_js_1 = require("./memory/seedTags.js");
 exports.DEFAULT_CONSOLIDATOR_CONFIG = {
     windowDays: 7,
     minClusterSize: 3,
@@ -131,7 +132,18 @@ class MemoryConsolidator {
         const map = new Map();
         for (const entry of entries) {
             const tags = Array.isArray(entry.payload.tags) ? entry.payload.tags : [];
+            // T.2.a: platform-curated seed entries are never promoted by the
+            // consolidator. Promoting a seed would create a near-duplicate entry,
+            // polluting recall and inflating Qdrant storage. Operators harvest
+            // popular seeds via the T.7 catalog-revision flow.
+            if ((0, seedTags_js_1.isSeedTagged)(tags)) {
+                continue;
+            }
             for (const tag of tags) {
+                // Don't bucket *into* a seed tag either — even an organic entry
+                // sharing the tag should not be clustered alongside seeds.
+                if (typeof tag === 'string' && tag.startsWith('seed:'))
+                    continue;
                 const bucket = map.get(tag) ?? [];
                 bucket.push(entry);
                 map.set(tag, bucket);

@@ -33,6 +33,7 @@
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MemoryWarmer = void 0;
+const seedTags_js_1 = require("./memory/seedTags.js");
 // ─── Score normalisation constants ────────────────────────────────────────────
 // These are fixed scale factors, not config — changing them requires understanding
 // the composite scoring formula in QdrantSemanticStore.recall().
@@ -106,16 +107,24 @@ class MemoryWarmer {
             score: STM_SCALE * 1.0 + STM_OFFSET + STM_BOOST,
             source: 'stm',
         }));
-        // ── Merge, sort, deduplicate, slice ───────────────────────────────────────
+        // ── Merge, filter suppressed seeds, sort, deduplicate, slice ──────────────
         const all = [...agentWarm, ...projectWarm, ...stmWarm, ...tenantWarm];
+        // T.2.a: drop any entry carrying a `seed:suppressed:*` tag. Suppression is
+        // applied out-of-band by the seed-feedback worker when down_count crosses
+        // its threshold; this filter is the runtime enforcement. Organic entries
+        // (no seed: tag) and STM entries (no tags field) are unaffected.
+        const filtered = all.filter((r) => {
+            const tags = r.entry.tags;
+            return !(0, seedTags_js_1.isSuppressedSeedTagged)(tags);
+        });
         // Sort descending by score first so that when we deduplicate we always keep
         // the highest-scored occurrence of each summary.
-        all.sort((a, b) => b.score - a.score);
+        filtered.sort((a, b) => b.score - a.score);
         // Deduplicate by entry.summary string equality.
         // Same semantic content can appear in multiple channels (original vs promoted
         // copy), and ids diverge between them while summaries remain identical.
         const seen = new Set();
-        const deduped = all.filter(r => {
+        const deduped = filtered.filter(r => {
             const fp = r.entry.summary;
             if (seen.has(fp))
                 return false;

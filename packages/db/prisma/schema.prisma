@@ -361,6 +361,20 @@ model TenantActionClassState {
   @@schema("oweibo")
 }
 
+// T.2.a: per-tenant seed feedback for the suppression loop.
+model TenantSeedFeedback {
+  tenantId    String   @map("tenant_id") @db.Uuid
+  seedId      String   @map("seed_id")
+  downCount   Int      @default(0) @map("down_count")
+  upCount     Int      @default(0) @map("up_count")
+  suppressed  Boolean  @default(false)
+  lastUpdated DateTime @default(now()) @map("last_updated") @db.Timestamptz
+
+  @@id([tenantId, seedId])
+  @@map("tenant_seed_feedback")
+  @@schema("oweibo")
+}
+
 // T.0: tenant bootstrap lifecycle state machine — one row per provisioned tenant.
 model TenantBootstrap {
   tenantId     String    @id @map("tenant_id") @db.Uuid

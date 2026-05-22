@@ -1,0 +1,31 @@
+{
+  "entries": [
+    {
+      "seedId": "failure-lesson.mocked-db-masks-migration",
+      "catalogVersion": "1",
+      "kind": "failure-lesson",
+      "summary": "When a generated test passes against a mocked DB, run an integration smoke pass before declaring success — mocked passes have historically masked migration breakage.",
+      "importance": 0.6,
+      "tags": ["scope:starter", "topic:testing", "role:reviewer"],
+      "applicableTo": { "templates": ["*"] }
+    },
+    {
+      "seedId": "failure-lesson.swallowed-async-error",
+      "catalogVersion": "1",
+      "kind": "failure-lesson",
+      "summary": "Catching every error and logging it can hide real failures. Re-throw or surface unrecognized errors instead of returning a silent fallback.",
+      "importance": 0.55,
+      "tags": ["scope:starter", "topic:error-handling", "role:reviewer"],
+      "applicableTo": { "templates": ["*"] }
+    },
+    {
+      "seedId": "failure-lesson.partial-rollback-not-implemented",
+      "catalogVersion": "1",
+      "kind": "failure-lesson",
+      "summary": "If a multi-step external action lacks rollback semantics, do not begin step N+1 until you have a recovery plan for the prior step's side effects.",
+      "importance": 0.6,
+      "tags": ["scope:starter", "topic:reliability", "role:architect"],
+      "applicableTo": { "templates": ["*"] }
+    }
+  ]
+}

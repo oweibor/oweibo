@@ -1,0 +1,32 @@
+{
+  "entries": [
+    {
+      "seedId": "tool-heuristic.one-off-script-single-file",
+      "catalogVersion": "1",
+      "kind": "tool-heuristic",
+      "summary": "When the user asks for a one-off script, prefer single-file output unless an explicit project structure is requested.",
+      "body": "Single-file scripts have lower setup friction and are easier to copy/share. Reach for a multi-file structure only when the user names a framework or asks for a project scaffold.",
+      "importance": 0.55,
+      "tags": ["scope:starter", "role:executor"],
+      "applicableTo": { "templates": ["*"] }
+    },
+    {
+      "seedId": "tool-heuristic.prefer-explicit-types-typescript",
+      "catalogVersion": "1",
+      "kind": "tool-heuristic",
+      "summary": "In TypeScript, prefer explicit return types on exported functions; inferred types are fine for locals.",
+      "importance": 0.5,
+      "tags": ["language:typescript", "role:executor"],
+      "applicableTo": { "templates": ["*"] }
+    },
+    {
+      "seedId": "tool-heuristic.search-before-create",
+      "catalogVersion": "1",
+      "kind": "tool-heuristic",
+      "summary": "Before creating a new utility, search the codebase for an existing helper that already solves the same problem.",
+      "importance": 0.55,
+      "tags": ["scope:starter", "role:executor", "role:architect"],
+      "applicableTo": { "templates": ["*"] }
+    }
+  ]
+}

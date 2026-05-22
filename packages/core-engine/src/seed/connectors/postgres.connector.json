@@ -1,0 +1,65 @@
+{
+  "connectorId": "postgres",
+  "displayName": "PostgreSQL",
+  "category": "database",
+  "description": "Read and write to a tenant-owned Postgres database. Capabilities are split read/write to support the trust-ladder per-class gating.",
+  "catalogVersion": "1",
+  "credentialSchema": {
+    "$schema": "https://json-schema.org/draft-07/schema",
+    "type": "object",
+    "required": ["connectionString"],
+    "properties": {
+      "connectionString": { "type": "string", "description": "DSN, e.g. postgresql://user:pass@host:port/db" },
+      "schema": { "type": "string", "description": "Optional default schema" }
+    }
+  },
+  "capabilities": [
+    {
+      "capabilityId": "query_read",
+      "summary": "Run a read-only SQL query (SELECT only)",
+      "actionClass": "read.tenant_db",
+      "inputSchema": {
+        "type": "object",
+        "required": ["sql"],
+        "properties": {
+          "sql": { "type": "string" },
+          "params": { "type": "array" }
+        }
+      },
+      "outputSchema": { "type": "object", "properties": { "rows": { "type": "array" } } }
+    },
+    {
+      "capabilityId": "query_write_nonprod",
+      "summary": "Run a write SQL statement against a non-production database",
+      "actionClass": "write.tenant_db.nonprod",
+      "inputSchema": {
+        "type": "object",
+        "required": ["sql"],
+        "properties": {
+          "sql": { "type": "string" },
+          "params": { "type": "array" }
+        }
+      },
+      "outputSchema": { "type": "object", "properties": { "rowCount": { "type": "integer" } } },
+      "shadowTarget": {
+        "mode": "sandbox_endpoint",
+        "config": { "note": "Operator declares a shadow DSN at install time; metadata.shadowConnectionString" }
+      }
+    },
+    {
+      "capabilityId": "query_write_prod",
+      "summary": "Run a write SQL statement against production",
+      "actionClass": "write.tenant_db.prod",
+      "inputSchema": {
+        "type": "object",
+        "required": ["sql"],
+        "properties": {
+          "sql": { "type": "string" },
+          "params": { "type": "array" }
+        }
+      },
+      "outputSchema": { "type": "object", "properties": { "rowCount": { "type": "integer" } } }
+    }
+  ],
+  "recommendedFor": ["*", "default", "fintech-smb"]
+}

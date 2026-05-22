@@ -321,6 +321,35 @@ router.get('/:tenantId/calibration',
   }
 );
 
+// T.2.f: list installed connector instances for a tenant. Credentials are
+// never returned by this endpoint — only metadata that's safe to display in
+// the admin UI. Credentials live in Vault and are read on demand by
+// CredentialResolver at capability-invocation time.
+router.get('/:tenantId/connectors',
+  requireScopes('tenant:settings:read'),
+  async (req, res) => {
+    const principal = req.principal as Principal;
+    const connectors = await withTenantContext(principal, tx =>
+      tx.tenantConnector.findMany({
+        where: { tenantId: principal.ctx.tenantId },
+        orderBy: { installedAt: 'desc' },
+        select: {
+          id: true,
+          connectorId: true,
+          catalogVersion: true,
+          instanceLabel: true,
+          status: true,
+          installedBy: true,
+          installedAt: true,
+          lastUsedAt: true,
+          metadata: true,
+        },
+      })
+    );
+    res.json({ connectors });
+  }
+);
+
 const UpdateSettingsSchema = z.object({
   trustModeDefault: z.enum(['supervised', 'graduated', 'autonomous']).optional(),
   features:         z.record(z.unknown()).optional(),

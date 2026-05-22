@@ -28,6 +28,7 @@ import { SeedProjectStep } from './steps/SeedProjectStep.js';
 import { SeedSkillsStep } from './steps/SeedSkillsStep.js';
 import { SeedPriorsStep } from './steps/SeedPriorsStep.js';
 import { SeedGoalTemplatesStep } from './steps/SeedGoalTemplatesStep.js';
+import { SeedConnectorsStep } from './steps/SeedConnectorsStep.js';
 
 export const STEP_PIPELINE: readonly IBootstrapStep[] = [
   new SeedMemoriesStep(),
@@ -35,6 +36,7 @@ export const STEP_PIPELINE: readonly IBootstrapStep[] = [
   new SeedSkillsStep(),
   new SeedPriorsStep(),
   new SeedGoalTemplatesStep(),
+  new SeedConnectorsStep(), // T.2.f
 ];
 
 export interface BootstrapWorkerOptions {

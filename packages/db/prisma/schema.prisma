@@ -361,6 +361,25 @@ model TenantActionClassState {
   @@schema("oweibo")
 }
 
+// T.2.f: per-tenant connector instance. Credentials live in Vault at vault_path.
+model TenantConnector {
+  id             String    @id @default(uuid()) @db.Uuid
+  tenantId       String    @map("tenant_id") @db.Uuid
+  connectorId    String    @map("connector_id")
+  catalogVersion String    @map("catalog_version")
+  instanceLabel  String    @map("instance_label")
+  vaultPath      String    @map("vault_path")
+  status         String    @default("pending")
+  installedBy    String?   @map("installed_by") @db.Uuid
+  installedAt    DateTime  @default(now()) @map("installed_at") @db.Timestamptz
+  lastUsedAt     DateTime? @map("last_used_at") @db.Timestamptz
+  metadata       Json      @default("{}")
+
+  @@unique([tenantId, connectorId, instanceLabel])
+  @@map("tenant_connectors")
+  @@schema("oweibo")
+}
+
 // T.2.d: platform-curated goal templates (cross-tenant catalog).
 // Schema notes:
 //   - trigger_embedding column is added by the migration, not Prisma: it is

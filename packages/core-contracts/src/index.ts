@@ -51,6 +51,9 @@ export * from './lesson.js';
 export * from './action/ActionClass.js';
 export * from './action/IActionGate.js';
 
+// ── T.2.f: connector catalog + tenant-instance contracts ─────────────────────
+export * from './connector/IConnector.js';
+
 // ── Events ────────────────────────────────────────────────────────────────────
 export * from './events/billing.events.js';
 export * from './events/inventory.events.js';

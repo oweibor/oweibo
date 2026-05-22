@@ -60,6 +60,8 @@ __exportStar(require("./lesson.js"), exports);
 // ── T.−1: action trust ladder taxonomy + gate contract ───────────────────────
 __exportStar(require("./action/ActionClass.js"), exports);
 __exportStar(require("./action/IActionGate.js"), exports);
+// ── T.2.f: connector catalog + tenant-instance contracts ─────────────────────
+__exportStar(require("./connector/IConnector.js"), exports);
 // ── Events ────────────────────────────────────────────────────────────────────
 __exportStar(require("./events/billing.events.js"), exports);
 __exportStar(require("./events/inventory.events.js"), exports);

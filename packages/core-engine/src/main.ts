@@ -42,6 +42,9 @@ import { MutationGovernanceService } from './governance/MutationGovernanceServic
 import { CohortAdminService }       from './infrastructure/CohortAdminService.js';
 import { GepaInspectorService }     from './bandit/GepaInspectorService.js';
 import { PrivacyAuditService }      from './distillation/PrivacyAuditService.js';
+import { ActionTrustLadder }        from './action/ActionTrustLadder.js';
+import { DryRunRegistry }           from './action/DryRunRegistry.js';
+import { ShadowExecutor }           from './action/ShadowExecutor.js';
 import { PromptRegistry }          from '@oweibo/prompt-registry';
 import { PromptAssembler }         from '@oweibo/prompt-registry';
 import { createServer }            from './api/server.js';
@@ -161,6 +164,9 @@ async function main(): Promise<void> {
   let cohortAdmin: CohortAdminService | undefined;
   let gepaInspector: GepaInspectorService | undefined;
   let privacyAudit: PrivacyAuditService | undefined;
+  let actionTrustLadder: ActionTrustLadder | undefined;
+  let dryRunRegistry: DryRunRegistry | undefined;
+  let shadowExecutor: ShadowExecutor | undefined;
   if (process.env['DATABASE_URL']) {
     pgPool = new Pool({ connectionString: process.env['DATABASE_URL'] });
     const promptRegistry = new PromptRegistry(
@@ -177,6 +183,12 @@ async function main(): Promise<void> {
     cohortAdmin = new CohortAdminService(pgPool);
     gepaInspector = new GepaInspectorService(pgPool);
     privacyAudit = new PrivacyAuditService(pgPool);
+    // T.−1: action trust ladder. Disabled by env flag until shadow-only rollout
+    // completes — gate() returns {mode:'execute'} when ACTION_TRUST_LADDER_ENABLED
+    // is not 'true', so the wrap is byte-identical to today for callers.
+    actionTrustLadder = new ActionTrustLadder(pgPool);
+    dryRunRegistry = new DryRunRegistry(pgPool);
+    shadowExecutor = new ShadowExecutor(pgPool);
   }
 
   const swarm = new SwarmCoordinator(
@@ -284,6 +296,9 @@ async function main(): Promise<void> {
     ...(cohortAdmin        ? { cohortAdmin }        : {}),
     ...(gepaInspector      ? { gepaInspector }      : {}),
     ...(privacyAudit       ? { privacyAudit }       : {}),
+    ...(actionTrustLadder && dryRunRegistry && shadowExecutor
+      ? { actionTrustLadder, dryRunRegistry, shadowExecutor }
+      : {}),
   });
 
   // ── Channel Gateway (optional) ────────────────────────────────────────────

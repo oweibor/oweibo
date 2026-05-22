@@ -56,6 +56,9 @@ __exportStar(require("./task.js"), exports);
 __exportStar(require("./roles.js"), exports);
 // ── Phase B.1: cross-tenant lesson contract ───────────────────────────────────
 __exportStar(require("./lesson.js"), exports);
+// ── T.−1: action trust ladder taxonomy + gate contract ───────────────────────
+__exportStar(require("./action/ActionClass.js"), exports);
+__exportStar(require("./action/IActionGate.js"), exports);
 // ── Events ────────────────────────────────────────────────────────────────────
 __exportStar(require("./events/billing.events.js"), exports);
 __exportStar(require("./events/inventory.events.js"), exports);

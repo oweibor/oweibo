@@ -46,6 +46,10 @@ export * from './roles.js';
 // ── Phase B.1: cross-tenant lesson contract ───────────────────────────────────
 export * from './lesson.js';
 
+// ── T.−1: action trust ladder taxonomy + gate contract ───────────────────────
+export * from './action/ActionClass.js';
+export * from './action/IActionGate.js';
+
 // ── Events ────────────────────────────────────────────────────────────────────
 export * from './events/billing.events.js';
 export * from './events/inventory.events.js';

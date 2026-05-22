@@ -33,6 +33,8 @@ export * from './browser.js';
 export * from './task.js';
 export * from './roles.js';
 export * from './lesson.js';
+export * from './action/ActionClass.js';
+export * from './action/IActionGate.js';
 export * from './events/billing.events.js';
 export * from './events/inventory.events.js';
 export * from './events/pos.events.js';

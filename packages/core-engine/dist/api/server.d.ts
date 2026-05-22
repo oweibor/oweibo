@@ -8,6 +8,9 @@ import type { MutationGovernanceService } from '../governance/MutationGovernance
 import type { CohortAdminService } from '../infrastructure/CohortAdminService.js';
 import type { GepaInspectorService } from '../bandit/GepaInspectorService.js';
 import type { PrivacyAuditService } from '../distillation/PrivacyAuditService.js';
+import type { ActionTrustLadder } from '../action/ActionTrustLadder.js';
+import type { DryRunRegistry } from '../action/DryRunRegistry.js';
+import type { ShadowExecutor } from '../action/ShadowExecutor.js';
 export interface ServerConfig {
     readonly port: number;
     readonly corsOrigins: string[];
@@ -34,6 +37,10 @@ export declare function createServer(deps: {
     gepaInspector?: GepaInspectorService;
     /** Optional — when provided, enables /api/v1/platform/privacy/audit (B.7). */
     privacyAudit?: PrivacyAuditService;
+    /** T.−1: when all three are provided, enables /api/v1/actions/* routes. */
+    actionTrustLadder?: ActionTrustLadder;
+    dryRunRegistry?: DryRunRegistry;
+    shadowExecutor?: ShadowExecutor;
 }, config?: Partial<ServerConfig>): Promise<{
     app: import('express').Application;
     port: number;

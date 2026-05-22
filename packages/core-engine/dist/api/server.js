@@ -20,6 +20,7 @@ const tasks_routes_js_1 = require("./routes/tasks.routes.js");
 const hitl_routes_js_1 = require("./routes/hitl.routes.js");
 const skills_routes_js_1 = require("./routes/skills.routes.js");
 const platform_routes_js_1 = require("./routes/platform.routes.js");
+const actions_routes_js_1 = require("./routes/actions.routes.js");
 const authenticate_js_1 = require("./middleware/authenticate.js");
 const openapi_js_1 = require("./openapi.js");
 const DEFAULT_CONFIG = {
@@ -92,6 +93,15 @@ async function createServer(deps, config = {}) {
     }));
     v1.use('/hitl', (0, hitl_routes_js_1.createHITLRouter)({ hitlGateway: deps.hitlGateway }));
     v1.use('/skills', (0, skills_routes_js_1.createSkillsRouter)());
+    // T.−1: action trust ladder routes. Mounted independently of the platform
+    // routes — the gate is a tenant-scoped service, not a platform-admin one.
+    if (deps.actionTrustLadder && deps.dryRunRegistry && deps.shadowExecutor) {
+        v1.use('/actions', (0, actions_routes_js_1.createActionsRouter)({
+            trustLadder: deps.actionTrustLadder,
+            registry: deps.dryRunRegistry,
+            shadowExecutor: deps.shadowExecutor,
+        }));
+    }
     if (deps.pool && deps.operationalMode) {
         v1.use('/platform', (0, platform_routes_js_1.createPlatformRouter)({
             pool: deps.pool,

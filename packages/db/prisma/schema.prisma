@@ -92,7 +92,7 @@ model BaOrganization {
   createdAt DateTime
   metadata  String?
 
-  members BaMember[]
+  members     BaMember[]
   invitations BaInvitation[]
 
   @@map("organizations")
@@ -127,7 +127,7 @@ model BaInvitation {
 
 // ── oweibo schema (RLS enforced on all tenant-data tables) ─────────────────
 
-// Cross-tenant: no tenant_id; RLS keyed off app.is_platform_admin
+// Cross-tenant: no tenant_id; RLS keyed off current_user = 'platform_admin'
 model Tenant {
   id               String   @id @default(uuid()) @db.Uuid
   name             String
@@ -140,11 +140,11 @@ model Tenant {
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
   createdBy        String?  @map("created_by") @db.Uuid
 
-  memberships     TenantMembership[]
-  apiKeys         ApiKey[]
-  tasks           Task[]
-  settings        TenantSettings?
-  taskFeedback    TaskFeedback[]
+  memberships  TenantMembership[]
+  apiKeys      ApiKey[]
+  tasks        Task[]
+  settings     TenantSettings?
+  taskFeedback TaskFeedback[]
 
   @@map("tenants")
   @@schema("oweibo")
@@ -152,11 +152,11 @@ model Tenant {
 
 // Mirror of betterauth.users; kept in sync via Postgres trigger (see migrations/)
 model User {
-  id             String   @id @db.Uuid
-  email          String   @unique
-  status         String   @default("active")
-  platformRoles  String[] @default([]) @map("platform_roles")
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+  id            String   @id @db.Uuid
+  email         String   @unique
+  status        String   @default("active")
+  platformRoles String[] @default([]) @map("platform_roles")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   memberships TenantMembership[]
   apiKeys     ApiKey[]
@@ -205,20 +205,20 @@ model ApiKey {
 // Audit log: append-only, partitioned by month; RLS on tenant_id
 // Inserts go through oweibo.append_audit() SECURITY DEFINER function only.
 model AuditLog {
-  id               String    @id @db.Uuid
-  ts               DateTime  @db.Timestamptz
-  actorPrincipal   String    @map("actor_principal")
-  onBehalfOfUserId String?   @map("on_behalf_of_user_id") @db.Uuid
+  id               String   @id @db.Uuid
+  ts               DateTime @db.Timestamptz
+  actorPrincipal   String   @map("actor_principal")
+  onBehalfOfUserId String?  @map("on_behalf_of_user_id") @db.Uuid
   source           String
-  requestId        String?   @map("request_id")
+  requestId        String?  @map("request_id")
   ip               String?
-  tenantId         String?   @map("tenant_id") @db.Uuid
-  scopeUsed        String[]  @map("scope_used")
+  tenantId         String?  @map("tenant_id") @db.Uuid
+  scopeUsed        String[] @map("scope_used")
   action           String
-  resourceType     String?   @map("resource_type")
-  resourceId       String?   @map("resource_id")
-  beforeHash       String?   @map("before_hash")
-  afterHash        String?   @map("after_hash")
+  resourceType     String?  @map("resource_type")
+  resourceId       String?  @map("resource_id")
+  beforeHash       String?  @map("before_hash")
+  afterHash        String?  @map("after_hash")
   outcome          String
   details          Json?
 
@@ -230,29 +230,29 @@ model AuditLog {
 
 // Tenant-scoped task. All prompt-version pins are written atomically with the INSERT.
 model Task {
-  id                       String    @id @default(uuid()) @db.Uuid
-  tenantId                 String    @map("tenant_id") @db.Uuid
-  userId                   String?   @map("user_id") @db.Uuid
-  sessionId                String?   @map("session_id")
-  taskMode                 String    @default("factory") @map("task_mode")
-  goalDescription          String    @map("goal_description")
-  goalContext              String?   @map("goal_context")
-  repoPath                 String?   @map("repo_path")
-  status                   String    @default("pending")
-  result                   Json?
-  error                    String?
-  tokensUsed               Int       @default(0) @map("tokens_used")
-  ttlSeconds               Int?      @map("ttl_seconds")
-  architectAssembledHash   String?   @map("architect_assembled_hash")
-  executorAssembledHash    String?   @map("executor_assembled_hash")
-  reviewerAssembledHash    String?   @map("reviewer_assembled_hash")
-  decomposerAssembledHash  String?   @map("decomposer_assembled_hash")
-  slotPinDetail            Json?     @map("slot_pin_detail")
-  cohortChannel            String    @default("stable") @map("cohort_channel")
-  projectId                String?   @map("project_id") @db.Uuid
-  createdAt                DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  startedAt                DateTime? @map("started_at") @db.Timestamptz
-  completedAt              DateTime? @map("completed_at") @db.Timestamptz
+  id                      String    @id @default(uuid()) @db.Uuid
+  tenantId                String    @map("tenant_id") @db.Uuid
+  userId                  String?   @map("user_id") @db.Uuid
+  sessionId               String?   @map("session_id")
+  taskMode                String    @default("factory") @map("task_mode")
+  goalDescription         String    @map("goal_description")
+  goalContext             String?   @map("goal_context")
+  repoPath                String?   @map("repo_path")
+  status                  String    @default("pending")
+  result                  Json?
+  error                   String?
+  tokensUsed              Int       @default(0) @map("tokens_used")
+  ttlSeconds              Int?      @map("ttl_seconds")
+  architectAssembledHash  String?   @map("architect_assembled_hash")
+  executorAssembledHash   String?   @map("executor_assembled_hash")
+  reviewerAssembledHash   String?   @map("reviewer_assembled_hash")
+  decomposerAssembledHash String?   @map("decomposer_assembled_hash")
+  slotPinDetail           Json?     @map("slot_pin_detail")
+  cohortChannel           String    @default("stable") @map("cohort_channel")
+  projectId               String?   @map("project_id") @db.Uuid
+  createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  startedAt               DateTime? @map("started_at") @db.Timestamptz
+  completedAt             DateTime? @map("completed_at") @db.Timestamptz
 
   tenant   Tenant         @relation(fields: [tenantId], references: [id])
   feedback TaskFeedback[]
@@ -277,17 +277,17 @@ model TenantSettings {
 
 // Content-addressed prompt slot versions. hash = SHA256(role:slot_id:template_version:text)
 model PromptVersion {
-  hash             String    @id
-  role             String
-  slotId           String    @map("slot_id")
-  templateVersion  String    @default("stable-v0") @map("template_version")
-  text             String
-  parentHash       String?   @map("parent_hash")
-  mutationStatus   String    @default("stable") @map("mutation_status")
-  freezeReason     String?   @map("freeze_reason")
-  evalScore        Json?     @map("eval_score")
-  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedBy        String?   @map("updated_by")
+  hash            String   @id
+  role            String
+  slotId          String   @map("slot_id")
+  templateVersion String   @default("stable-v0") @map("template_version")
+  text            String
+  parentHash      String?  @map("parent_hash")
+  mutationStatus  String   @default("stable") @map("mutation_status")
+  freezeReason    String?  @map("freeze_reason")
+  evalScore       Json?    @map("eval_score")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedBy       String?  @map("updated_by")
 
   parent   PromptVersion?  @relation("PromptVersionLineage", fields: [parentHash], references: [hash])
   children PromptVersion[] @relation("PromptVersionLineage")
@@ -299,13 +299,13 @@ model PromptVersion {
 
 // Per-role, per-slot channel pointer with optimistic-lock version.
 model Channel {
-  name        String    @map("name")
-  role        String
-  slotId      String    @map("slot_id")
-  promptHash  String    @map("prompt_hash")
-  version     BigInt    @default(0)
-  updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz
-  updatedBy   String?   @map("updated_by")
+  name       String   @map("name")
+  role       String
+  slotId     String   @map("slot_id")
+  promptHash String   @map("prompt_hash")
+  version    BigInt   @default(0)
+  updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz
+  updatedBy  String?  @map("updated_by")
 
   promptVersion PromptVersion @relation(fields: [promptHash], references: [hash])
 
@@ -339,5 +339,47 @@ model Outbox {
   publishedAt DateTime? @map("published_at") @db.Timestamptz
 
   @@map("outbox")
+  @@schema("oweibo")
+}
+
+// T.−1: per-(tenant, action_class) trust state for the action trust ladder.
+// Zero rows means the resolver applies the platform-default matrix.
+model TenantActionClassState {
+  tenantId     String   @map("tenant_id") @db.Uuid
+  actionClass  String   @map("action_class")
+  currentMode  String   @map("current_mode")
+  pinnedBy     String?  @map("pinned_by")
+  pinnedReason String?  @map("pinned_reason")
+  observations Int      @default(0)
+  successes    Int      @default(0)
+  rejections   Int      @default(0)
+  lastUpdated  DateTime @default(now()) @map("last_updated") @db.Timestamptz
+
+  @@id([tenantId, actionClass])
+  @@map("tenant_action_class_state")
+  @@schema("oweibo")
+}
+
+// T.−1: append-only proposals for dry_run / shadow / require_approval gate decisions.
+model ActionProposal {
+  id             String    @id @default(uuid()) @db.Uuid
+  tenantId       String    @map("tenant_id") @db.Uuid
+  userId         String?   @map("user_id") @db.Uuid
+  actionClass    String    @map("action_class")
+  actionId       String    @map("action_id")
+  mode           String
+  summary        String
+  payload        Json
+  rollbackKind   String?   @map("rollback_kind")
+  rollbackDetail Json?     @map("rollback_detail")
+  state          String    @default("pending")
+  decidedBy      String?   @map("decided_by") @db.Uuid
+  decidedAt      DateTime? @map("decided_at") @db.Timestamptz
+  decisionReason String?   @map("decision_reason")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  expiresAt      DateTime  @map("expires_at") @db.Timestamptz
+
+  @@unique([tenantId, actionId])
+  @@map("action_proposals")
   @@schema("oweibo")
 }

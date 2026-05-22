@@ -44,6 +44,9 @@ const MutationGovernanceService_js_1 = require("./governance/MutationGovernanceS
 const CohortAdminService_js_1 = require("./infrastructure/CohortAdminService.js");
 const GepaInspectorService_js_1 = require("./bandit/GepaInspectorService.js");
 const PrivacyAuditService_js_1 = require("./distillation/PrivacyAuditService.js");
+const ActionTrustLadder_js_1 = require("./action/ActionTrustLadder.js");
+const DryRunRegistry_js_1 = require("./action/DryRunRegistry.js");
+const ShadowExecutor_js_1 = require("./action/ShadowExecutor.js");
 const prompt_registry_1 = require("@oweibo/prompt-registry");
 const prompt_registry_2 = require("@oweibo/prompt-registry");
 const server_js_1 = require("./api/server.js");
@@ -145,6 +148,9 @@ async function main() {
     let cohortAdmin;
     let gepaInspector;
     let privacyAudit;
+    let actionTrustLadder;
+    let dryRunRegistry;
+    let shadowExecutor;
     if (process.env['DATABASE_URL']) {
         pgPool = new pg_1.Pool({ connectionString: process.env['DATABASE_URL'] });
         const promptRegistry = new prompt_registry_1.PromptRegistry(pgPool, process.env['LANGFUSE_SECRET_KEY'], process.env['LANGFUSE_PUBLIC_KEY']);
@@ -157,6 +163,12 @@ async function main() {
         cohortAdmin = new CohortAdminService_js_1.CohortAdminService(pgPool);
         gepaInspector = new GepaInspectorService_js_1.GepaInspectorService(pgPool);
         privacyAudit = new PrivacyAuditService_js_1.PrivacyAuditService(pgPool);
+        // T.−1: action trust ladder. Disabled by env flag until shadow-only rollout
+        // completes — gate() returns {mode:'execute'} when ACTION_TRUST_LADDER_ENABLED
+        // is not 'true', so the wrap is byte-identical to today for callers.
+        actionTrustLadder = new ActionTrustLadder_js_1.ActionTrustLadder(pgPool);
+        dryRunRegistry = new DryRunRegistry_js_1.DryRunRegistry(pgPool);
+        shadowExecutor = new ShadowExecutor_js_1.ShadowExecutor(pgPool);
     }
     const swarm = new SwarmCoordinator_js_1.SwarmCoordinator(llmBase, memory, policyEngine, anomaly, auditLogger, conflictResolver, eventBus, interventionGateway, decomposer, contextStore, sessionStore, pgPool, cohortRouter, undefined, // safetyChecker — wired in a future revision
     cohortAdmin);
@@ -230,6 +242,9 @@ async function main() {
         ...(cohortAdmin ? { cohortAdmin } : {}),
         ...(gepaInspector ? { gepaInspector } : {}),
         ...(privacyAudit ? { privacyAudit } : {}),
+        ...(actionTrustLadder && dryRunRegistry && shadowExecutor
+            ? { actionTrustLadder, dryRunRegistry, shadowExecutor }
+            : {}),
     });
     // ── Channel Gateway (optional) ────────────────────────────────────────────
     try {

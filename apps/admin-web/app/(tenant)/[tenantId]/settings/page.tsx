@@ -36,6 +36,9 @@ export default async function SettingsPage({ params, searchParams }: {
   return (
     <>
       <PageHeader title="Settings" />
+      <p style={{ fontSize: 13, color: '#666', marginBottom: '0.75rem' }}>
+        <a href={`/t/${tenantId}/onboarding`} style={{ color: '#1e3a8a' }}>View onboarding status →</a>
+      </p>
       {saved && <p style={{ color: '#065f46', background: '#d1fae5', padding: '0.5rem 1rem', borderRadius: 4 }}>Settings saved.</p>}
 
       <form action={updateSettingsAction} style={{ maxWidth: 420, display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1rem' }}>

@@ -15,11 +15,82 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
 import { createHash, randomBytes } from 'crypto';
-import { withTenantContext } from '@oweibo/db';
+import { withTenantContext, appendAudit } from '@oweibo/db';
 import type { Principal } from '@oweibo/db';
 import { authenticate, requireScopes } from '../middleware/authenticate.js';
 import { audit } from '@oweibo/api-middleware';
 import { expandRoles } from '../policy.js';
+
+// T.5.b: autonomous-mode calibration gate.
+//
+// When a tenant admin attempts to set trustModeDefault='autonomous' AND the
+// platform flag TENANT_CALIBRATION_GATE_AUTONOMOUS_ENABLED is on, the gate
+// requires the tenant's global calibration score >= AUTONOMOUS_GATE_THRESHOLD.
+// Otherwise responds 409 with the score and a remediation hint. ?force=true
+// bypasses the gate and emits a separate audit row tenant.calibration.override.
+//
+// The score formula MIRRORS packages/core-engine CalibrationService.globalScore
+// so identity does not need to depend on the full core-engine package. Both
+// must stay in sync; see T.5.a for the canonical implementation.
+const AUTONOMOUS_GATE_ENABLED = process.env['TENANT_CALIBRATION_GATE_AUTONOMOUS_ENABLED'] === 'true';
+const AUTONOMOUS_GATE_THRESHOLD = 0.6;
+
+async function computeGlobalCalibration(
+  principal: Principal,
+): Promise<{ score: number; summary: string; signals: Record<string, number | boolean> }> {
+  const now = Date.now();
+  return withTenantContext(principal, async (tx) => {
+    const tenantRow = await tx.tenant.findUnique({
+      where: { id: principal.ctx.tenantId },
+      select: { createdAt: true },
+    });
+    const accountAgeDays = tenantRow
+      ? Math.max(0, Math.min(30, Math.floor((now - tenantRow.createdAt.getTime()) / 86_400_000)))
+      : 0;
+
+    const completedCount = await tx.task.count({
+      where: { tenantId: principal.ctx.tenantId, completedAt: { not: null } },
+    });
+
+    const bootstrap = await tx.tenantBootstrap.findUnique({
+      where: { tenantId: principal.ctx.tenantId },
+    });
+    const bootstrapReady = bootstrap?.state === 'ready';
+
+    const slotsRows = await tx.$queryRaw<{ count: bigint | number }[]>`
+      SELECT COUNT(DISTINCT bae.slot_id) AS count
+        FROM oweibo.bandit_arm_events bae
+        JOIN oweibo.tasks t ON t.id::text = bae.task_id
+       WHERE t.tenant_id = ${principal.ctx.tenantId}::uuid
+    `;
+    const slotsWithLearnedArms = Number(slotsRows[0]?.count ?? 0);
+
+    // organicMemoryCount lives in Qdrant which identity does not reach; the
+    // CalibrationService caller in core-engine injects a real counter.
+    // Identity's gate treats it as 0 — conservative (lowers the score).
+    const organicMemoryCount = 0;
+
+    const score =
+      0.20 * Math.min(accountAgeDays / 30, 1) +
+      0.30 * Math.min(organicMemoryCount / 50, 1) +
+      0.20 * Math.min(slotsWithLearnedArms / 8, 1) +
+      0.20 * Math.min(completedCount / 25, 1) +
+      0.10 * (bootstrapReady ? 1 : 0);
+
+    const summary = score < 0.20 ? 'Brand new'
+      : score < 0.40 ? 'Warming up'
+      : score < 0.60 ? 'Adapting'
+      : score < 0.85 ? 'Calibrated'
+      : 'Fully calibrated';
+
+    return {
+      score,
+      summary,
+      signals: { accountAgeDays, completedCount, slotsWithLearnedArms, bootstrapReady },
+    };
+  });
+}
+
 
 const router = Router({ mergeParams: true });
 router.use(authenticate);
@@ -242,6 +313,54 @@ router.patch('/:tenantId/settings',
       return;
     }
     const principal = req.principal as Principal;
+    const force = req.query['force'] === 'true';
+
+    // T.5.b: gate autonomous mode on calibration when the feature flag is on.
+    if (
+      parsed.data.trustModeDefault === 'autonomous'
+      && AUTONOMOUS_GATE_ENABLED
+      && !force
+    ) {
+      const calibration = await computeGlobalCalibration(principal);
+      if (calibration.score < AUTONOMOUS_GATE_THRESHOLD) {
+        res.status(409).json({
+          error: 'calibration_required',
+          score: calibration.score,
+          threshold: AUTONOMOUS_GATE_THRESHOLD,
+          summary: calibration.summary,
+          signals: calibration.signals,
+          hint: 'Add ?force=true to override (audited as tenant.calibration.override).',
+        });
+        return;
+      }
+    }
+
+    // T.5.b: if the operator used ?force=true on the autonomous transition,
+    // write a separate audit row so the override is independently visible
+    // in the audit trail (the standard tenant.settings.update row from the
+    // middleware also fires, but lacks the override context).
+    if (parsed.data.trustModeDefault === 'autonomous' && force && AUTONOMOUS_GATE_ENABLED) {
+      const calibration = await computeGlobalCalibration(principal);
+      await appendAudit({
+        id: uuidv4(),
+        ts: new Date(),
+        actorPrincipal: principal.sub,
+        source: 'api',
+        tenantId: principal.ctx.tenantId,
+        scopeUsed: principal.scopes,
+        action: 'tenant.calibration.override',
+        resourceType: 'tenant',
+        resourceId: principal.ctx.tenantId,
+        outcome: 'allow',
+        details: {
+          score: calibration.score,
+          threshold: AUTONOMOUS_GATE_THRESHOLD,
+          summary: calibration.summary,
+          reason: 'operator force override',
+        },
+      }).catch(() => undefined);
+    }
+
     const tenant = await withTenantContext(principal, tx =>
       tx.tenant.update({
         where: { id: principal.ctx.tenantId },

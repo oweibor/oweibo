@@ -13,6 +13,14 @@ export interface PlatformSeedMemory {
         readonly templates: readonly string[];
         readonly industries?: readonly string[];
     };
+    /**
+     * T.7: SHA-256 of the canonical seed payload — kind, summary, body,
+     * importance, and the *non-marker* tags. Excludes catalogVersion so a
+     * pure version-string bump does not look like a content revision. Set by
+     * normalize(); callers that construct an entry manually do not need to
+     * supply it.
+     */
+    readonly contentHash: string;
 }
 export interface CatalogFilter {
     readonly templateSlug: string;
@@ -45,4 +53,17 @@ export declare class PlatformSeedCatalog {
     /** Returns the full set — used by tests. */
     all(): readonly PlatformSeedMemory[];
 }
+/**
+ * T.7: deterministic content hash for a seed payload. Canonical serialisation
+ * sorts the tags array so two callers that supply the same logical content
+ * in different tag order get the same hash. Excludes catalogVersion so a
+ * pure version-string bump does not look like a content revision.
+ */
+export declare function computeContentHash(payload: {
+    readonly kind: string;
+    readonly summary: string;
+    readonly body?: string;
+    readonly importance: number;
+    readonly tags: readonly string[];
+}): string;
 //# sourceMappingURL=PlatformSeedCatalog.d.ts.map

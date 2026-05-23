@@ -38,7 +38,7 @@ import type {
   PlatformLessonHit,
 } from '@oweibo/core-contracts';
 import type { ShortTermMemoryStore, STMEntry } from './ShortTermMemoryStore.js';
-import { isSuppressedSeedTagged } from './memory/seedTags.js';
+import { isSuppressedSeedTagged, isRetiredSeedTagged } from './memory/seedTags.js';
 
 // ─── Score normalisation constants ────────────────────────────────────────────
 // These are fixed scale factors, not config — changing them requires understanding
@@ -194,9 +194,12 @@ export class MemoryWarmer {
     // applied out-of-band by the seed-feedback worker when down_count crosses
     // its threshold; this filter is the runtime enforcement. Organic entries
     // (no seed: tag) and STM entries (no tags field) are unaffected.
+    // T.7: also drop `seed:retired:*` tags. Retired seeds are tombstoned by
+    // the catalog reconciler — kept in the tenant collection for audit but
+    // excluded from recall.
     const filtered = all.filter((r) => {
       const tags = (r.entry as { tags?: readonly string[] }).tags;
-      return !isSuppressedSeedTagged(tags);
+      return !isSuppressedSeedTagged(tags) && !isRetiredSeedTagged(tags);
     });
 
     // Sort descending by score first so that when we deduplicate we always keep

@@ -11,4 +11,10 @@
 export declare function isSeedTagged(tags: readonly string[] | undefined): boolean;
 /** True if any tag starts with `seed:suppressed:` — exclude from recall. */
 export declare function isSuppressedSeedTagged(tags: readonly string[] | undefined): boolean;
+/**
+ * T.7: true if any tag starts with `seed:retired:`. Retired seeds are
+ * tombstoned in the tenant collection by SeedCatalogReconciler — preserved
+ * for audit history but excluded from recall via this filter.
+ */
+export declare function isRetiredSeedTagged(tags: readonly string[] | undefined): boolean;
 //# sourceMappingURL=seedTags.d.ts.map

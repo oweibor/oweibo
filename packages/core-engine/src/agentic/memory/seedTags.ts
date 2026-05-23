@@ -25,3 +25,16 @@ export function isSuppressedSeedTagged(tags: readonly string[] | undefined): boo
   }
   return false;
 }
+
+/**
+ * T.7: true if any tag starts with `seed:retired:`. Retired seeds are
+ * tombstoned in the tenant collection by SeedCatalogReconciler — preserved
+ * for audit history but excluded from recall via this filter.
+ */
+export function isRetiredSeedTagged(tags: readonly string[] | undefined): boolean {
+  if (!tags || tags.length === 0) return false;
+  for (const t of tags) {
+    if (typeof t === 'string' && t.startsWith('seed:retired:')) return true;
+  }
+  return false;
+}

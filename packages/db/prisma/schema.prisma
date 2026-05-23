@@ -470,6 +470,41 @@ model TenantDomainIntake {
   @@schema("oweibo")
 }
 
+// T.7: per-tenant seed install log. content_hash discriminates revisions.
+model TenantSeedInstallLog {
+  tenantId         String    @map("tenant_id") @db.Uuid
+  seedId           String    @map("seed_id")
+  catalogVersion   String    @map("catalog_version")
+  contentHash      String    @map("content_hash")
+  installedAt      DateTime  @default(now()) @map("installed_at") @db.Timestamptz
+  retiredAt        DateTime? @map("retired_at") @db.Timestamptz
+  retirementReason String?   @map("retirement_reason")
+
+  @@id([tenantId, seedId])
+  @@map("tenant_seed_install_log")
+  @@schema("oweibo")
+}
+
+// T.7: pending catalog updates surfaced to tenant admins.
+model TenantCatalogPendingUpdate {
+  tenantId           String    @map("tenant_id") @db.Uuid
+  seedId             String    @map("seed_id")
+  fromCatalogVersion String    @map("from_catalog_version")
+  toCatalogVersion   String    @map("to_catalog_version")
+  fromContentHash    String?   @map("from_content_hash")
+  toContentHash      String    @map("to_content_hash")
+  changeKind         String    @map("change_kind")
+  previewPayload     Json      @map("preview_payload")
+  detectedAt         DateTime  @default(now()) @map("detected_at") @db.Timestamptz
+  resolvedAt         DateTime? @map("resolved_at") @db.Timestamptz
+  resolution         String?
+  resolvedBy         String?   @map("resolved_by") @db.Uuid
+
+  @@id([tenantId, seedId, toContentHash])
+  @@map("tenant_catalog_pending_updates")
+  @@schema("oweibo")
+}
+
 // T.6: platform-curated tenant templates (industry / role profiles).
 // Cross-tenant catalog. Tenants read; only platform_admin writes.
 model TenantTemplate {

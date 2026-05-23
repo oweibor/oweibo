@@ -142,9 +142,12 @@ class MemoryWarmer {
         // applied out-of-band by the seed-feedback worker when down_count crosses
         // its threshold; this filter is the runtime enforcement. Organic entries
         // (no seed: tag) and STM entries (no tags field) are unaffected.
+        // T.7: also drop `seed:retired:*` tags. Retired seeds are tombstoned by
+        // the catalog reconciler — kept in the tenant collection for audit but
+        // excluded from recall.
         const filtered = all.filter((r) => {
             const tags = r.entry.tags;
-            return !(0, seedTags_js_1.isSuppressedSeedTagged)(tags);
+            return !(0, seedTags_js_1.isSuppressedSeedTagged)(tags) && !(0, seedTags_js_1.isRetiredSeedTagged)(tags);
         });
         // Sort descending by score first so that when we deduplicate we always keep
         // the highest-scored occurrence of each summary.

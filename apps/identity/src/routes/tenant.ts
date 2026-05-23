@@ -418,6 +418,60 @@ router.get('/:tenantId/connectors',
   }
 );
 
+// T.7: catalog-update endpoints — admin reads the pending queue and resolves
+// individual rows. Resolution writes are audited.
+router.get('/:tenantId/catalog-updates',
+  requireScopes('tenant:settings:read'),
+  async (req, res) => {
+    const principal = req.principal as Principal;
+    const updates = await withTenantContext(principal, tx =>
+      tx.tenantCatalogPendingUpdate.findMany({
+        where: { tenantId: principal.ctx.tenantId, resolvedAt: null },
+        orderBy: { detectedAt: 'desc' },
+      })
+    );
+    res.json({ updates });
+  }
+);
+
+const ResolveCatalogUpdateSchema = z.object({
+  seedId: z.string().min(1).max(200),
+  toContentHash: z.string().min(1).max(128),
+  resolution: z.enum(['installed', 'dismissed']),
+});
+
+router.post('/:tenantId/catalog-updates/resolve',
+  requireScopes('tenant:settings:write'),
+  audit('tenant.catalog.update.resolve', { resourceType: 'tenant' }),
+  async (req, res) => {
+    const parsed = ResolveCatalogUpdateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'validation_error', issues: parsed.error.flatten() });
+      return;
+    }
+    const principal = req.principal as Principal;
+    const userId = principal.sub.startsWith('agent:') || principal.sub.startsWith('apikey:')
+      ? null
+      : principal.sub;
+    const updated = await withTenantContext(principal, tx =>
+      tx.tenantCatalogPendingUpdate.updateMany({
+        where: {
+          tenantId: principal.ctx.tenantId,
+          seedId: parsed.data.seedId,
+          toContentHash: parsed.data.toContentHash,
+          resolvedAt: null,
+        },
+        data: {
+          resolvedAt: new Date(),
+          resolution: parsed.data.resolution,
+          ...(userId ? { resolvedBy: userId } : {}),
+        },
+      })
+    );
+    res.json({ updated: updated.count });
+  }
+);
+
 // T.2.h: read-only org-graph endpoint backing the admin org page.
 // Returns nodes + outgoing edges as a flat list — graph rendering happens
 // client-side. No mutation endpoints in this slice; writes happen through

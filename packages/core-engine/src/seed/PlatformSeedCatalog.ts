@@ -14,6 +14,7 @@
  * as part of the package's `dist/seed/seed-memories` tree.
  */
 import { promises as fs } from 'fs';
+import { createHash } from 'crypto';
 import * as path from 'path';
 import type { MemoryKind } from '@oweibo/core-contracts';
 
@@ -31,6 +32,14 @@ export interface PlatformSeedMemory {
     readonly templates: readonly string[];
     readonly industries?: readonly string[];
   };
+  /**
+   * T.7: SHA-256 of the canonical seed payload — kind, summary, body,
+   * importance, and the *non-marker* tags. Excludes catalogVersion so a
+   * pure version-string bump does not look like a content revision. Set by
+   * normalize(); callers that construct an entry manually do not need to
+   * supply it.
+   */
+  readonly contentHash: string;
 }
 
 export interface CatalogFilter {
@@ -142,12 +151,48 @@ function normalize(e: PlatformSeedMemory): PlatformSeedMemory {
   // Always ensure the seed-marker tags are present and de-duplicated.
   const seedMarker = `seed:${e.seedId}`;
   const versionMarker = `seed:catalog:${e.catalogVersion}`;
+  // Hash the *non-marker* tags so re-running normalize() doesn't change the
+  // hash (otherwise loading the same entry twice would produce different
+  // marker sets and rotating hashes).
+  const nonMarkerTags = [...e.tags].filter(
+    (t) => !t.startsWith('seed:'),
+  );
   const tagSet = new Set<string>([...e.tags, seedMarker, versionMarker]);
   return {
     ...e,
     importance,
     tags: Array.from(tagSet),
+    contentHash: computeContentHash({
+      kind: e.kind,
+      summary: e.summary,
+      body: e.body,
+      importance,
+      tags: nonMarkerTags,
+    }),
   };
+}
+
+/**
+ * T.7: deterministic content hash for a seed payload. Canonical serialisation
+ * sorts the tags array so two callers that supply the same logical content
+ * in different tag order get the same hash. Excludes catalogVersion so a
+ * pure version-string bump does not look like a content revision.
+ */
+export function computeContentHash(payload: {
+  readonly kind: string;
+  readonly summary: string;
+  readonly body?: string;
+  readonly importance: number;
+  readonly tags: readonly string[];
+}): string {
+  const canonical = JSON.stringify({
+    kind: payload.kind,
+    summary: payload.summary,
+    body: payload.body ?? null,
+    importance: payload.importance,
+    tags: [...payload.tags].sort(),
+  });
+  return createHash('sha256').update(canonical).digest('hex');
 }
 
 function assertSeedIdsUnique(entries: readonly PlatformSeedMemory[]): void {

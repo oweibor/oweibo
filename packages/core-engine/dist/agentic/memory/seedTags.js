@@ -11,6 +11,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.isSeedTagged = isSeedTagged;
 exports.isSuppressedSeedTagged = isSuppressedSeedTagged;
+exports.isRetiredSeedTagged = isRetiredSeedTagged;
 /** True if any tag starts with `seed:` — a platform-curated seed entry. */
 function isSeedTagged(tags) {
     if (!tags || tags.length === 0)
@@ -27,6 +28,20 @@ function isSuppressedSeedTagged(tags) {
         return false;
     for (const t of tags) {
         if (typeof t === 'string' && t.startsWith('seed:suppressed:'))
+            return true;
+    }
+    return false;
+}
+/**
+ * T.7: true if any tag starts with `seed:retired:`. Retired seeds are
+ * tombstoned in the tenant collection by SeedCatalogReconciler — preserved
+ * for audit history but excluded from recall via this filter.
+ */
+function isRetiredSeedTagged(tags) {
+    if (!tags || tags.length === 0)
+        return false;
+    for (const t of tags) {
+        if (typeof t === 'string' && t.startsWith('seed:retired:'))
             return true;
     }
     return false;

@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PlatformSeedCatalog = void 0;
+exports.computeContentHash = computeContentHash;
 /**
  * T.2.a: PlatformSeedCatalog — registry of platform-curated seed memories.
  *
@@ -50,6 +51,7 @@ exports.PlatformSeedCatalog = void 0;
  * as part of the package's `dist/seed/seed-memories` tree.
  */
 const fs_1 = require("fs");
+const crypto_1 = require("crypto");
 const path = __importStar(require("path"));
 const IMPORTANCE_CAP = 0.6;
 class PlatformSeedCatalog {
@@ -154,12 +156,39 @@ function normalize(e) {
     // Always ensure the seed-marker tags are present and de-duplicated.
     const seedMarker = `seed:${e.seedId}`;
     const versionMarker = `seed:catalog:${e.catalogVersion}`;
+    // Hash the *non-marker* tags so re-running normalize() doesn't change the
+    // hash (otherwise loading the same entry twice would produce different
+    // marker sets and rotating hashes).
+    const nonMarkerTags = [...e.tags].filter((t) => !t.startsWith('seed:'));
     const tagSet = new Set([...e.tags, seedMarker, versionMarker]);
     return {
         ...e,
         importance,
         tags: Array.from(tagSet),
+        contentHash: computeContentHash({
+            kind: e.kind,
+            summary: e.summary,
+            body: e.body,
+            importance,
+            tags: nonMarkerTags,
+        }),
     };
+}
+/**
+ * T.7: deterministic content hash for a seed payload. Canonical serialisation
+ * sorts the tags array so two callers that supply the same logical content
+ * in different tag order get the same hash. Excludes catalogVersion so a
+ * pure version-string bump does not look like a content revision.
+ */
+function computeContentHash(payload) {
+    const canonical = JSON.stringify({
+        kind: payload.kind,
+        summary: payload.summary,
+        body: payload.body ?? null,
+        importance: payload.importance,
+        tags: [...payload.tags].sort(),
+    });
+    return (0, crypto_1.createHash)('sha256').update(canonical).digest('hex');
 }
 function assertSeedIdsUnique(entries) {
     const seen = new Set();

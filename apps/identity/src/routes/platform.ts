@@ -55,6 +55,21 @@ const router = Router();
 router.use(authenticate);
 router.use(requirePlatformAdmin);
 
+// ── T.6: tenant templates catalog ──────────────────────────────────────────
+// Read-only list endpoint used by the admin tenant-create dropdown and any
+// future programmatic consumer. Writes flow through SQL / a follow-up
+// admin form, not this route.
+router.get('/api/v1/platform/templates', async (req, res) => {
+  const principal = req.principal as Principal;
+  const templates = await withTenantContext(principal, tx =>
+    tx.tenantTemplate.findMany({
+      where: { active: true },
+      orderBy: [{ slug: 'asc' }],
+    })
+  );
+  res.json({ templates });
+});
+
 // ── Tenants ────────────────────────────────────────────────────────────────
 
 router.get('/api/v1/platform/tenants', async (req, res) => {

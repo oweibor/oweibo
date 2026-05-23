@@ -361,6 +361,24 @@ model TenantActionClassState {
   @@schema("oweibo")
 }
 
+// T.3.a: cross-tenant bandit priors aggregated nightly by
+// apps/platform-priors-aggregator. Cross-tenant catalog (no tenant_id);
+// reads are public to tenants, writes are gated by the platform_priors_writer
+// DB role (NOINHERIT) so only the aggregator can populate it.
+model PlatformBanditPrior {
+  scopeKind        String   @map("scope_kind")
+  scopeKey         String   @map("scope_key")
+  alphaSum         Decimal  @map("alpha_sum") @db.Decimal(14, 4)
+  betaSum          Decimal  @map("beta_sum") @db.Decimal(14, 4)
+  contributorCount Int      @map("contributor_count")
+  computedAt       DateTime @default(now()) @map("computed_at") @db.Timestamptz
+  catalogVersion   String   @map("catalog_version")
+
+  @@id([scopeKind, scopeKey])
+  @@map("platform_bandit_priors")
+  @@schema("oweibo")
+}
+
 // T.2.h: tenant org graph — nodes, edges, facts, stakeholder interests.
 model OrgNode {
   id          String   @id @default(uuid()) @db.Uuid

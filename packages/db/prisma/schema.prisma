@@ -670,7 +670,64 @@ model ActionProposal {
   createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
   expiresAt      DateTime  @map("expires_at") @db.Timestamptz
 
+  // S.0: plan membership. step_number=NULL means the proposal IS the plan-
+  // level approval (one row per plan when require_approval_for_plan).
+  planId                  String? @map("plan_id") @db.Uuid
+  stepNumber              Int?    @map("step_number")
+  dependsOnSteps          Int[]   @default([]) @map("depends_on_steps")
+  blastRadiusContribution Json?   @map("blast_radius_contribution")
+
   @@unique([tenantId, actionId])
   @@map("action_proposals")
+  @@schema("oweibo")
+}
+
+// S.0 (ttv-action-safety-v2): multi-action plans with shared approval state.
+// Single-action call sites construct a one-action plan implicitly so the
+// upstream API is backwards-compat.
+model ActionPlan {
+  id                      String    @id @default(uuid()) @db.Uuid
+  tenantId                String    @map("tenant_id") @db.Uuid
+  userId                  String?   @map("user_id") @db.Uuid
+  originatingTaskId       String?   @map("originating_task_id") @db.Uuid
+  title                   String
+  atomicity               String
+  state                   String    @default("pending")
+  worstReversibility      String    @map("worst_reversibility")
+  systems                 String[]  @default([])
+  dataDomains             String[]  @default([]) @map("data_domains")
+  estimatedCostUsdCents   Int       @default(0) @map("estimated_cost_usd_cents")
+  estimatedReachUserCount Int       @default(0) @map("estimated_reach_user_count")
+  planProposalId          String?   @map("plan_proposal_id") @db.Uuid
+  createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  startedAt               DateTime? @map("started_at") @db.Timestamptz
+  completedAt             DateTime? @map("completed_at") @db.Timestamptz
+
+  @@map("action_plans")
+  @@schema("oweibo")
+}
+
+// S.0: append-only audit tree linking every decision upstream of an action.
+// Table is partitioned by recorded_at in Postgres; Prisma sees the partitioned
+// parent as a normal model. (id, recorded_at) is the composite PK so Postgres
+// can route inserts to the right monthly child partition.
+model ActionLineage {
+  id           String   @default(uuid()) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  planId       String   @map("plan_id") @db.Uuid
+  parentNodeId String?  @map("parent_node_id") @db.Uuid
+  kind         String
+  producerType String   @map("producer_type")
+  producerId   String   @map("producer_id")
+  summary      String
+  detail       Json
+  traceId      String?  @map("trace_id")
+  recordedAt   DateTime @default(now()) @map("recorded_at") @db.Timestamptz
+
+  @@id([id, recordedAt])
+  @@index([tenantId, recordedAt])
+  @@index([planId, recordedAt])
+  @@index([parentNodeId])
+  @@map("action_lineage")
   @@schema("oweibo")
 }

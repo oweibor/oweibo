@@ -52,6 +52,11 @@ export * from './lesson.js';
 export * from './action/ActionClass.js';
 export * from './action/IActionGate.js';
 
+// ── S.0 (action-safety-v2): plan-level approval + lineage + blast radius ─────
+export * from './action/BlastRadius.js';
+export * from './action/ActionPlan.js';
+export * from './action/ActionLineage.js';
+
 // ── T.2.f: connector catalog + tenant-instance contracts ─────────────────────
 export * from './connector/IConnector.js';
 

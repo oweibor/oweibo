@@ -122,6 +122,15 @@ export interface ActionTrustLadderOptions {
   isShadowOnly?: () => boolean;
   /** Optional override for clock; tests pin time. */
   now?: () => Date;
+  /**
+   * S.1: optional SLA attacher. When supplied AND the proposal lands in
+   * `require_approval` mode, the gate calls `attachSla(proposalId,
+   * tenantId, actionClass)` after writing the proposal. Failures are
+   * swallowed so the gate decision is never blocked by SLA-side issues.
+   */
+  slaAttacher?: {
+    attachSla(proposalId: string, tenantId: string, actionClass: string): Promise<void>;
+  };
 }
 
 // ── Service ────────────────────────────────────────────────────────────────
@@ -130,6 +139,7 @@ export class ActionTrustLadder implements IActionGate {
   private readonly isEnabled: () => boolean;
   private readonly isShadowOnly: () => boolean;
   private readonly now: () => Date;
+  private readonly slaAttacher: ActionTrustLadderOptions['slaAttacher'];
 
   constructor(
     private readonly pool: Pool,
@@ -138,6 +148,7 @@ export class ActionTrustLadder implements IActionGate {
     this.isEnabled = opts.isEnabled ?? defaultEnabled;
     this.isShadowOnly = opts.isShadowOnly ?? defaultShadowOnly;
     this.now = opts.now ?? (() => new Date());
+    this.slaAttacher = opts.slaAttacher;
   }
 
   async gate(ctx: ActionContext): Promise<GateDecision> {
@@ -158,6 +169,18 @@ export class ActionTrustLadder implements IActionGate {
 
     // dry_run / shadow / require_approval — write a proposal row.
     const proposalId = await this.recordProposal(ctx, resolved.mode);
+
+    // S.1: when a require_approval proposal is recorded, attach an SLA so
+    // the lifecycle worker can drive notifications/escalations/expiry.
+    // Best-effort — never block the gate path. Skipped in shadow-only mode
+    // since the action will execute anyway.
+    if (resolved.mode === 'require_approval' && !shadowOnly && this.slaAttacher) {
+      try {
+        await this.slaAttacher.attachSla(proposalId, ctx.tenantId, ctx.actionClass);
+      } catch {
+        // SLA attach must never break the gate decision.
+      }
+    }
 
     if (shadowOnly) {
       return { mode: 'execute' };

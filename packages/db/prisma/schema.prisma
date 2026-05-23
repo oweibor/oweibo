@@ -731,3 +731,81 @@ model ActionLineage {
   @@map("action_lineage")
   @@schema("oweibo")
 }
+
+// S.1 (ttv-action-safety-v2): per-tenant per-class approval SLA policy.
+// action_class = '*' is the tenant default; specific classes override it.
+model ApprovalSlaPolicy {
+  id                        String   @id @default(uuid()) @db.Uuid
+  tenantId                  String   @map("tenant_id") @db.Uuid
+  actionClass               String   @map("action_class")
+  initialNotifyAfterSeconds Int      @map("initial_notify_after_seconds")
+  escalateAfterSeconds      Int[]    @default([]) @map("escalate_after_seconds")
+  hardExpireAfterSeconds    Int      @map("hard_expire_after_seconds")
+  approverResolution        String   @map("approver_resolution")
+  approverConfig            Json     @default("{}") @map("approver_config")
+  notificationChannels      Json     @default("[]") @map("notification_channels")
+  quietHours                Json?    @map("quiet_hours")
+  createdBy                 String?  @map("created_by") @db.Uuid
+  createdAt                 DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt                 DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  @@unique([tenantId, actionClass])
+  @@map("approval_sla_policies")
+  @@schema("oweibo")
+}
+
+// S.1: per-proposal FSM state. One row per pending require_approval proposal;
+// the ApprovalLifecycleWorker drives next_action_at → escalate or expire.
+model ApprovalSlaState {
+  proposalId              String    @id @map("proposal_id") @db.Uuid
+  tenantId                String    @map("tenant_id") @db.Uuid
+  policyId                String?   @map("policy_id") @db.Uuid
+  currentStage            Int       @default(0) @map("current_stage")
+  nextActionAt            DateTime  @map("next_action_at") @db.Timestamptz
+  hardExpireAt            DateTime  @map("hard_expire_at") @db.Timestamptz
+  notifiedApprovers       String[]  @default([]) @map("notified_approvers") @db.Uuid
+  escalationCount         Int       @default(0) @map("escalation_count")
+  lastNotificationAt      DateTime? @map("last_notification_at") @db.Timestamptz
+  lastNotificationDetails Json?     @map("last_notification_details")
+  createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([nextActionAt])
+  @@map("approval_sla_state")
+  @@schema("oweibo")
+}
+
+// S.1: audit trail of dispatched notifications. Append-only.
+model NotificationDispatchLog {
+  id             String    @id @default(uuid()) @db.Uuid
+  tenantId       String    @map("tenant_id") @db.Uuid
+  proposalId     String?   @map("proposal_id") @db.Uuid
+  channelKind    String    @map("channel_kind")
+  recipient      String
+  fireEvent      String    @map("fire_event")
+  deliveryStatus String    @map("delivery_status")
+  attemptCount   Int       @default(0) @map("attempt_count")
+  lastError      String?   @map("last_error")
+  dispatchedAt   DateTime? @map("dispatched_at") @db.Timestamptz
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([proposalId, createdAt(sort: Desc)])
+  @@map("notification_dispatch_log")
+  @@schema("oweibo")
+}
+
+// S.1: bell-icon feed for admin-web.
+model InAppNotification {
+  id              String    @id @default(uuid()) @db.Uuid
+  tenantId        String    @map("tenant_id") @db.Uuid
+  recipientUserId String    @map("recipient_user_id") @db.Uuid
+  proposalId      String?   @map("proposal_id") @db.Uuid
+  title           String
+  body            String?
+  linkPath        String?   @map("link_path")
+  unread          Boolean   @default(true)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  readAt          DateTime? @map("read_at") @db.Timestamptz
+
+  @@map("in_app_notifications")
+  @@schema("oweibo")
+}

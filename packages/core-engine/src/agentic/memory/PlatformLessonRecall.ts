@@ -122,6 +122,15 @@ export class PlatformLessonRecall implements IPlatformLessonRecall {
       params.push(q.slotId);
       where += ` AND pl.slot_id = $${params.length}`;
     }
+    // T.8: region gate. NULL home_region rows are region-neutral fallback
+    // (pre-T.8 / platform curated) and always reachable; otherwise the
+    // lesson's region must equal the caller's home_region. When the caller
+    // omits homeRegion the filter is skipped — used for cross-region intake
+    // override and for legacy callers that haven't been region-aware-wired.
+    if (q.homeRegion) {
+      params.push(q.homeRegion);
+      where += ` AND (pl.home_region IS NULL OR pl.home_region = $${params.length})`;
+    }
     params.push(this.scanLimit);
     const result = await client.query<{
       summary: string;

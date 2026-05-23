@@ -368,13 +368,16 @@ model TenantActionClassState {
 model PlatformBanditPrior {
   scopeKind        String   @map("scope_kind")
   scopeKey         String   @map("scope_key")
+  // T.8: home_region is part of the composite PK so per-region rows coexist
+  // with the platform-neutral '*' fallback row.
+  homeRegion       String   @default("*") @map("home_region")
   alphaSum         Decimal  @map("alpha_sum") @db.Decimal(14, 4)
   betaSum          Decimal  @map("beta_sum") @db.Decimal(14, 4)
   contributorCount Int      @map("contributor_count")
   computedAt       DateTime @default(now()) @map("computed_at") @db.Timestamptz
   catalogVersion   String   @map("catalog_version")
 
-  @@id([scopeKind, scopeKey])
+  @@id([scopeKind, scopeKey, homeRegion])
   @@map("platform_bandit_priors")
   @@schema("oweibo")
 }
@@ -508,18 +511,18 @@ model TenantCatalogPendingUpdate {
 // T.6: platform-curated tenant templates (industry / role profiles).
 // Cross-tenant catalog. Tenants read; only platform_admin writes.
 model TenantTemplate {
-  slug             String   @id
-  displayName      String   @map("display_name")
-  description      String
-  industries       String[]
-  defaultFeatures  Json     @default("{}") @map("default_features")
-  defaultQuotas    Json     @default("{}") @map("default_quotas")
-  seedMemoryTags   String[] @map("seed_memory_tags")
-  seedSkillSet     String   @default("platform-default") @map("seed_skill_set")
-  goalTemplateSet  String   @default("platform-default") @map("goal_template_set")
-  active           Boolean  @default(true)
-  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt        DateTime @default(now()) @map("updated_at") @db.Timestamptz
+  slug            String   @id
+  displayName     String   @map("display_name")
+  description     String
+  industries      String[]
+  defaultFeatures Json     @default("{}") @map("default_features")
+  defaultQuotas   Json     @default("{}") @map("default_quotas")
+  seedMemoryTags  String[] @map("seed_memory_tags")
+  seedSkillSet    String   @default("platform-default") @map("seed_skill_set")
+  goalTemplateSet String   @default("platform-default") @map("goal_template_set")
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime @default(now()) @map("updated_at") @db.Timestamptz
 
   @@map("tenant_templates")
   @@schema("oweibo")

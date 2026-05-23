@@ -1,16 +1,20 @@
 /**
- * T.3.a: PriorsAggregator — nightly cron computes platform-wide bandit
+ * T.3.a / T.8: PriorsAggregator — nightly cron computes platform-wide bandit
  * priors from existing per-tenant arms with K-anonymity enforced.
  *
  * Algorithm (per prompt-slot scope):
  *   1. SELECT alpha_sum, beta_sum, contributor_count grouped by
- *      (role, slot_id, channel) over arms whose contributing tenants
- *      had completed tasks in the last 90 days.
+ *      (role, slot_id, channel, home_region) over arms whose contributing
+ *      tenants had completed tasks in the last 90 days.
  *   2. HAVING contributor_count >= K_ANONYMITY (default 5).
  *   3. Re-normalise alpha_sum + beta_sum so the prior strength is capped
  *      at PRIOR_STRENGTH_CAP (default 50). Prevents a saturated prior from
  *      dominating a tenant's first ~50 observations.
- *   4. UPSERT into oweibo.platform_bandit_priors.
+ *   4. UPSERT into oweibo.platform_bandit_priors keyed on
+ *      (scope_kind, scope_key, home_region).
+ *   5. Separately, run the global aggregation (no region GROUP BY) and
+ *      upsert as home_region='*' when the global pool clears K — used as
+ *      fallback when a tenant's region has no row.
  *
  * Mode coupling: ttv.md says the aggregator declares operation type
  * 'bandit_priors_aggregation' and is disabled at Mode <= 3. We accept an
@@ -54,6 +58,8 @@ const DEFAULT_WINDOW_DAYS = 90;
 interface AggregatedRow {
   scope_kind: 'prompt_slot' | 'model_tier';
   scope_key: string;
+  /** T.8: '*' for the platform-neutral global pool; concrete region otherwise. */
+  home_region: string;
   alpha_sum: number;
   beta_sum: number;
   contributor_count: number;
@@ -89,8 +95,37 @@ export class PriorsAggregator {
       await client.query('BEGIN');
       await client.query(`SET LOCAL ROLE platform_priors_writer`).catch(() => undefined);
 
-      // Aggregate raw per-(role, slot, channel) sums.
-      const aggregated = await client.query<{
+      // T.8: per-region aggregation. Each tenant's home_region pins the row
+      // it contributes to. EU-only tenants only feed the eu-* rows; the
+      // global '*' row is computed separately below.
+      const perRegion = await client.query<{
+        scope_key: string;
+        home_region: string;
+        alpha_sum: string;
+        beta_sum: string;
+        contributor_count: string;
+      }>(
+        `SELECT
+           pv.role || ':' || ba.slot_id || ':' || ba.channel AS scope_key,
+           COALESCE(tn.home_region, '*')                      AS home_region,
+           SUM(ba.alpha)::text                                AS alpha_sum,
+           SUM(ba.beta)::text                                 AS beta_sum,
+           COUNT(DISTINCT t.tenant_id)::text                  AS contributor_count
+         FROM oweibo.bandit_arms ba
+         JOIN oweibo.prompt_versions pv ON pv.hash = ba.prompt_hash
+         JOIN oweibo.bandit_arm_events bae
+              ON bae.slot_id = ba.slot_id AND bae.arm_id = ba.arm_id
+         JOIN oweibo.tasks t ON t.id::text = bae.task_id
+         JOIN oweibo.tenants tn ON tn.id = t.tenant_id
+         WHERE t.completed_at > NOW() - ($1 || ' days')::INTERVAL
+         GROUP BY pv.role, ba.slot_id, ba.channel, tn.home_region`,
+        [String(this.windowDays)],
+      );
+
+      // Global pool — same aggregation without the region GROUP BY. The
+      // resulting rows are written under home_region='*' as fallback for
+      // tenants whose specific region didn't clear K.
+      const global = await client.query<{
         scope_key: string;
         alpha_sum: string;
         beta_sum: string;
@@ -111,13 +146,27 @@ export class PriorsAggregator {
         [String(this.windowDays)],
       );
 
-      const rows: AggregatedRow[] = aggregated.rows.map((r) => ({
-        scope_kind: 'prompt_slot',
-        scope_key: r.scope_key,
-        alpha_sum: Number(r.alpha_sum),
-        beta_sum: Number(r.beta_sum),
-        contributor_count: Number(r.contributor_count),
-      }));
+      const rows: AggregatedRow[] = [];
+      for (const r of perRegion.rows) {
+        rows.push({
+          scope_kind: 'prompt_slot',
+          scope_key: r.scope_key,
+          home_region: r.home_region || '*',
+          alpha_sum: Number(r.alpha_sum),
+          beta_sum: Number(r.beta_sum),
+          contributor_count: Number(r.contributor_count),
+        });
+      }
+      for (const r of global.rows) {
+        rows.push({
+          scope_kind: 'prompt_slot',
+          scope_key: r.scope_key,
+          home_region: '*',
+          alpha_sum: Number(r.alpha_sum),
+          beta_sum: Number(r.beta_sum),
+          contributor_count: Number(r.contributor_count),
+        });
+      }
 
       const eligible: AggregatedRow[] = [];
       let filtered = 0;
@@ -129,14 +178,16 @@ export class PriorsAggregator {
         }
       }
 
-      // Upsert eligible rows.
+      // Upsert eligible rows. ON CONFLICT now keys on (scope_kind, scope_key,
+      // home_region).
       let upserted = 0;
       for (const row of eligible) {
         await client.query(
           `INSERT INTO oweibo.platform_bandit_priors
-             (scope_kind, scope_key, alpha_sum, beta_sum, contributor_count, catalog_version, computed_at)
-           VALUES ($1, $2, $3, $4, $5, $6, NOW())
-           ON CONFLICT (scope_kind, scope_key) DO UPDATE
+             (scope_kind, scope_key, home_region, alpha_sum, beta_sum,
+              contributor_count, catalog_version, computed_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+           ON CONFLICT (scope_kind, scope_key, home_region) DO UPDATE
              SET alpha_sum         = EXCLUDED.alpha_sum,
                  beta_sum          = EXCLUDED.beta_sum,
                  contributor_count = EXCLUDED.contributor_count,
@@ -145,6 +196,7 @@ export class PriorsAggregator {
           [
             row.scope_kind,
             row.scope_key,
+            row.home_region,
             row.alpha_sum,
             row.beta_sum,
             row.contributor_count,
@@ -154,17 +206,28 @@ export class PriorsAggregator {
         upserted += 1;
       }
 
-      // Delete rows that are no longer in the eligible set.
-      const eligibleKeys = new Set(eligible.map((r) => `${r.scope_kind}:${r.scope_key}`));
-      const allRows = await client.query<{ scope_kind: string; scope_key: string }>(
-        `SELECT scope_kind, scope_key FROM oweibo.platform_bandit_priors WHERE scope_kind = 'prompt_slot'`,
+      // Delete rows that are no longer in the eligible set. Composite key
+      // now includes home_region.
+      const eligibleKeys = new Set(
+        eligible.map((r) => `${r.scope_kind}:${r.scope_key}:${r.home_region}`),
+      );
+      const allRows = await client.query<{
+        scope_kind: string;
+        scope_key: string;
+        home_region: string;
+      }>(
+        `SELECT scope_kind, scope_key, home_region
+           FROM oweibo.platform_bandit_priors
+          WHERE scope_kind = 'prompt_slot'`,
       );
       let deleted = 0;
       for (const row of allRows.rows) {
-        if (!eligibleKeys.has(`${row.scope_kind}:${row.scope_key}`)) {
+        const key = `${row.scope_kind}:${row.scope_key}:${row.home_region}`;
+        if (!eligibleKeys.has(key)) {
           await client.query(
-            `DELETE FROM oweibo.platform_bandit_priors WHERE scope_kind = $1 AND scope_key = $2`,
-            [row.scope_kind, row.scope_key],
+            `DELETE FROM oweibo.platform_bandit_priors
+              WHERE scope_kind = $1 AND scope_key = $2 AND home_region = $3`,
+            [row.scope_kind, row.scope_key, row.home_region],
           );
           deleted += 1;
         }

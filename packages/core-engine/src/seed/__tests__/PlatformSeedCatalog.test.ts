@@ -134,4 +134,46 @@ describe('PlatformSeedCatalog.forTenant', () => {
     ]);
     expect(cat.forTenant({ templateSlug: 'x', industry: 'healthcare' })).toHaveLength(0);
   });
+
+  // T.8 — region filter
+  it('region filter is skipped when caller omits homeRegion (today\'s behaviour)', () => {
+    const cat = PlatformSeedCatalog.fromEntries([
+      makeEntry({ seedId: 'a', applicableTo: { templates: ['*'], regions: ['eu-*'] } }),
+    ]);
+    // No homeRegion in filter → region-tagged entry still matches.
+    expect(cat.forTenant({ templateSlug: 'x' })).toHaveLength(1);
+  });
+
+  it('region filter matches concrete tenant region', () => {
+    const cat = PlatformSeedCatalog.fromEntries([
+      makeEntry({ seedId: 'us', applicableTo: { templates: ['*'], regions: ['us-east-1'] } }),
+      makeEntry({ seedId: 'eu', applicableTo: { templates: ['*'], regions: ['eu-central-1'] } }),
+    ]);
+    const out = cat.forTenant({ templateSlug: 'x', homeRegion: 'us-east-1' });
+    expect(out.map((e) => e.seedId)).toEqual(['us']);
+  });
+
+  it('region filter matches glob (eu-* matches eu-central-1)', () => {
+    const cat = PlatformSeedCatalog.fromEntries([
+      makeEntry({ seedId: 'eu', applicableTo: { templates: ['*'], regions: ['eu-*'] } }),
+    ]);
+    expect(cat.forTenant({ templateSlug: 'x', homeRegion: 'eu-central-1' })).toHaveLength(1);
+    expect(cat.forTenant({ templateSlug: 'x', homeRegion: 'us-east-1' })).toHaveLength(0);
+  });
+
+  it('neutral region marker "*" matches any tenant', () => {
+    const cat = PlatformSeedCatalog.fromEntries([
+      makeEntry({ seedId: 'neutral', applicableTo: { templates: ['*'], regions: ['*'] } }),
+    ]);
+    expect(cat.forTenant({ templateSlug: 'x', homeRegion: 'eu-central-1' })).toHaveLength(1);
+    expect(cat.forTenant({ templateSlug: 'x', homeRegion: 'us-east-1' })).toHaveLength(1);
+  });
+
+  it('region-locked entry is unreachable from non-matching region (privacy invariant)', () => {
+    const cat = PlatformSeedCatalog.fromEntries([
+      makeEntry({ seedId: 'eu-locked', applicableTo: { templates: ['*'], regions: ['eu-*'] } }),
+    ]);
+    expect(cat.forTenant({ templateSlug: 'x', homeRegion: 'us-east-1' })).toHaveLength(0);
+    expect(cat.forTenant({ templateSlug: 'x', homeRegion: 'ap-southeast-2' })).toHaveLength(0);
+  });
 });

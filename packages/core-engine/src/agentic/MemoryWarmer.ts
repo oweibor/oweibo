@@ -105,6 +105,11 @@ export class MemoryWarmer {
     projectId?:      string;
     maxTokens?:      number;  // reserved for PromptBudgetEnforcer — unused here
     topK?:           number;
+    /** T.8: tenant home_region. Threaded into the platform-lesson channel
+     *  so EU tenants don't see US-only lessons (and vice versa). Caller
+     *  omits this when the region_aware_intake flag is off; the recall
+     *  service then skips the region filter entirely. */
+    homeRegion?:     string;
   }): Promise<WarmResult[]> {
     const {
       tenantId,
@@ -112,6 +117,7 @@ export class MemoryWarmer {
       taskDescription,
       projectId,
       topK = 6,
+      homeRegion,
     } = params;
 
     // ── Four parallel recall channels ─────────────────────────────────────────
@@ -139,7 +145,11 @@ export class MemoryWarmer {
       // recall service is injected — feature-flagged in the runtime wire. Recall
       // failures degrade silently to an empty channel; never block the warmer.
       this.platformLessons
-        ? this.platformLessons.recall({ query: taskDescription, topK }).catch(() => [] as readonly PlatformLessonHit[])
+        ? this.platformLessons.recall({
+            query: taskDescription,
+            topK,
+            ...(homeRegion !== undefined ? { homeRegion } : {}),
+          }).catch(() => [] as readonly PlatformLessonHit[])
         : Promise.resolve([] as readonly PlatformLessonHit[]),
     ]);
 

@@ -31,6 +31,16 @@ export interface PlatformLessonRecallQuery {
   readonly role?: string;
   readonly slotId?: string;
   readonly topK?: number;
+  /**
+   * T.8: the calling tenant's canonical home_region (e.g. `us-east-1`).
+   * When present, the WHERE clause restricts to `home_region = $X OR
+   * home_region IS NULL` — region-neutral lessons (pre-T.8 / platform
+   * curated) are always reachable; cross-region lessons are not. When
+   * absent the filter is skipped, matching the pre-T.8 behaviour. This
+   * field is NOT a tenant identifier — it is a coarse geographic bucket
+   * shared by many tenants and safe to log.
+   */
+  readonly homeRegion?: string;
 }
 
 export interface IPlatformLessonRecall {

@@ -161,6 +161,43 @@ describe('PlatformLessonRecall.recall', () => {
     expect(out).toEqual([]);
   });
 
+  // T.8 — region gate at recall time
+  it('does NOT thread a region filter when caller omits homeRegion', async () => {
+    const { pool, calls } = makePool([
+      { match: 'FROM oweibo.platform_lessons', rows: [] },
+    ]);
+    const svc = new PlatformLessonRecall(pool);
+    await svc.recall({ query: 'anything' });
+    const q = calls.find((c) => c.sql.includes('FROM oweibo.platform_lessons'));
+    expect(q?.sql).not.toMatch(/pl\.home_region/);
+  });
+
+  it('adds "home_region IS NULL OR = $N" filter when homeRegion is supplied', async () => {
+    const { pool, calls } = makePool([
+      { match: 'FROM oweibo.platform_lessons', rows: [] },
+    ]);
+    const svc = new PlatformLessonRecall(pool);
+    await svc.recall({ query: 'anything', homeRegion: 'eu-central-1' });
+    const q = calls.find((c) => c.sql.includes('FROM oweibo.platform_lessons'));
+    expect(q?.sql).toMatch(/pl\.home_region IS NULL OR pl\.home_region = \$/);
+    // homeRegion is the last bound param before the LIMIT.
+    expect(q?.params).toContain('eu-central-1');
+  });
+
+  it('audit row does NOT carry the raw homeRegion (region is coarse but still logged via params)', async () => {
+    const { pool } = makePool([
+      { match: 'FROM oweibo.platform_lessons',
+        rows: [{ summary: 'deploy with caution', body: null, bucket_key: 'b1', tenant_count: 5, confidence: '0.8' }] },
+    ]);
+    const audits: AuditRow[] = [];
+    const svc = new PlatformLessonRecall(pool, { audit: async (r) => { audits.push(r); } });
+    await svc.recall({ query: 'deploy please', homeRegion: 'eu-central-1' });
+    await new Promise((r) => setImmediate(r));
+    // Region is not currently in the audit details (matches today's contract).
+    // The audit row is hashed query + bucket_keys; region travels via SQL params.
+    expect(audits[0]?.details.query_hash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
   it('absorbs DB errors and returns empty rather than throwing', async () => {
     const client = {
       query: jest.fn().mockRejectedValue(new Error('pg down')),

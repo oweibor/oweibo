@@ -50,7 +50,7 @@ export interface ISeedMemoryWriter {
 
 /** Catalog loader signature. Tests pass an in-memory catalog. */
 export interface ISeedCatalogProvider {
-  forTenant(filter: { templateSlug: string; industry?: string }): SeedMemoryRequest[];
+  forTenant(filter: { templateSlug: string; industry?: string; homeRegion?: string }): SeedMemoryRequest[];
 }
 
 export interface SeedMemoriesStepOptions {
@@ -95,6 +95,10 @@ export class SeedMemoriesStep implements IBootstrapStep {
     const seeds = this.opts.catalog.forTenant({
       templateSlug: ctx.templateSlug,
       ...(industry ? { industry } : {}),
+      // T.8: forward tenant home_region so region-tagged seeds filter
+      // correctly. ctx.homeRegion is undefined unless the worker-level
+      // region_aware_intake flag is on.
+      ...(ctx.homeRegion !== undefined ? { homeRegion: ctx.homeRegion } : {}),
     });
     if (seeds.length === 0) {
       ctx.logger.info('SeedMemoriesStep: catalog returned no entries for this tenant', {

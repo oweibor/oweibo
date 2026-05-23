@@ -31,6 +31,12 @@ export interface PlatformSeedMemory {
     /** Template slugs that should receive this seed. `'*'` = all tenants. */
     readonly templates: readonly string[];
     readonly industries?: readonly string[];
+    /**
+     * T.8: optional region filter. Accepts concrete regions (`us-east-1`),
+     * region globs (`us-*`, `eu-*`), or the neutral marker `*`. Omitted /
+     * empty = region-agnostic (today's behaviour).
+     */
+    readonly regions?: readonly string[];
   };
   /**
    * T.7: SHA-256 of the canonical seed payload — kind, summary, body,
@@ -45,6 +51,8 @@ export interface PlatformSeedMemory {
 export interface CatalogFilter {
   readonly templateSlug: string;
   readonly industry?: string;
+  /** T.8: tenant home_region. When supplied, applicableTo.regions is consulted. */
+  readonly homeRegion?: string;
 }
 
 const IMPORTANCE_CAP = 0.6;
@@ -106,6 +114,14 @@ export class PlatformSeedCatalog {
       if (industries && industries.length > 0) {
         if (!filter.industry) return false;
         if (!industries.includes(filter.industry)) return false;
+      }
+      // T.8: region filter. Only applied when the caller passes homeRegion;
+      // when omitted, region-tagged entries match too (preserves the byte-
+      // identical-to-today behaviour when the region_aware_intake flag is
+      // off, since the caller simply doesn't pass homeRegion in that case).
+      const regions = e.applicableTo.regions;
+      if (regions && regions.length > 0 && filter.homeRegion !== undefined) {
+        if (!regionMatches(regions, filter.homeRegion)) return false;
       }
       return true;
     });
@@ -203,4 +219,30 @@ function assertSeedIdsUnique(entries: readonly PlatformSeedMemory[]): void {
     }
     seen.add(e.seedId);
   }
+}
+
+/**
+ * T.8: match a catalog entry's `applicableRegions` against the tenant's
+ * home_region. Kept here (not via RegionResolver import) to keep this
+ * module dependency-light — the matching rules are intentionally tiny.
+ *
+ *  - `*` always matches.
+ *  - Exact match: `applicableRegion` equals `homeRegion`.
+ *  - Glob match: `applicableRegion` ends in `-*` and homeRegion has the
+ *    same prefix (e.g. `eu-*` matches `eu-central-1`).
+ */
+function regionMatches(
+  applicableRegions: readonly string[],
+  homeRegion: string | undefined,
+): boolean {
+  for (const r of applicableRegions) {
+    if (r === '*') return true;
+    if (!homeRegion) continue;
+    if (r === homeRegion) return true;
+    if (r.endsWith('-*')) {
+      const prefix = r.slice(0, -1); // 'eu-*' → 'eu-'
+      if (homeRegion.startsWith(prefix)) return true;
+    }
+  }
+  return false;
 }

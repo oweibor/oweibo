@@ -24,6 +24,10 @@ export interface IBootstrapStepContext {
    *  participate in the A/B trial (SeedMemoriesStep) read this to decide
    *  whether to execute. Defaults to 'seeded' for tenants created before T.5.e. */
   readonly seedCohort: 'seeded' | 'control' | 'exempt';
+  /** T.8: tenant home_region (e.g. `us-east-1`). Only populated when the
+   *  platform-wide region_aware_intake flag is enabled; otherwise undefined
+   *  so consumers can fall through to the byte-identical-to-today behaviour. */
+  readonly homeRegion?: string;
 }
 
 /** Terminal status returned by a step. */

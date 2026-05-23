@@ -49,6 +49,10 @@ export interface BootstrapWorkerOptions {
   logger?: IBootstrapStepLogger;
   /** For tests — override the step pipeline. */
   pipeline?: readonly IBootstrapStep[];
+  /** T.8: platform-wide region_aware_intake flag. When true, the worker
+   *  loads the tenant's home_region and threads it through the step ctx;
+   *  steps consult ctx.homeRegion to filter region-tagged content. */
+  regionAwareIntake?: boolean;
 }
 
 interface BootstrapRow {
@@ -71,6 +75,7 @@ export class BootstrapWorker {
   private readonly maxAttempts: number;
   private readonly logger: IBootstrapStepLogger;
   private readonly pipeline: readonly IBootstrapStep[];
+  private readonly regionAwareIntake: boolean;
 
   constructor(
     private readonly pool: Pool,
@@ -80,6 +85,7 @@ export class BootstrapWorker {
     this.maxAttempts = opts.maxAttemptsPerStep ?? DEFAULT_MAX_ATTEMPTS;
     this.logger = opts.logger ?? defaultLogger;
     this.pipeline = opts.pipeline ?? STEP_PIPELINE;
+    this.regionAwareIntake = opts.regionAwareIntake ?? false;
   }
 
   /**
@@ -100,6 +106,13 @@ export class BootstrapWorker {
     await this.transitionState(tenantId, 'running', { incrementAttempts: true });
 
     const features = await this.loadFeatures(tenantId);
+    // T.8: when the platform-wide flag is on, load tenant home_region so
+    // region-tagged content can be filtered at install time. The lookup is
+    // a single indexed read; failures degrade to undefined (= region-
+    // agnostic, today's behaviour).
+    const homeRegion = this.regionAwareIntake
+      ? await this.loadHomeRegion(tenantId).catch(() => undefined)
+      : undefined;
 
     let failed = false;
     let lastError: string | undefined;
@@ -124,6 +137,9 @@ export class BootstrapWorker {
         features,
         // T.5.e: cohort defaults to 'seeded' for rows that predate the column.
         seedCohort: bootstrap.seed_cohort ?? 'seeded',
+        // T.8: only populated when the flag is on; undefined preserves
+        // today's region-agnostic semantics at the step layer.
+        ...(homeRegion !== undefined ? { homeRegion } : {}),
       };
       let status: StepStatus;
       let err: string | undefined;
@@ -172,6 +188,19 @@ export class BootstrapWorker {
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
       throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async loadHomeRegion(tenantId: string): Promise<string | undefined> {
+    const client = await this.pool.connect();
+    try {
+      const r = await client.query<{ home_region: string }>(
+        `SELECT home_region FROM oweibo.tenants WHERE id = $1::uuid`,
+        [tenantId],
+      );
+      return r.rows[0]?.home_region ?? undefined;
     } finally {
       client.release();
     }

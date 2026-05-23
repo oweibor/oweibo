@@ -31,7 +31,12 @@
  * Phase 2b: Migrated from legacy LongTermMemoryStore to ISemanticMemoryStore.
  */
 
-import type { ISemanticMemoryStore, RankedMemoryEntry } from '@oweibo/core-contracts';
+import type {
+  ISemanticMemoryStore,
+  RankedMemoryEntry,
+  IPlatformLessonRecall,
+  PlatformLessonHit,
+} from '@oweibo/core-contracts';
 import type { ShortTermMemoryStore, STMEntry } from './ShortTermMemoryStore.js';
 import { isSuppressedSeedTagged } from './memory/seedTags.js';
 
@@ -44,13 +49,32 @@ const PROJECT_BOOST = 0.08;
 const STM_BOOST     = 0.05;
 const STM_SCALE     = 0.60;  // maps cosine [0,1] onto the LTM composite range
 const STM_OFFSET    = 0.25;  // recency credit for in-session entries
+// T.4: platform-lesson channel — intentionally below the agent boost so any
+// organic memory the tenant has accumulated outranks generic platform
+// guidance once present.
+const PLATFORM_LESSON_SCALE  = 0.55;
+const PLATFORM_LESSON_OFFSET = 0.10;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface WarmResult {
-  entry:  RankedMemoryEntry | STMEntry;
+  entry:  RankedMemoryEntry | STMEntry | PlatformLessonEntry;
   score:  number;
-  source: 'ltm' | 'stm';
+  source: 'ltm' | 'stm' | 'platform';
+}
+
+/**
+ * T.4: a platform-lesson hit reshaped for the WarmResult union. The
+ * MemoryWarmer never re-attributes the lesson to a tenant; the [platform]
+ * marker is added downstream in prompt assembly.
+ */
+export interface PlatformLessonEntry {
+  readonly id: string;
+  readonly summary: string;
+  readonly body?: string;
+  /** Tagged so the suppression filter still treats it like any other entry. */
+  readonly tags: readonly string[];
+  readonly source: 'platform-lesson';
 }
 
 // ─── Warmer ───────────────────────────────────────────────────────────────────
@@ -59,6 +83,8 @@ export class MemoryWarmer {
   constructor(
     private readonly ltm: ISemanticMemoryStore,
     private readonly stm: ShortTermMemoryStore,
+    /** T.4: optional fifth channel; omit to preserve four-channel behavior. */
+    private readonly platformLessons?: IPlatformLessonRecall,
   ) {}
 
   /**
@@ -92,7 +118,7 @@ export class MemoryWarmer {
     // The contract-based ISemanticMemoryStore.recall() accepts a RecallQuery.
     // Agent-scope and tenant-scope are differentiated by projectId filter;
     // the QdrantSemanticStore returns composite-scored RankedMemoryEntry[].
-    const [agentResults, projectResults, stmResults, tenantResults] = await Promise.all([
+    const [agentResults, projectResults, stmResults, tenantResults, platformResults] = await Promise.all([
       // Channel 1: task-execution kinds — lessons learned and patterns that guide the current work
       this.ltm.recall({
         tenantId, query: taskDescription, topK,
@@ -109,6 +135,12 @@ export class MemoryWarmer {
         tenantId, query: taskDescription, topK,
         kinds: ['architectural-decision', 'domain-fact', 'code-landmark', 'open-question'],
       }),
+      // Channel 5 (T.4): platform-scope cross-tenant lessons. Only fires when the
+      // recall service is injected — feature-flagged in the runtime wire. Recall
+      // failures degrade silently to an empty channel; never block the warmer.
+      this.platformLessons
+        ? this.platformLessons.recall({ query: taskDescription, topK }).catch(() => [] as readonly PlatformLessonHit[])
+        : Promise.resolve([] as readonly PlatformLessonHit[]),
     ]);
 
     // ── Map each source to WarmResult[] with normalised scores ────────────────
@@ -139,9 +171,24 @@ export class MemoryWarmer {
       source: 'stm' as const,
     }));
 
+    // T.4: platform-lesson channel. Each hit becomes a synthetic entry with a
+    // `platform:lesson:<bucketKey>` tag so the existing seed-suppression
+    // filter can treat it uniformly with seed-tagged entries.
+    const platformWarm: WarmResult[] = platformResults.map((hit, idx) => ({
+      entry: {
+        id: `platform:${hit.bucketKey}:${idx}`,
+        summary: hit.summary,
+        ...(hit.body !== undefined ? { body: hit.body } : {}),
+        tags: [`platform:lesson:${hit.bucketKey}`],
+        source: 'platform-lesson' as const,
+      } satisfies PlatformLessonEntry,
+      score: PLATFORM_LESSON_SCALE * hit.score + PLATFORM_LESSON_OFFSET,
+      source: 'platform' as const,
+    }));
+
     // ── Merge, filter suppressed seeds, sort, deduplicate, slice ──────────────
 
-    const all = [...agentWarm, ...projectWarm, ...stmWarm, ...tenantWarm];
+    const all = [...agentWarm, ...projectWarm, ...stmWarm, ...tenantWarm, ...platformWarm];
 
     // T.2.a: drop any entry carrying a `seed:suppressed:*` tag. Suppression is
     // applied out-of-band by the seed-feedback worker when down_count crosses

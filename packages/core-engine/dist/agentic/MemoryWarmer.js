@@ -42,13 +42,22 @@ const PROJECT_BOOST = 0.08;
 const STM_BOOST = 0.05;
 const STM_SCALE = 0.60; // maps cosine [0,1] onto the LTM composite range
 const STM_OFFSET = 0.25; // recency credit for in-session entries
+// T.4: platform-lesson channel — intentionally below the agent boost so any
+// organic memory the tenant has accumulated outranks generic platform
+// guidance once present.
+const PLATFORM_LESSON_SCALE = 0.55;
+const PLATFORM_LESSON_OFFSET = 0.10;
 // ─── Warmer ───────────────────────────────────────────────────────────────────
 class MemoryWarmer {
     ltm;
     stm;
-    constructor(ltm, stm) {
+    platformLessons;
+    constructor(ltm, stm, 
+    /** T.4: optional fifth channel; omit to preserve four-channel behavior. */
+    platformLessons) {
         this.ltm = ltm;
         this.stm = stm;
+        this.platformLessons = platformLessons;
     }
     /**
      * warmForTask — assemble the warm-memory block for a task.
@@ -66,7 +75,7 @@ class MemoryWarmer {
         // The contract-based ISemanticMemoryStore.recall() accepts a RecallQuery.
         // Agent-scope and tenant-scope are differentiated by projectId filter;
         // the QdrantSemanticStore returns composite-scored RankedMemoryEntry[].
-        const [agentResults, projectResults, stmResults, tenantResults] = await Promise.all([
+        const [agentResults, projectResults, stmResults, tenantResults, platformResults] = await Promise.all([
             // Channel 1: task-execution kinds — lessons learned and patterns that guide the current work
             this.ltm.recall({
                 tenantId, query: taskDescription, topK,
@@ -83,6 +92,12 @@ class MemoryWarmer {
                 tenantId, query: taskDescription, topK,
                 kinds: ['architectural-decision', 'domain-fact', 'code-landmark', 'open-question'],
             }),
+            // Channel 5 (T.4): platform-scope cross-tenant lessons. Only fires when the
+            // recall service is injected — feature-flagged in the runtime wire. Recall
+            // failures degrade silently to an empty channel; never block the warmer.
+            this.platformLessons
+                ? this.platformLessons.recall({ query: taskDescription, topK }).catch(() => [])
+                : Promise.resolve([]),
         ]);
         // ── Map each source to WarmResult[] with normalised scores ────────────────
         const agentWarm = agentResults.map(r => ({
@@ -107,8 +122,22 @@ class MemoryWarmer {
             score: STM_SCALE * 1.0 + STM_OFFSET + STM_BOOST,
             source: 'stm',
         }));
+        // T.4: platform-lesson channel. Each hit becomes a synthetic entry with a
+        // `platform:lesson:<bucketKey>` tag so the existing seed-suppression
+        // filter can treat it uniformly with seed-tagged entries.
+        const platformWarm = platformResults.map((hit, idx) => ({
+            entry: {
+                id: `platform:${hit.bucketKey}:${idx}`,
+                summary: hit.summary,
+                ...(hit.body !== undefined ? { body: hit.body } : {}),
+                tags: [`platform:lesson:${hit.bucketKey}`],
+                source: 'platform-lesson',
+            },
+            score: PLATFORM_LESSON_SCALE * hit.score + PLATFORM_LESSON_OFFSET,
+            source: 'platform',
+        }));
         // ── Merge, filter suppressed seeds, sort, deduplicate, slice ──────────────
-        const all = [...agentWarm, ...projectWarm, ...stmWarm, ...tenantWarm];
+        const all = [...agentWarm, ...projectWarm, ...stmWarm, ...tenantWarm, ...platformWarm];
         // T.2.a: drop any entry carrying a `seed:suppressed:*` tag. Suppression is
         // applied out-of-band by the seed-feedback worker when down_count crosses
         // its threshold; this filter is the runtime enforcement. Organic entries

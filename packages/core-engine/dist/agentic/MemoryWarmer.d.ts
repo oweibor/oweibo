@@ -30,17 +30,34 @@
  *
  * Phase 2b: Migrated from legacy LongTermMemoryStore to ISemanticMemoryStore.
  */
-import type { ISemanticMemoryStore, RankedMemoryEntry } from '@oweibo/core-contracts';
+import type { ISemanticMemoryStore, RankedMemoryEntry, IPlatformLessonRecall } from '@oweibo/core-contracts';
 import type { ShortTermMemoryStore, STMEntry } from './ShortTermMemoryStore.js';
 export interface WarmResult {
-    entry: RankedMemoryEntry | STMEntry;
+    entry: RankedMemoryEntry | STMEntry | PlatformLessonEntry;
     score: number;
-    source: 'ltm' | 'stm';
+    source: 'ltm' | 'stm' | 'platform';
+}
+/**
+ * T.4: a platform-lesson hit reshaped for the WarmResult union. The
+ * MemoryWarmer never re-attributes the lesson to a tenant; the [platform]
+ * marker is added downstream in prompt assembly.
+ */
+export interface PlatformLessonEntry {
+    readonly id: string;
+    readonly summary: string;
+    readonly body?: string;
+    /** Tagged so the suppression filter still treats it like any other entry. */
+    readonly tags: readonly string[];
+    readonly source: 'platform-lesson';
 }
 export declare class MemoryWarmer {
     private readonly ltm;
     private readonly stm;
-    constructor(ltm: ISemanticMemoryStore, stm: ShortTermMemoryStore);
+    /** T.4: optional fifth channel; omit to preserve four-channel behavior. */
+    private readonly platformLessons?;
+    constructor(ltm: ISemanticMemoryStore, stm: ShortTermMemoryStore, 
+    /** T.4: optional fifth channel; omit to preserve four-channel behavior. */
+    platformLessons?: IPlatformLessonRecall | undefined);
     /**
      * warmForTask — assemble the warm-memory block for a task.
      *

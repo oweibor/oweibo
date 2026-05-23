@@ -33,6 +33,7 @@ export * from './interfaces/IDocTemplate.js';
 export * from './interfaces/IVectorSearch.js';
 export * from './interfaces/ITokenBudget.js';
 export * from './interfaces/IGoalTemplateMatcher.js';
+export * from './interfaces/IPlatformLessonRecall.js';
 
 // ── Secrets ───────────────────────────────────────────────────────────────────
 export * from './secrets/ISecretsManager.js';

@@ -31,8 +31,13 @@ import { SeedGoalTemplatesStep } from './steps/SeedGoalTemplatesStep.js';
 import { SeedConnectorsStep } from './steps/SeedConnectorsStep.js';
 import { DomainIntakeStep } from './steps/DomainIntakeStep.js';
 import { SeedOrgGraphStep } from './steps/SeedOrgGraphStep.js';
+import { CloneFromTenantStep } from './steps/CloneFromTenantStep.js';
 
 export const STEP_PIPELINE: readonly IBootstrapStep[] = [
+  // T.9: must run BEFORE SeedMemoriesStep so platform seeds layer on top of
+  //      parent-cloned content (existing seed:<id> dedup in T.2.a handles
+  //      overlap).
+  new CloneFromTenantStep(),
   new SeedMemoriesStep(),
   new SeedProjectStep(),
   new SeedSkillsStep(),

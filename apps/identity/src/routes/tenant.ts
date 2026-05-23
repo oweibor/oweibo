@@ -568,5 +568,127 @@ router.patch('/:tenantId/settings',
   }
 );
 
+// ── T.9: tenant lineage (parent-admin consent grants + lineage view) ──────
+
+const CloneScopeEnum = z.enum([
+  'memories', 'projects', 'org_graph', 'connectors_recommend', 'settings',
+]);
+
+const CreateGrantSchema = z.object({
+  scopes: z.array(CloneScopeEnum).min(1).max(5),
+  childSlugPrefix: z.string().min(1).max(50).regex(/^[a-z0-9-]+$/).optional(),
+  maxUses: z.number().int().min(1).max(100).optional(),
+  /** ISO-8601; max 90 days out. */
+  expiresAt: z.string().datetime(),
+});
+
+/**
+ * Parent admin creates a consent grant. The platform_admin handler on the
+ * tenant-create endpoint will only succeed if a valid grant exists.
+ */
+router.post('/:tenantId/lineage/grants',
+  requireScopes('tenant:settings:write'),
+  audit('tenant.lineage.grant.create', { resourceType: 'tenant' }),
+  async (req, res) => {
+    const parsed = CreateGrantSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'validation_error', issues: parsed.error.flatten() });
+      return;
+    }
+    const principal = req.principal as Principal;
+    if (principal.sub.startsWith('agent:') || principal.sub.startsWith('apikey:')) {
+      res.status(403).json({ error: 'human_only' });
+      return;
+    }
+    const expiresAt = new Date(parsed.data.expiresAt);
+    const ninetyDaysOut = Date.now() + 90 * 24 * 60 * 60 * 1000;
+    if (expiresAt.getTime() > ninetyDaysOut) {
+      res.status(400).json({ error: 'expires_at_too_far' });
+      return;
+    }
+    if (expiresAt.getTime() <= Date.now()) {
+      res.status(400).json({ error: 'expires_at_in_past' });
+      return;
+    }
+    const grant = await withTenantContext(principal, tx =>
+      tx.tenantLineageConsentGrant.create({
+        data: {
+          parentTenantId: principal.ctx.tenantId,
+          grantedByUserId: principal.sub,
+          scopes: parsed.data.scopes,
+          ...(parsed.data.childSlugPrefix ? { childSlugPrefix: parsed.data.childSlugPrefix } : {}),
+          maxUses: parsed.data.maxUses ?? 1,
+          expiresAt,
+        },
+      })
+    );
+    res.status(201).json({ grant });
+  }
+);
+
+/** Parent admin lists own grants — for the lineage management UI. */
+router.get('/:tenantId/lineage/grants',
+  requireScopes('tenant:settings:read'),
+  async (req, res) => {
+    const principal = req.principal as Principal;
+    const grants = await withTenantContext(principal, tx =>
+      tx.tenantLineageConsentGrant.findMany({
+        where: { parentTenantId: principal.ctx.tenantId },
+        orderBy: { createdAt: 'desc' },
+        take: 100,
+      })
+    );
+    res.json({ grants });
+  }
+);
+
+/** Parent admin revokes a grant. Already-consumed uses are not retracted. */
+router.post('/:tenantId/lineage/grants/:id/revoke',
+  requireScopes('tenant:settings:write'),
+  audit('tenant.lineage.grant.revoke', { resourceType: 'tenant' }),
+  async (req, res) => {
+    const principal = req.principal as Principal;
+    const updated = await withTenantContext(principal, tx =>
+      tx.tenantLineageConsentGrant.updateMany({
+        where: {
+          id: req.params['id']!,
+          parentTenantId: principal.ctx.tenantId,
+          revokedAt: null,
+        },
+        data: { revokedAt: new Date() },
+      })
+    );
+    if (updated.count === 0) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    res.json({ ok: true });
+  }
+);
+
+/**
+ * Lineage summary for the current tenant: own parent (if child) plus the
+ * list of children (if parent). Both sides use the tenant's own
+ * `app.tenant_id` scope; RLS policies on `tenant_lineage` allow each side
+ * to read the rows that name them.
+ */
+router.get('/:tenantId/lineage',
+  requireScopes('tenant:settings:read'),
+  async (req, res) => {
+    const principal = req.principal as Principal;
+    const tenantId = principal.ctx.tenantId;
+    const result = await withTenantContext(principal, async tx => {
+      const asChild = await tx.tenantLineage.findUnique({ where: { childTenantId: tenantId } });
+      const asParent = await tx.tenantLineage.findMany({
+        where: { parentTenantId: tenantId },
+        orderBy: { createdAt: 'desc' },
+        take: 200,
+      });
+      return { asChild, asParent };
+    });
+    res.json(result);
+  }
+);
+
 export { expandRoles };
 export default router;

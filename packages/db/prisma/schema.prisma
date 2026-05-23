@@ -508,6 +508,40 @@ model TenantCatalogPendingUpdate {
   @@schema("oweibo")
 }
 
+// T.9: tenant lineage — parent/child relationships for enterprise sub-org cloning.
+// One lineage row per child; cycle prevention enforced via BEFORE INSERT trigger.
+model TenantLineage {
+  childTenantId  String   @id @map("child_tenant_id") @db.Uuid
+  parentTenantId String   @map("parent_tenant_id") @db.Uuid
+  consentGrantId String   @map("consent_grant_id") @db.Uuid
+  clonedScopes   String[] @map("cloned_scopes")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("tenant_lineage")
+  @@schema("oweibo")
+}
+
+// T.9: parent-admin consent grants. Pre-authorise one or more child-create
+// operations. uses < max_uses && expires_at > NOW() && revoked_at IS NULL &&
+// consumed_at IS NULL = claimable. Claim path is an atomic compare-and-set
+// UPDATE inside the tenant-create transaction.
+model TenantLineageConsentGrant {
+  id              String    @id @default(uuid()) @db.Uuid
+  parentTenantId  String    @map("parent_tenant_id") @db.Uuid
+  grantedByUserId String    @map("granted_by_user_id") @db.Uuid
+  scopes          String[]
+  childSlugPrefix String?   @map("child_slug_prefix")
+  maxUses         Int       @default(1) @map("max_uses")
+  uses            Int       @default(0)
+  expiresAt       DateTime  @map("expires_at") @db.Timestamptz
+  consumedAt      DateTime? @map("consumed_at") @db.Timestamptz
+  revokedAt       DateTime? @map("revoked_at") @db.Timestamptz
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("tenant_lineage_consent_grants")
+  @@schema("oweibo")
+}
+
 // T.6: platform-curated tenant templates (industry / role profiles).
 // Cross-tenant catalog. Tenants read; only platform_admin writes.
 model TenantTemplate {

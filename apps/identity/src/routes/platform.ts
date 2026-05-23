@@ -90,7 +90,22 @@ const CreateTenantSchema = z.object({
   /** T.5.e: optional cohort override. Used for internal/synthetic tenants
    *  the platform team wants excluded from the A/B trial via 'exempt'. */
   seedCohort: z.enum(['seeded', 'control', 'exempt']).optional(),
+  /** T.9: parent tenant for lineage. When supplied, parentConsentGrantId
+   *  MUST also be supplied — the handler atomically claims the grant
+   *  inside the create transaction. The lineage_enabled flag gates the
+   *  feature; when off, supplying these fields produces 400. */
+  parentTenantId: z.string().uuid().optional(),
+  parentConsentGrantId: z.string().uuid().optional(),
 });
+
+/**
+ * T.9: lineage feature flag. When false, supplying parentTenantId is a 400.
+ * Platform-wide flag — wired from env so it can be flipped without redeploy
+ * the way other TTV flags are.
+ */
+function tenantLineageEnabled(): boolean {
+  return process.env['TENANT_LINEAGE_ENABLED'] === 'true';
+}
 
 /**
  * T.0: bootstrap feature flag. When false, the tenant_bootstrap row is created
@@ -108,11 +123,64 @@ router.post('/api/v1/platform/tenants', audit('platform.tenant.create', { resour
     return;
   }
   const principal = req.principal as Principal;
-  const { name, slug, quotas, features, templateSlug, seedCohort: cohortOverride } = parsed.data;
+  const {
+    name, slug, quotas, features, templateSlug,
+    seedCohort: cohortOverride,
+    parentTenantId, parentConsentGrantId,
+  } = parsed.data;
   const enabled = bootstrapEnabled();
   const effectiveTemplate = templateSlug ?? 'default';
 
-  const tenant = await withTenantContext(principal, async tx => {
+  // T.9: validate lineage fields *before* the transaction so a flag-off
+  // request fails fast without consuming any DB writes.
+  const wantsLineage = Boolean(parentTenantId || parentConsentGrantId);
+  if (wantsLineage) {
+    if (!tenantLineageEnabled()) {
+      res.status(400).json({ error: 'lineage_disabled' });
+      return;
+    }
+    if (!parentTenantId || !parentConsentGrantId) {
+      res.status(400).json({ error: 'lineage_requires_parent_and_grant' });
+      return;
+    }
+  }
+
+  let createdTenant;
+  try {
+    createdTenant = await withTenantContext(principal, async tx => {
+    // T.9: atomic grant claim — compare-and-set UPDATE inside the same
+    // transaction as the tenant INSERT. The UPDATE acquires a row exclusive
+    // lock so concurrent claims serialize. Zero rows returned ⇒ grant is
+    // exhausted / expired / revoked / wrong parent.
+    let lineageScopes: readonly string[] | null = null;
+    if (wantsLineage) {
+      const claim = await tx.$queryRaw<Array<{
+        id: string;
+        parent_tenant_id: string;
+        scopes: string[];
+        child_slug_prefix: string | null;
+      }>>`
+        UPDATE oweibo.tenant_lineage_consent_grants
+           SET uses        = uses + 1,
+               consumed_at = CASE WHEN uses + 1 >= max_uses THEN NOW() ELSE consumed_at END
+         WHERE id          = ${parentConsentGrantId}::uuid
+           AND parent_tenant_id = ${parentTenantId}::uuid
+           AND uses        < max_uses
+           AND expires_at  > NOW()
+           AND consumed_at IS NULL
+           AND revoked_at  IS NULL
+         RETURNING id, parent_tenant_id, scopes, child_slug_prefix`;
+      if (claim.length === 0) {
+        throw Object.assign(new Error('grant_unavailable'), { status: 400 });
+      }
+      const grant = claim[0]!;
+      // Validate slug prefix if the grant restricts it.
+      if (grant.child_slug_prefix && !slug.startsWith(grant.child_slug_prefix)) {
+        throw Object.assign(new Error('grant_slug_prefix_mismatch'), { status: 400 });
+      }
+      lineageScopes = grant.scopes;
+    }
+
     // 1. Original tenant row — unchanged shape.
     const created = await tx.tenant.create({
       data: {
@@ -146,6 +214,20 @@ router.post('/api/v1/platform/tenants', audit('platform.tenant.create', { resour
       },
     });
 
+    // 3.5 T.9: lineage row — created after tenant + bootstrap so FK targets
+    //          resolve. The cycle-check trigger on the table walks the
+    //          parent chain; insert is atomic with the grant claim.
+    if (wantsLineage && lineageScopes) {
+      await tx.tenantLineage.create({
+        data: {
+          childTenantId: created.id,
+          parentTenantId: parentTenantId!,
+          consentGrantId: parentConsentGrantId!,
+          clonedScopes: lineageScopes as string[],
+        },
+      });
+    }
+
     // 4. outbox — atomic with the tenant insert; OutboxRelay drains async.
     if (enabled) {
       const payload: TenantCreatedV1Payload = {
@@ -168,8 +250,20 @@ router.post('/api/v1/platform/tenants', audit('platform.tenant.create', { resour
     }
 
     return created;
-  });
-  res.status(201).json({ tenant });
+    });
+  } catch (err) {
+    const status = (err && typeof err === 'object' && 'status' in err
+      && typeof (err as { status: unknown }).status === 'number')
+      ? (err as { status: number }).status
+      : 500;
+    const message = err instanceof Error ? err.message : 'internal_error';
+    if (status === 400) {
+      res.status(400).json({ error: message });
+      return;
+    }
+    throw err;
+  }
+  res.status(201).json({ tenant: createdTenant });
 });
 
 router.get('/api/v1/platform/tenants/:id', async (req, res) => {

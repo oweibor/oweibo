@@ -361,6 +361,75 @@ model TenantActionClassState {
   @@schema("oweibo")
 }
 
+// T.2.h: tenant org graph — nodes, edges, facts, stakeholder interests.
+model OrgNode {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  nodeType    String   @map("node_type")
+  label       String
+  userId      String?  @map("user_id") @db.Uuid
+  externalRef String?  @map("external_ref")
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  outgoingEdges        OrgEdge[]                @relation("OrgEdgeFromNode")
+  incomingEdges        OrgEdge[]                @relation("OrgEdgeToNode")
+  facts                OrgFact[]
+  stakeholderInterests OrgStakeholderInterest[]
+
+  @@map("org_nodes")
+  @@schema("oweibo")
+}
+
+model OrgEdge {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  fromNode  String   @map("from_node") @db.Uuid
+  toNode    String   @map("to_node") @db.Uuid
+  edgeType  String   @map("edge_type")
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  from OrgNode @relation("OrgEdgeFromNode", fields: [fromNode], references: [id])
+  to   OrgNode @relation("OrgEdgeToNode", fields: [toNode], references: [id])
+
+  @@unique([tenantId, fromNode, toNode, edgeType])
+  @@map("org_edges")
+  @@schema("oweibo")
+}
+
+model OrgFact {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  nodeId    String   @map("node_id") @db.Uuid
+  factKey   String   @map("fact_key")
+  factValue String   @map("fact_value")
+  source    String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  node OrgNode @relation(fields: [nodeId], references: [id])
+
+  @@unique([tenantId, nodeId, factKey])
+  @@map("org_facts")
+  @@schema("oweibo")
+}
+
+model OrgStakeholderInterest {
+  id       String  @id @default(uuid()) @db.Uuid
+  tenantId String  @map("tenant_id") @db.Uuid
+  nodeId   String  @map("node_id") @db.Uuid
+  domain   String
+  weight   Decimal @db.Decimal(4, 3)
+
+  node OrgNode @relation(fields: [nodeId], references: [id])
+
+  @@unique([tenantId, nodeId, domain])
+  @@map("org_stakeholder_interests")
+  @@schema("oweibo")
+}
+
 // T.2.g: per-tenant active domain intake (one row per tenant).
 model TenantDomainIntake {
   tenantId                String    @id @map("tenant_id") @db.Uuid

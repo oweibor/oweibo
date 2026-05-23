@@ -62,6 +62,8 @@ __exportStar(require("./action/ActionClass.js"), exports);
 __exportStar(require("./action/IActionGate.js"), exports);
 // ── T.2.f: connector catalog + tenant-instance contracts ─────────────────────
 __exportStar(require("./connector/IConnector.js"), exports);
+// ── T.2.h: org-graph nodes / edges / facts / stakeholder interests ───────────
+__exportStar(require("./org/OrgGraph.js"), exports);
 // ── Events ────────────────────────────────────────────────────────────────────
 __exportStar(require("./events/billing.events.js"), exports);
 __exportStar(require("./events/inventory.events.js"), exports);

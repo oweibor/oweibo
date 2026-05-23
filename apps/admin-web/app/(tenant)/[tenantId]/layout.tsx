@@ -21,6 +21,7 @@ const TENANT_NAV: { label: string; href: (id: string) => string }[] = [
   { label: 'Quarantine', href: id => `/t/${id}/quarantine` },
   { label: 'Actions',    href: id => `/t/${id}/actions/pending` },
   { label: 'Connectors', href: id => `/t/${id}/connectors` },
+  { label: 'Org',        href: id => `/t/${id}/org` },
 ];
 
 export default async function TenantLayout({ children, params }: TenantLayoutProps) {

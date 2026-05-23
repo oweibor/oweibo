@@ -54,6 +54,9 @@ export * from './action/IActionGate.js';
 // ── T.2.f: connector catalog + tenant-instance contracts ─────────────────────
 export * from './connector/IConnector.js';
 
+// ── T.2.h: org-graph nodes / edges / facts / stakeholder interests ───────────
+export * from './org/OrgGraph.js';
+
 // ── Events ────────────────────────────────────────────────────────────────────
 export * from './events/billing.events.js';
 export * from './events/inventory.events.js';

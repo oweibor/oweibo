@@ -37,6 +37,7 @@ export * from './lesson.js';
 export * from './action/ActionClass.js';
 export * from './action/IActionGate.js';
 export * from './connector/IConnector.js';
+export * from './org/OrgGraph.js';
 export * from './events/billing.events.js';
 export * from './events/inventory.events.js';
 export * from './events/pos.events.js';

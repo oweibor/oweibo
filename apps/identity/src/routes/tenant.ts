@@ -418,6 +418,29 @@ router.get('/:tenantId/connectors',
   }
 );
 
+// T.2.h: read-only org-graph endpoint backing the admin org page.
+// Returns nodes + outgoing edges as a flat list — graph rendering happens
+// client-side. No mutation endpoints in this slice; writes happen through
+// OrgGraphService (seeder pipeline) for now.
+router.get('/:tenantId/org',
+  requireScopes('tenant:settings:read'),
+  async (req, res) => {
+    const principal = req.principal as Principal;
+    const out = await withTenantContext(principal, async (tx) => {
+      const nodes = await tx.orgNode.findMany({
+        where: { tenantId: principal.ctx.tenantId },
+        orderBy: { createdAt: 'asc' },
+      });
+      const edges = await tx.orgEdge.findMany({
+        where: { tenantId: principal.ctx.tenantId },
+        orderBy: { createdAt: 'asc' },
+      });
+      return { nodes, edges };
+    });
+    res.json(out);
+  }
+);
+
 const UpdateSettingsSchema = z.object({
   trustModeDefault: z.enum(['supervised', 'graduated', 'autonomous']).optional(),
   features:         z.record(z.unknown()).optional(),

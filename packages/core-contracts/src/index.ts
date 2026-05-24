@@ -60,6 +60,9 @@ export * from './action/ActionLineage.js';
 // ── S.1 (action-safety-v2): approval SLAs + notification channels ────────────
 export * from './action/ApprovalSla.js';
 
+// ── S.2 (action-safety-v2): rate limiting ────────────────────────────────────
+export * from './action/RateLimit.js';
+
 // ── T.2.f: connector catalog + tenant-instance contracts ─────────────────────
 export * from './connector/IConnector.js';
 

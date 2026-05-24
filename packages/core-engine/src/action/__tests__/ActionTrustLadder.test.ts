@@ -78,6 +78,68 @@ function makeCtx(overrides: Partial<ActionContext> = {}): ActionContext {
   };
 }
 
+// ── S.2 rate-limit integration ────────────────────────────────────────────
+
+describe('ActionTrustLadder.gate — S.2 rate limiter hook', () => {
+  // 'read.local' is platform-default 'execute' across all tiers, so the gate
+  // bypasses the proposal-write path and we don't need to stub the INSERT.
+  const cleanCtx = () => makeCtx({
+    actionClass: 'read.local',
+    calibrationSnapshot: makeSnapshot(60, 0.95, 'read.local'),
+  });
+
+  it('passes through when no rate limiter is wired (backwards compat)', async () => {
+    const { pool } = makePool([]);
+    const ladder = new ActionTrustLadder(pool, { isEnabled: () => true });
+    const r = await ladder.gate(cleanCtx());
+    expect(r.mode).toBe('execute');
+  });
+
+  it('returns rate_limited when limiter reports soft throttle', async () => {
+    const { pool } = makePool([]);
+    const ladder = new ActionTrustLadder(pool, {
+      isEnabled: () => true,
+      rateLimiter: {
+        async tryConsume() { return { kind: 'soft', retryAfterMs: 1500, limitingWindow: 'minute' }; },
+      },
+    });
+    const r = await ladder.gate(cleanCtx());
+    expect(r.mode).toBe('rate_limited');
+    if (r.mode === 'rate_limited') expect(r.retryAfterMs).toBe(1500);
+  });
+
+  it('returns forbidden when limiter reports hard throttle', async () => {
+    const { pool } = makePool([]);
+    const ladder = new ActionTrustLadder(pool, {
+      isEnabled: () => true,
+      rateLimiter: {
+        async tryConsume() { return { kind: 'hard', reason: 'rate_limit_exceeded' }; },
+      },
+    });
+    const r = await ladder.gate(cleanCtx());
+    expect(r.mode).toBe('forbidden');
+    if (r.mode === 'forbidden') expect(r.reason).toBe('rate_limit_exceeded');
+  });
+
+  it('bypasses rate-limit check in shadow-only mode', async () => {
+    const { pool } = makePool([]);
+    let consumeCalls = 0;
+    const ladder = new ActionTrustLadder(pool, {
+      isEnabled: () => true,
+      isShadowOnly: () => true,
+      rateLimiter: {
+        async tryConsume() {
+          consumeCalls += 1;
+          return { kind: 'hard', reason: 'should not happen' };
+        },
+      },
+    });
+    const r = await ladder.gate(cleanCtx());
+    expect(r.mode).toBe('execute');
+    expect(consumeCalls).toBe(0);
+  });
+});
+
 const PRINCIPAL: GatePrincipal = {
   sub: '22222222-2222-2222-2222-222222222222',
   scopes: [],

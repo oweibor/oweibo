@@ -131,6 +131,19 @@ export interface ActionTrustLadderOptions {
   slaAttacher?: {
     attachSla(proposalId: string, tenantId: string, actionClass: string): Promise<void>;
   };
+  /**
+   * S.2: optional rate limiter. Consulted after class resolution but
+   * before the trust-mode decision. When the bucket is empty, gate
+   * short-circuits with `rate_limited` (soft) or `forbidden` (hard).
+   * When omitted, no rate-limit check runs — byte-identical to today.
+   */
+  rateLimiter?: {
+    tryConsume(tenantId: string, actionClass: string): Promise<
+      | { kind: 'allowed' }
+      | { kind: 'soft'; retryAfterMs: number; limitingWindow: 'minute' | 'hour' | 'day' }
+      | { kind: 'hard'; reason: string }
+    >;
+  };
 }
 
 // ── Service ────────────────────────────────────────────────────────────────
@@ -140,6 +153,7 @@ export class ActionTrustLadder implements IActionGate {
   private readonly isShadowOnly: () => boolean;
   private readonly now: () => Date;
   private readonly slaAttacher: ActionTrustLadderOptions['slaAttacher'];
+  private readonly rateLimiter: ActionTrustLadderOptions['rateLimiter'];
 
   constructor(
     private readonly pool: Pool,
@@ -149,11 +163,26 @@ export class ActionTrustLadder implements IActionGate {
     this.isShadowOnly = opts.isShadowOnly ?? defaultShadowOnly;
     this.now = opts.now ?? (() => new Date());
     this.slaAttacher = opts.slaAttacher;
+    this.rateLimiter = opts.rateLimiter;
   }
 
   async gate(ctx: ActionContext): Promise<GateDecision> {
     if (!this.isEnabled()) {
       return { mode: 'execute' };
+    }
+
+    // S.2: rate-limit check happens BEFORE the trust-mode resolution so
+    // bucket-exhausted requests don't pollute action_proposals or burn
+    // observation counters. Shadow-only mode bypasses (the action will
+    // execute as 'execute' regardless of what the gate says).
+    if (this.rateLimiter && !this.isShadowOnly()) {
+      const rl = await this.rateLimiter.tryConsume(ctx.tenantId, ctx.actionClass);
+      if (rl.kind === 'soft') {
+        return { mode: 'rate_limited', retryAfterMs: rl.retryAfterMs };
+      }
+      if (rl.kind === 'hard') {
+        return { mode: 'forbidden', reason: rl.reason };
+      }
     }
 
     const resolved = await this.resolveState(ctx);

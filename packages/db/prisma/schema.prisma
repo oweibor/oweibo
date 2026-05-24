@@ -793,6 +793,41 @@ model NotificationDispatchLog {
   @@schema("oweibo")
 }
 
+// S.2 (ttv-action-safety-v2): per-tenant per-class rate-limit budget.
+// action_class = '*' is the tenant default. action_class = specific class
+// overrides the default.
+model RateLimitPolicy {
+  tenantId              String   @map("tenant_id") @db.Uuid
+  actionClass           String   @map("action_class")
+  perMinute             Int      @map("per_minute")
+  perHour               Int      @map("per_hour")
+  perDay                Int      @map("per_day")
+  burstAllowance        Int      @default(0) @map("burst_allowance")
+  coldStartMultiplier   Decimal  @default(1.0) @map("cold_start_multiplier") @db.Decimal(4, 3)
+  coldStartDurationDays Int      @default(0) @map("cold_start_duration_days")
+  enforcementMode       String   @default("soft") @map("enforcement_mode")
+  updatedAt             DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  @@id([tenantId, actionClass])
+  @@map("rate_limit_policies")
+  @@schema("oweibo")
+}
+
+// S.2: append-only event log for observability + tuning.
+model RateLimitEvent {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  actionClass String   @map("action_class")
+  windowKind  String   @map("window_kind")
+  eventKind   String   @map("event_kind")
+  occurredAt  DateTime @default(now()) @map("occurred_at") @db.Timestamptz
+  context     Json?
+
+  @@index([tenantId, actionClass, occurredAt(sort: Desc)])
+  @@map("rate_limit_events")
+  @@schema("oweibo")
+}
+
 // S.1: bell-icon feed for admin-web.
 model InAppNotification {
   id              String    @id @default(uuid()) @db.Uuid

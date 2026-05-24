@@ -57,7 +57,17 @@ export type GateDecision =
   | { mode: 'dry_run'; proposalId: string }
   | { mode: 'shadow'; shadowId: string }
   | { mode: 'require_approval'; approvalId: string }
-  | { mode: 'forbidden'; reason: string };
+  | { mode: 'forbidden'; reason: string }
+  /**
+   * S.2: rate-limit decision. Returned when the (tenant × actionClass) token
+   * bucket is empty under the policy's `soft` enforcement mode. Callers MUST
+   * either back off and retry after `retryAfterMs` OR abort if the wait is
+   * too long. Treating this as `forbidden` is INCORRECT — it is retryable.
+   *
+   * Hard enforcement returns `forbidden { reason: 'rate_limit_exceeded' }`
+   * instead, signalling the caller to give up.
+   */
+  | { mode: 'rate_limited'; retryAfterMs: number };
 
 /** Minimal principal shape — the gate needs identity for audit; full type lives in @oweibo/db. */
 export interface GatePrincipal {

@@ -943,3 +943,63 @@ model ApprovalDelegation {
   @@map("approval_delegations")
   @@schema("oweibo")
 }
+
+// S.5.a (ttv-action-safety-v2): per-inspector verdict audit log.
+model ContentInspectionResult {
+  id             String   @id @default(uuid()) @db.Uuid
+  tenantId       String   @map("tenant_id") @db.Uuid
+  proposalId     String?  @map("proposal_id") @db.Uuid
+  actionClass    String   @map("action_class")
+  actionId       String   @map("action_id")
+  inspectorName  String   @map("inspector_name")
+  verdict        String
+  reason         String?
+  details        Json?
+  inspectedAt    DateTime @default(now()) @map("inspected_at") @db.Timestamptz
+
+  @@index([proposalId])
+  @@index([tenantId, inspectedAt(sort: Desc)])
+  @@map("content_inspection_results")
+  @@schema("oweibo")
+}
+
+// S.5.b: post-execution verification result (immediate or deferred).
+model PostExecutionVerification {
+  id                  String   @id @default(uuid()) @db.Uuid
+  tenantId            String   @map("tenant_id") @db.Uuid
+  proposalId          String?  @map("proposal_id") @db.Uuid
+  verifierName        String   @map("verifier_name")
+  timing              String
+  driftSeverity       Int      @map("drift_severity")
+  expected            Json
+  observed            Json
+  diff                Json?
+  observedCostCents   Int?     @map("observed_cost_cents")
+  autoRollbackInvoked Boolean  @default(false) @map("auto_rollback_invoked")
+  notes               String?
+  verifiedAt          DateTime @default(now()) @map("verified_at") @db.Timestamptz
+
+  @@index([proposalId])
+  @@map("post_execution_verifications")
+  @@schema("oweibo")
+}
+
+// S.5.b: deferred-verification queue claimed by ApprovalLifecycleWorker.
+model DeferredVerification {
+  id             String    @id @default(uuid()) @db.Uuid
+  tenantId       String    @map("tenant_id") @db.Uuid
+  proposalId     String    @map("proposal_id") @db.Uuid
+  verifierName   String    @map("verifier_name")
+  verifierConfig Json      @default("{}") @map("verifier_config")
+  expected       Json
+  verifyAfter    DateTime  @map("verify_after") @db.Timestamptz
+  attempts       Int       @default(0)
+  state          String    @default("pending")
+  lastError      String?   @map("last_error")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  completedAt    DateTime? @map("completed_at") @db.Timestamptz
+
+  @@index([proposalId])
+  @@map("deferred_verifications")
+  @@schema("oweibo")
+}

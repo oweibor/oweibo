@@ -56,6 +56,16 @@ export interface RollbackOrchestratorOptions {
   executeTimeoutMs?: number;
   log?: (level: 'info' | 'warn' | 'error', message: string, extra?: Record<string, unknown>) => void;
   now?: () => Date;
+  /**
+   * S.5.b: optional hook called when a proposal is successfully rolled
+   * back so any pending deferred verifications can be marked
+   * `superseded` (verifying a rolled-back action is meaningless).
+   * Best-effort — failure to supersede MUST NOT fail the rollback.
+   */
+  onRollbackSuccess?: (args: {
+    readonly tenantId: string;
+    readonly proposalId: string;
+  }) => Promise<void>;
 }
 
 export interface RollbackInvokeRequest {
@@ -89,6 +99,7 @@ export class RollbackOrchestrator {
   private readonly executeTimeoutMs: number;
   private readonly log: NonNullable<RollbackOrchestratorOptions['log']>;
   private readonly now: () => Date;
+  private readonly onRollbackSuccess: RollbackOrchestratorOptions['onRollbackSuccess'];
 
   constructor(
     private readonly pool: Pool,
@@ -98,6 +109,7 @@ export class RollbackOrchestrator {
     this.isEnabled = opts.isEnabled ?? defaultEnabled;
     this.executeTimeoutMs = opts.executeTimeoutMs ?? 60_000;
     this.log = opts.log ?? defaultLog;
+    this.onRollbackSuccess = opts.onRollbackSuccess;
     this.now = opts.now ?? (() => new Date());
   }
 
@@ -174,6 +186,18 @@ export class RollbackOrchestrator {
     await this.completeExecution(executionId, req.tenantId, result, /* updateProposalToRollbackFailed */ !result.success);
     if (result.success) {
       await this.markProposal(req.tenantId, proposal.id, 'rolled_back');
+      // S.5.b: mark any pending deferred verifications for this proposal
+      // as superseded. Best-effort — never fail the rollback if this hook
+      // throws (e.g. transient DB blip).
+      if (this.onRollbackSuccess) {
+        try {
+          await this.onRollbackSuccess({ tenantId: req.tenantId, proposalId: proposal.id });
+        } catch (err) {
+          this.log('warn', `onRollbackSuccess hook threw for ${proposal.id}`, {
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
     }
     return result;
   }

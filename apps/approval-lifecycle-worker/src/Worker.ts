@@ -21,6 +21,10 @@ import type {
   ApprovalSlaPolicy,
   FireEvent,
 } from '@oweibo/core-contracts';
+import {
+  runDeferredVerificationsTick,
+  type IDeferredVerificationRunner,
+} from './handlers/deferredVerifications.js';
 
 export interface IApprovalSlaService {
   resolvePolicy(tenantId: string, actionClass: string): Promise<ApprovalSlaPolicy>;
@@ -75,6 +79,15 @@ export interface ApprovalLifecycleWorkerOptions {
   now?: () => Date;
   logger?: WorkerLogger;
   isEnabled?: () => boolean;
+  /**
+   * S.5.b: optional deferred-verification runner. When wired, the worker
+   * runs a deferred-verification batch AFTER its approval-SLA loop on
+   * each tick. When omitted, the verification path is dormant and the
+   * worker behaves exactly as it did pre-S.5.
+   */
+  deferredVerificationRunner?: IDeferredVerificationRunner;
+  /** Per-tick batch size for deferred verifications; default 100. */
+  deferredVerificationBatchSize?: number;
 }
 
 interface DueRow {
@@ -100,6 +113,8 @@ export class ApprovalLifecycleWorker {
   private readonly now: () => Date;
   private readonly logger: WorkerLogger;
   private readonly isEnabled: () => boolean;
+  private readonly deferredVerificationRunner: IDeferredVerificationRunner | undefined;
+  private readonly deferredVerificationBatchSize: number;
 
   constructor(
     private readonly pool: Pool,
@@ -112,11 +127,13 @@ export class ApprovalLifecycleWorker {
     this.now = opts.now ?? (() => new Date());
     this.logger = opts.logger ?? defaultLogger;
     this.isEnabled = opts.isEnabled ?? defaultEnabled;
+    this.deferredVerificationRunner = opts.deferredVerificationRunner;
+    this.deferredVerificationBatchSize = opts.deferredVerificationBatchSize ?? 100;
   }
 
-  async runOnce(): Promise<{ processed: number; expired: number; escalated: number; skipped: number }> {
+  async runOnce(): Promise<{ processed: number; expired: number; escalated: number; skipped: number; deferredVerified: number }> {
     if (!this.isEnabled()) {
-      return { processed: 0, expired: 0, escalated: 0, skipped: 0 };
+      return { processed: 0, expired: 0, escalated: 0, skipped: 0, deferredVerified: 0 };
     }
     let processed = 0;
     let expired = 0;
@@ -138,7 +155,15 @@ export class ApprovalLifecycleWorker {
         });
       }
     }
-    return { processed, expired, escalated, skipped };
+
+    // S.5.b: run a deferred-verification batch on the same tick. Failures
+    // are isolated by the handler — they never affect the SLA loop above.
+    const deferred = await runDeferredVerificationsTick(this.deferredVerificationRunner, {
+      batchSize: this.deferredVerificationBatchSize,
+      log: (m, c) => this.logger.info(m, c as Record<string, unknown> | undefined),
+    });
+
+    return { processed, expired, escalated, skipped, deferredVerified: deferred.processed };
   }
 
   private async claimDue(): Promise<readonly DueRow[]> {

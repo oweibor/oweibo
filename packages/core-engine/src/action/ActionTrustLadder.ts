@@ -166,6 +166,25 @@ export interface ActionTrustLadderOptions {
    * 'agent'.
    */
   grantPrincipalKind?: () => 'agent' | 'user';
+  /**
+   * S.5.a: optional content inspector registry. Consulted AFTER class
+   * resolution but BEFORE proposal write / grant check / rate limiter.
+   * Inspectors may only upgrade restrictions (execute → require_approval
+   * or forbid). A `forbid` verdict terminates the gate immediately.
+   * When omitted, no inspection runs — byte-identical to today.
+   *
+   * Per-inspector verdicts are persisted to
+   * oweibo.content_inspection_results for audit.
+   */
+  contentInspectors?: {
+    run(ctx: import('@oweibo/core-contracts').ActionContext): Promise<{
+      combined: { verdict: 'allow' | 'upgrade_to_approval' | 'forbid'; reason?: string; details?: unknown };
+      perInspector: ReadonlyArray<{
+        inspectorName: string;
+        result: { verdict: 'allow' | 'upgrade_to_approval' | 'forbid'; reason?: string; details?: unknown };
+      }>;
+    }>;
+  };
 }
 
 // ── Service ────────────────────────────────────────────────────────────────
@@ -178,6 +197,7 @@ export class ActionTrustLadder implements IActionGate {
   private readonly rateLimiter: ActionTrustLadderOptions['rateLimiter'];
   private readonly grantChecker: ActionTrustLadderOptions['grantChecker'];
   private readonly grantPrincipalKind: () => 'agent' | 'user';
+  private readonly contentInspectors: ActionTrustLadderOptions['contentInspectors'];
 
   constructor(
     private readonly pool: Pool,
@@ -190,6 +210,7 @@ export class ActionTrustLadder implements IActionGate {
     this.rateLimiter = opts.rateLimiter;
     this.grantChecker = opts.grantChecker;
     this.grantPrincipalKind = opts.grantPrincipalKind ?? (() => 'agent');
+    this.contentInspectors = opts.contentInspectors;
   }
 
   async gate(ctx: ActionContext): Promise<GateDecision> {
@@ -214,10 +235,33 @@ export class ActionTrustLadder implements IActionGate {
     const resolved = await this.resolveState(ctx);
     const shadowOnly = this.isShadowOnly();
 
-    if (resolved.mode === 'execute') {
+    // S.5.a: content inspectors may upgrade the mode (execute → approval,
+    // or any mode → forbidden). They cannot downgrade. Forbid is terminal.
+    // Inspector results are persisted for audit regardless of the final
+    // decision. Shadow-only bypasses (the action runs as 'execute' anyway,
+    // and we don't want to spam audit during the shadow rollout window).
+    let effectiveMode: TrustMode = resolved.mode;
+    let inspectionForbidReason: string | null = null;
+    if (this.contentInspectors && !shadowOnly) {
+      const inspection = await this.contentInspectors.run(ctx);
+      // Fire-and-forget audit insert; never blocks the decision.
+      void this.recordInspectionResults(ctx, inspection.perInspector).catch(() => undefined);
+      if (inspection.combined.verdict === 'forbid') {
+        inspectionForbidReason = inspection.combined.reason ?? 'content inspection forbade action';
+      } else if (inspection.combined.verdict === 'upgrade_to_approval') {
+        if (effectiveMode === 'execute' || effectiveMode === 'dry_run' || effectiveMode === 'shadow') {
+          effectiveMode = 'require_approval';
+        }
+      }
+    }
+
+    if (inspectionForbidReason !== null) {
+      return { mode: 'forbidden', reason: inspectionForbidReason };
+    }
+    if (effectiveMode === 'execute') {
       return { mode: 'execute' };
     }
-    if (resolved.mode === 'forbidden') {
+    if (effectiveMode === 'forbidden') {
       if (shadowOnly) return { mode: 'execute' };
       return { mode: 'forbidden', reason: 'class is forbidden for this tenant' };
     }
@@ -227,7 +271,7 @@ export class ActionTrustLadder implements IActionGate {
     // and records the proposal row tagged with grant_id for audit.
     // Shadow-only mode skips the grant check (the action runs as 'execute'
     // either way, and we don't want to burn grant uses on shadows).
-    if (resolved.mode === 'require_approval' && this.grantChecker && !shadowOnly) {
+    if (effectiveMode === 'require_approval' && this.grantChecker && !shadowOnly) {
       const principalKind = this.grantPrincipalKind();
       const grant = await this.grantChecker.tryConsume({
         tenantId: ctx.tenantId,
@@ -245,13 +289,13 @@ export class ActionTrustLadder implements IActionGate {
     }
 
     // dry_run / shadow / require_approval — write a proposal row.
-    const proposalId = await this.recordProposal(ctx, resolved.mode);
+    const proposalId = await this.recordProposal(ctx, effectiveMode);
 
     // S.1: when a require_approval proposal is recorded, attach an SLA so
     // the lifecycle worker can drive notifications/escalations/expiry.
     // Best-effort — never block the gate path. Skipped in shadow-only mode
     // since the action will execute anyway.
-    if (resolved.mode === 'require_approval' && !shadowOnly && this.slaAttacher) {
+    if (effectiveMode === 'require_approval' && !shadowOnly && this.slaAttacher) {
       try {
         await this.slaAttacher.attachSla(proposalId, ctx.tenantId, ctx.actionClass);
       } catch {
@@ -262,11 +306,13 @@ export class ActionTrustLadder implements IActionGate {
     if (shadowOnly) {
       return { mode: 'execute' };
     }
-    switch (resolved.mode) {
+    switch (effectiveMode) {
       case 'dry_run':          return { mode: 'dry_run', proposalId };
       case 'shadow':           return { mode: 'shadow', shadowId: proposalId };
       case 'require_approval': return { mode: 'require_approval', approvalId: proposalId };
     }
+    // Unreachable — TS-narrowed by prior checks.
+    throw new Error(`unreachable effectiveMode: ${effectiveMode}`);
   }
 
   async promote(
@@ -414,6 +460,48 @@ export class ActionTrustLadder implements IActionGate {
     if (age >= 30 && score >= 0.85) return row.established;
     if (age >= 7 && score >= 0.6) return row.withSignal;
     return row.young;
+  }
+
+  /**
+   * S.5.a: persist the per-inspector audit log. Best-effort; failure
+   * MUST NOT affect the gate decision. proposal_id is null when the
+   * gate ultimately resolves to execute (no row in action_proposals).
+   */
+  private async recordInspectionResults(
+    ctx: ActionContext,
+    perInspector: ReadonlyArray<{
+      inspectorName: string;
+      result: { verdict: 'allow' | 'upgrade_to_approval' | 'forbid'; reason?: string; details?: unknown };
+    }>,
+  ): Promise<void> {
+    if (perInspector.length === 0) return;
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await setTenantScopeFromCtx(client, ctx);
+      for (const p of perInspector) {
+        await client.query(
+          `INSERT INTO oweibo.content_inspection_results
+             (tenant_id, action_class, action_id, inspector_name, verdict, reason, details)
+           VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb)`,
+          [
+            ctx.tenantId,
+            ctx.actionClass,
+            ctx.actionId,
+            p.inspectorName,
+            p.result.verdict,
+            p.result.reason ?? null,
+            p.result.details !== undefined ? JSON.stringify(p.result.details) : null,
+          ],
+        );
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   /**

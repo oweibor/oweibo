@@ -69,6 +69,10 @@ export * from './action/IRollbackAdapter.js';
 // ── S.4 (action-safety-v2): multi-party + time-windowed approvals ────────────
 export * from './action/ApprovalGrant.js';
 
+// ── S.5 (action-safety-v2): pre-exec content inspection + post-exec verify ───
+export * from './action/IContentInspector.js';
+export * from './action/IPostExecutionVerifier.js';
+
 // ── T.2.f: connector catalog + tenant-instance contracts ─────────────────────
 export * from './connector/IConnector.js';
 

@@ -144,6 +144,28 @@ export interface ActionTrustLadderOptions {
       | { kind: 'hard'; reason: string }
     >;
   };
+  /**
+   * S.4: optional multi-party approval / grant service. Consulted ONLY
+   * when the resolved mode is `require_approval` — if an active grant
+   * covers this (tenant, class, payload), the gate downgrades to
+   * `execute` and records an audit proposal tagged with `grant_id`.
+   * When omitted, no grant check runs — byte-identical to today.
+   */
+  grantChecker?: {
+    tryConsume(req: {
+      readonly tenantId: string;
+      readonly actionClass: string;
+      readonly grantedToKind: 'agent' | 'user';
+      readonly grantedToUserId?: string;
+      readonly payload: unknown;
+    }): Promise<{ kind: 'no_grant' } | { kind: 'grant_consumed'; grantId: string }>;
+  };
+  /**
+   * S.4: principal kind for grant matching. Most callers run as an agent;
+   * UI-initiated retries run as the authenticated user. Defaults to
+   * 'agent'.
+   */
+  grantPrincipalKind?: () => 'agent' | 'user';
 }
 
 // ── Service ────────────────────────────────────────────────────────────────
@@ -154,6 +176,8 @@ export class ActionTrustLadder implements IActionGate {
   private readonly now: () => Date;
   private readonly slaAttacher: ActionTrustLadderOptions['slaAttacher'];
   private readonly rateLimiter: ActionTrustLadderOptions['rateLimiter'];
+  private readonly grantChecker: ActionTrustLadderOptions['grantChecker'];
+  private readonly grantPrincipalKind: () => 'agent' | 'user';
 
   constructor(
     private readonly pool: Pool,
@@ -164,6 +188,8 @@ export class ActionTrustLadder implements IActionGate {
     this.now = opts.now ?? (() => new Date());
     this.slaAttacher = opts.slaAttacher;
     this.rateLimiter = opts.rateLimiter;
+    this.grantChecker = opts.grantChecker;
+    this.grantPrincipalKind = opts.grantPrincipalKind ?? (() => 'agent');
   }
 
   async gate(ctx: ActionContext): Promise<GateDecision> {
@@ -194,6 +220,28 @@ export class ActionTrustLadder implements IActionGate {
     if (resolved.mode === 'forbidden') {
       if (shadowOnly) return { mode: 'execute' };
       return { mode: 'forbidden', reason: 'class is forbidden for this tenant' };
+    }
+
+    // S.4: when about to return require_approval, consult any active
+    // time-windowed grants. A matching grant short-circuits to execute
+    // and records the proposal row tagged with grant_id for audit.
+    // Shadow-only mode skips the grant check (the action runs as 'execute'
+    // either way, and we don't want to burn grant uses on shadows).
+    if (resolved.mode === 'require_approval' && this.grantChecker && !shadowOnly) {
+      const principalKind = this.grantPrincipalKind();
+      const grant = await this.grantChecker.tryConsume({
+        tenantId: ctx.tenantId,
+        actionClass: ctx.actionClass,
+        grantedToKind: principalKind,
+        ...(principalKind === 'user' ? { grantedToUserId: ctx.userId } : {}),
+        payload: ctx.payload,
+      });
+      if (grant.kind === 'grant_consumed') {
+        // Record an audit proposal in `executed_live` state with the grant
+        // id, so operators can see "this action ran via grant X".
+        await this.recordGrantConsumedProposal(ctx, grant.grantId);
+        return { mode: 'execute' };
+      }
     }
 
     // dry_run / shadow / require_approval — write a proposal row.
@@ -366,6 +414,55 @@ export class ActionTrustLadder implements IActionGate {
     if (age >= 30 && score >= 0.85) return row.established;
     if (age >= 7 && score >= 0.6) return row.withSignal;
     return row.young;
+  }
+
+  /**
+   * S.4: when a grant short-circuits require_approval → execute, we still
+   * write a proposal row so the action appears in audit. The row is
+   * recorded directly as executed_live and tagged with grant_id so
+   * operators can group actions by the grant that authorized them. This
+   * is fire-and-forget — failure to insert MUST NOT block the action.
+   */
+  private async recordGrantConsumedProposal(ctx: ActionContext, grantId: string): Promise<void> {
+    try {
+      const client = await this.pool.connect();
+      try {
+        await client.query('BEGIN');
+        await setTenantScopeFromCtx(client, ctx);
+        await client.query(
+          `INSERT INTO oweibo.action_proposals (
+             id, tenant_id, user_id, action_class, action_id, mode,
+             summary, payload, rollback_kind, rollback_detail, state,
+             created_at, expires_at, grant_id, decided_at, decision_reason
+           ) VALUES (
+             gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, 'require_approval',
+             $5, $6::jsonb, $7, $8::jsonb, 'executed_live',
+             NOW(), NOW() + INTERVAL '7 days', $9::uuid, NOW(), 'auto_promoted_via_grant'
+           )
+           ON CONFLICT (tenant_id, action_id) DO NOTHING`,
+          [
+            ctx.tenantId,
+            ctx.userId,
+            ctx.actionClass,
+            ctx.actionId,
+            ctx.summary,
+            JSON.stringify(ctx.payload ?? null),
+            ctx.rollback?.kind ?? null,
+            JSON.stringify(ctx.rollback?.rollbackPlan ?? null),
+            grantId,
+          ],
+        );
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK').catch(() => undefined);
+        throw err;
+      } finally {
+        client.release();
+      }
+    } catch {
+      // Audit-row failure must never block the action that the grant
+      // already authorized.
+    }
   }
 
   private async recordProposal(ctx: ActionContext, mode: TrustMode): Promise<string> {

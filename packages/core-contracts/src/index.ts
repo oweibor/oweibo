@@ -66,6 +66,9 @@ export * from './action/RateLimit.js';
 // ── S.3 (action-safety-v2): rollback execution framework ─────────────────────
 export * from './action/IRollbackAdapter.js';
 
+// ── S.4 (action-safety-v2): multi-party + time-windowed approvals ────────────
+export * from './action/ApprovalGrant.js';
+
 // ── T.2.f: connector catalog + tenant-instance contracts ─────────────────────
 export * from './connector/IConnector.js';
 

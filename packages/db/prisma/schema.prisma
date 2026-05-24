@@ -870,3 +870,76 @@ model InAppNotification {
   @@map("in_app_notifications")
   @@schema("oweibo")
 }
+
+// S.4 (ttv-action-safety-v2): per-(tenant, action_class) quorum policy.
+// action_class = '*' is the tenant default; specific class overrides.
+model MultiPartyApprovalPolicy {
+  tenantId                 String   @map("tenant_id") @db.Uuid
+  actionClass              String   @map("action_class")
+  quorum                   Int      @default(1)
+  dissentVetoes            Boolean  @default(true) @map("dissent_vetoes")
+  allowGrants              Boolean  @default(false) @map("allow_grants")
+  maxGrantDurationSeconds  Int      @default(86400) @map("max_grant_duration_seconds")
+  maxGrantActionCount      Int      @default(100) @map("max_grant_action_count")
+  allowDelegation          Boolean  @default(true) @map("allow_delegation")
+  updatedAt                DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  @@id([tenantId, actionClass])
+  @@map("multi_party_approval_policies")
+  @@schema("oweibo")
+}
+
+// S.4: per-(proposal, voter) append-only vote ledger.
+model ApprovalVote {
+  proposalId       String   @map("proposal_id") @db.Uuid
+  voterUserId      String   @map("voter_user_id") @db.Uuid
+  tenantId         String   @map("tenant_id") @db.Uuid
+  vote             String
+  comment          String?
+  viaDelegation    Boolean  @default(false) @map("via_delegation")
+  delegatorUserId  String?  @map("delegator_user_id") @db.Uuid
+  votedAt          DateTime @default(now()) @map("voted_at") @db.Timestamptz
+
+  @@id([proposalId, voterUserId])
+  @@index([proposalId, vote])
+  @@map("approval_votes")
+  @@schema("oweibo")
+}
+
+// S.4: time-windowed grant authorising auto-approval for N actions / D seconds.
+model TimeWindowedGrant {
+  id                  String    @id @default(uuid()) @db.Uuid
+  tenantId            String    @map("tenant_id") @db.Uuid
+  actionClass         String    @map("action_class")
+  grantedByUserIds    String[]  @map("granted_by_user_ids") @db.Uuid
+  grantedToKind       String    @map("granted_to_kind")
+  grantedToUserId     String?   @map("granted_to_user_id") @db.Uuid
+  scopeFilter         Json?     @map("scope_filter")
+  expiresAt           DateTime  @map("expires_at") @db.Timestamptz
+  maxUses             Int       @default(1) @map("max_uses")
+  uses                Int       @default(0)
+  state               String    @default("active")
+  revokedByUserId     String?   @map("revoked_by_user_id") @db.Uuid
+  revokedAt           DateTime? @map("revoked_at") @db.Timestamptz
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([tenantId, actionClass, expiresAt])
+  @@map("time_windowed_grants")
+  @@schema("oweibo")
+}
+
+// S.4: bounded delegation of approval authority (non-transitive).
+model ApprovalDelegation {
+  delegatorUserId String    @map("delegator_user_id") @db.Uuid
+  delegateUserId  String    @map("delegate_user_id") @db.Uuid
+  tenantId        String    @map("tenant_id") @db.Uuid
+  actionClass     String    @map("action_class")
+  expiresAt       DateTime  @map("expires_at") @db.Timestamptz
+  revokedAt       DateTime? @map("revoked_at") @db.Timestamptz
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@id([delegatorUserId, delegateUserId, tenantId, actionClass])
+  @@index([delegateUserId, tenantId, actionClass, expiresAt])
+  @@map("approval_delegations")
+  @@schema("oweibo")
+}

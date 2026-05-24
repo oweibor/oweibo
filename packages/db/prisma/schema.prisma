@@ -813,6 +813,32 @@ model RateLimitPolicy {
   @@schema("oweibo")
 }
 
+// S.3 (ttv-action-safety-v2): rollback execution audit row.
+// One row per orchestrator invocation. Adapter idempotency may mean
+// re-runs produce multiple rows pointing at the same original_action_id;
+// the latest row is the authoritative result.
+model RollbackExecution {
+  id               String    @id @default(uuid()) @db.Uuid
+  tenantId         String    @map("tenant_id") @db.Uuid
+  originalActionId String    @map("original_action_id") @db.Uuid
+  recoveryActionId String?   @map("recovery_action_id") @db.Uuid
+  adapterName      String    @map("adapter_name")
+  reason           String
+  invokedByType    String    @map("invoked_by_type")
+  invokedById      String    @map("invoked_by_id")
+  resultState      String?   @map("result_state")
+  resultDetails    String?   @map("result_details")
+  sideEffects      String[]  @default([]) @map("side_effects")
+  costUsdCents     Int       @default(0) @map("cost_usd_cents")
+  startedAt        DateTime  @default(now()) @map("started_at") @db.Timestamptz
+  completedAt      DateTime? @map("completed_at") @db.Timestamptz
+
+  @@index([originalActionId])
+  @@index([tenantId, startedAt(sort: Desc)])
+  @@map("rollback_executions")
+  @@schema("oweibo")
+}
+
 // S.2: append-only event log for observability + tuning.
 model RateLimitEvent {
   id          String   @id @default(uuid()) @db.Uuid

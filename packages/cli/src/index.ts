@@ -53,6 +53,7 @@ import { makeQuarantineCommand } from './commands/quarantine.js';
 import { makeScrapeCommand }     from './commands/scrape.js';
 import { makeLedgerCommand }     from './commands/ledger.js';
 import { makeHitlCommand }       from './commands/hitl-cmd.js';
+import { makeForensicsCommand }  from './commands/forensics.js';
 
 function getVersion(): string {
   try {
@@ -85,6 +86,7 @@ program.addCommand(makeQuarantineCommand());
 program.addCommand(makeScrapeCommand());
 program.addCommand(makeLedgerCommand());
 program.addCommand(makeHitlCommand());
+program.addCommand(makeForensicsCommand());
 
 // ── Legacy top-level commands (preserved for backward compat) ─────────────
 program.addCommand(makeRunCommand());

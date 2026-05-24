@@ -76,6 +76,9 @@ export * from './action/IPostExecutionVerifier.js';
 // ── S.6 (action-safety-v2): action quotas + budget insurance ─────────────────
 export * from './action/Quota.js';
 
+// ── S.7 (action-safety-v2): forensic replay + HITL handoff ───────────────────
+export * from './action/ForensicPacket.js';
+
 // ── T.2.f: connector catalog + tenant-instance contracts ─────────────────────
 export * from './connector/IConnector.js';
 

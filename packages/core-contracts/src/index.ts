@@ -73,6 +73,9 @@ export * from './action/ApprovalGrant.js';
 export * from './action/IContentInspector.js';
 export * from './action/IPostExecutionVerifier.js';
 
+// ── S.6 (action-safety-v2): action quotas + budget insurance ─────────────────
+export * from './action/Quota.js';
+
 // ── T.2.f: connector catalog + tenant-instance contracts ─────────────────────
 export * from './connector/IConnector.js';
 

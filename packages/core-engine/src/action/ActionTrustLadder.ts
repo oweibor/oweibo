@@ -185,6 +185,38 @@ export interface ActionTrustLadderOptions {
       }>;
     }>;
   };
+  /**
+   * S.6: optional quota service. Consulted AFTER content inspection but
+   * BEFORE proposal write / grant check. A `deny` result terminates the
+   * gate with `forbidden { reason: 'quota_exhausted:<kind>:<scope>' }`.
+   * A `soft_warn` result is logged but does NOT block. When omitted,
+   * no quota check runs — byte-identical to today.
+   */
+  quotaService?: {
+    preflight(args: {
+      readonly tenantId: string;
+      readonly actionClass: string;
+      readonly estimatedCostUsdCents?: number;
+      readonly blastRadiusUsers?: number;
+    }): Promise<
+      | { kind: 'allow' }
+      | { kind: 'soft_warn'; quotaKind: string; scope: string; window: string; limit: number; consumed: number; resetAt: string }
+      | { kind: 'deny';      quotaKind: string; scope: string; window: string; limit: number; consumed: number; resetAt: string }
+    >;
+  };
+  /**
+   * S.6: optional cost estimator. When supplied alongside `quotaService`,
+   * the gate calls `estimate(...)` and passes the result to
+   * `preflight()` so usd_cost_* quotas see a non-zero contribution.
+   */
+  budgetEstimator?: {
+    estimate(args: {
+      readonly tenantId: string;
+      readonly actionClass: string;
+      readonly payload?: unknown;
+      readonly homeRegion?: string;
+    }): Promise<{ costUsdCents: number; source: string; confidence: string }>;
+  };
 }
 
 // ── Service ────────────────────────────────────────────────────────────────
@@ -198,6 +230,8 @@ export class ActionTrustLadder implements IActionGate {
   private readonly grantChecker: ActionTrustLadderOptions['grantChecker'];
   private readonly grantPrincipalKind: () => 'agent' | 'user';
   private readonly contentInspectors: ActionTrustLadderOptions['contentInspectors'];
+  private readonly quotaService: ActionTrustLadderOptions['quotaService'];
+  private readonly budgetEstimator: ActionTrustLadderOptions['budgetEstimator'];
 
   constructor(
     private readonly pool: Pool,
@@ -211,6 +245,8 @@ export class ActionTrustLadder implements IActionGate {
     this.grantChecker = opts.grantChecker;
     this.grantPrincipalKind = opts.grantPrincipalKind ?? (() => 'agent');
     this.contentInspectors = opts.contentInspectors;
+    this.quotaService = opts.quotaService;
+    this.budgetEstimator = opts.budgetEstimator;
   }
 
   async gate(ctx: ActionContext): Promise<GateDecision> {
@@ -258,6 +294,42 @@ export class ActionTrustLadder implements IActionGate {
     if (inspectionForbidReason !== null) {
       return { mode: 'forbidden', reason: inspectionForbidReason };
     }
+
+    // S.6: quota preflight runs AFTER content inspection and BEFORE the
+    // execute/forbidden early returns. A `deny` result terminates the gate
+    // with `quota_exhausted:<kind>:<scope>`. A `soft_warn` is logged but
+    // does not block. Shadow-only bypasses (the action will execute
+    // either way and we don't want to burn quota on shadows).
+    if (this.quotaService && !shadowOnly) {
+      let estimatedCostUsdCents: number | undefined;
+      if (this.budgetEstimator) {
+        try {
+          const est = await this.budgetEstimator.estimate({
+            tenantId: ctx.tenantId,
+            actionClass: ctx.actionClass,
+            payload: ctx.payload,
+          });
+          estimatedCostUsdCents = est.costUsdCents;
+        } catch {
+          // Estimator failure must never block the gate; usd_cost_* quotas
+          // simply see 0 contribution and pass through.
+        }
+      }
+      const preflight = await this.quotaService.preflight({
+        tenantId: ctx.tenantId,
+        actionClass: ctx.actionClass,
+        ...(estimatedCostUsdCents !== undefined ? { estimatedCostUsdCents } : {}),
+      });
+      if (preflight.kind === 'deny') {
+        return {
+          mode: 'forbidden',
+          reason: `quota_exhausted:${preflight.quotaKind}:${preflight.scope}:resets_at_${preflight.resetAt}`,
+        };
+      }
+      // soft_warn: continue. The result is observable via the
+      // quota_consumption table; we don't need extra audit here.
+    }
+
     if (effectiveMode === 'execute') {
       return { mode: 'execute' };
     }

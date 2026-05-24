@@ -1003,3 +1003,50 @@ model DeferredVerification {
   @@map("deferred_verifications")
   @@schema("oweibo")
 }
+
+// S.6 (ttv-action-safety-v2): absolute caps over day / month / year.
+// Distinct from RateLimitPolicy (short-window flow control).
+model QuotaPolicy {
+  tenantId               String   @map("tenant_id") @db.Uuid
+  quotaKind              String   @map("quota_kind")
+  scope                  String   @default("*")
+  window                 String
+  limitValue             BigInt   @map("limit_value")
+  coldStartLimit         BigInt?  @map("cold_start_limit")
+  coldStartDurationDays  Int      @default(30) @map("cold_start_duration_days")
+  enforcementMode        String   @default("hard") @map("enforcement_mode")
+  updatedAt              DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  @@id([tenantId, quotaKind, scope, window])
+  @@map("quota_policies")
+  @@schema("oweibo")
+}
+
+// S.6: running counter per (tenant, kind, scope, window, window_start).
+model QuotaConsumption {
+  tenantId     String   @map("tenant_id") @db.Uuid
+  quotaKind    String   @map("quota_kind")
+  scope        String   @default("*")
+  window       String
+  windowStart  DateTime @map("window_start") @db.Date
+  consumed     BigInt   @default(0)
+  updatedAt    DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  @@id([tenantId, quotaKind, scope, window, windowStart])
+  @@index([tenantId, quotaKind, scope, window, windowStart(sort: Desc)])
+  @@map("quota_consumption")
+  @@schema("oweibo")
+}
+
+// S.6: opt-in pool that absorbs estimate-vs-actual overage on cost.
+model BudgetInsurancePool {
+  tenantId             String   @id @map("tenant_id") @db.Uuid
+  commitmentUsdCents   BigInt   @map("commitment_usd_cents")
+  poolBalanceUsdCents  BigInt   @map("pool_balance_usd_cents")
+  poolPeriod           String   @map("pool_period")
+  poolResetsAt         DateTime @map("pool_resets_at") @db.Timestamptz
+  updatedAt            DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  @@map("budget_insurance_pools")
+  @@schema("oweibo")
+}

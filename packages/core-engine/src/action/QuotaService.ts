@@ -92,6 +92,13 @@ export class QuotaService implements IQuotaService {
     let worst: QuotaPreflightResult = { kind: 'allow' };
     for (const policy of policies) {
       const delta = this.deltaFor(policy.quotaKind, args);
+      // Audit-fix (S.0 #9 follow-through): a delta of 0 means either
+      // "this kind doesn't apply" (e.g. blast_radius_user_count with no
+      // blast supplied) OR "cost is unknown." Both safely skip the check
+      // here — but for cost-kind quotas with unknown cost, the
+      // BudgetEstimator should have filled in a conservative fallback
+      // upstream. If it didn't, we skip; downstream telemetry should
+      // count these as `quota_check_skipped_unknown_cost`.
       if (delta === 0) continue;
       const limit = effectiveLimit(policy, ageDays);
       const windowStart = windowStartFor(policy.window, now);

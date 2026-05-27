@@ -79,6 +79,9 @@ export * from './action/Quota.js';
 // ── S.7 (action-safety-v2): forensic replay + HITL handoff ───────────────────
 export * from './action/ForensicPacket.js';
 
+// ── Audit-fix: task event bus seam for waking paused tasks ───────────────────
+export * from './action/ITaskEventBus.js';
+
 // ── T.2.f: connector catalog + tenant-instance contracts ─────────────────────
 export * from './connector/IConnector.js';
 

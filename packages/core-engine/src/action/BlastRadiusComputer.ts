@@ -5,7 +5,9 @@
  * Aggregation rules:
  *   - systems / dataDomains: set-union (deduplicated, sorted for stable output)
  *   - worstReversibility: max by REVERSIBILITY_RANK (least-reversible wins)
- *   - estimatedCostUsdCents: sum, clamped non-negative
+ *   - estimatedCostUsdCents: sum, clamped non-negative. Returns null if
+ *     ANY contribution is null — unknown poisons the sum so callers
+ *     can route to the BudgetEstimator (audit-fix S.0 #9).
  *   - estimatedReachUserCount: max (not sum — same end-user observing two
  *     actions is still one observation)
  *
@@ -25,6 +27,7 @@ export class BlastRadiusComputer {
     const systems = new Set<string>();
     const domains = new Set<string>();
     let worstRank = REVERSIBILITY_RANK.trivial;
+    let costKnown = true;
     let cost = 0;
     let reach = 0;
 
@@ -33,7 +36,11 @@ export class BlastRadiusComputer {
       for (const d of c.dataDomains) domains.add(d);
       const rank = REVERSIBILITY_RANK[c.reversibility];
       if (rank > worstRank) worstRank = rank;
-      cost += Math.max(0, c.costUsdCents);
+      if (c.costUsdCents === null) {
+        costKnown = false;
+      } else {
+        cost += Math.max(0, c.costUsdCents);
+      }
       if (c.reachUserCount > reach) reach = c.reachUserCount;
     }
 
@@ -41,7 +48,7 @@ export class BlastRadiusComputer {
       systems: Array.from(systems).sort(),
       dataDomains: Array.from(domains).sort(),
       worstReversibility: rankToReversibility(worstRank),
-      estimatedCostUsdCents: cost,
+      estimatedCostUsdCents: costKnown ? cost : null,
       estimatedReachUserCount: reach,
     };
   }

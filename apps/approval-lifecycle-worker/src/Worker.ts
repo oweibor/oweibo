@@ -72,6 +72,26 @@ export interface WorkerLogger {
   error(message: string, extra?: Record<string, unknown>): void;
 }
 
+/**
+ * Audit-fix (S.1 TaskEventBus): typed bus seam. Worker imports only the
+ * minimal shape it needs (publish) so it doesn't pull in core-engine
+ * just to wake tasks. Production wires a distributed bus; tests inject
+ * a stub.
+ */
+export interface ITaskEventBusPublisher {
+  publish(event: {
+    readonly tenantId: string;
+    readonly proposalId: string;
+    readonly originatingTaskId: string | null;
+    readonly actionId: string;
+    readonly actionClass: string;
+    readonly decision: 'approved' | 'rejected' | 'expired' | 'auto_promoted_via_grant';
+    readonly decidedByUserId?: string;
+    readonly reason?: string;
+    readonly decidedAtMs: number;
+  }): Promise<void>;
+}
+
 export interface ApprovalLifecycleWorkerOptions {
   /** How many rows to claim per tick. Default 200. */
   batchSize?: number;
@@ -88,6 +108,14 @@ export interface ApprovalLifecycleWorkerOptions {
   deferredVerificationRunner?: IDeferredVerificationRunner;
   /** Per-tick batch size for deferred verifications; default 100. */
   deferredVerificationBatchSize?: number;
+  /**
+   * Audit-fix (S.1 TaskEventBus): optional task event bus. When wired,
+   * the worker publishes a `decision` event whenever a proposal is
+   * auto-rejected (hard expiry) so the originating agent task can wake
+   * up and react. When omitted, the auto-reject still happens — the
+   * agent just doesn't get a wake signal until it polls.
+   */
+  taskEventBus?: ITaskEventBusPublisher;
 }
 
 interface DueRow {
@@ -104,6 +132,10 @@ interface ProposalRow {
   action_class: string;
   user_id: string | null;
   summary: string;
+  // Audit-fix: read action_id + originating_task_id so the worker can
+  // publish a TaskEventBus event when the proposal expires.
+  action_id: string;
+  originating_task_id: string | null;
 }
 
 const DEFAULT_BATCH_SIZE = 200;
@@ -115,6 +147,7 @@ export class ApprovalLifecycleWorker {
   private readonly isEnabled: () => boolean;
   private readonly deferredVerificationRunner: IDeferredVerificationRunner | undefined;
   private readonly deferredVerificationBatchSize: number;
+  private readonly taskEventBus: ITaskEventBusPublisher | undefined;
 
   constructor(
     private readonly pool: Pool,
@@ -129,6 +162,7 @@ export class ApprovalLifecycleWorker {
     this.isEnabled = opts.isEnabled ?? defaultEnabled;
     this.deferredVerificationRunner = opts.deferredVerificationRunner;
     this.deferredVerificationBatchSize = opts.deferredVerificationBatchSize ?? 100;
+    this.taskEventBus = opts.taskEventBus;
   }
 
   async runOnce(): Promise<{ processed: number; expired: number; escalated: number; skipped: number; deferredVerified: number }> {
@@ -279,6 +313,31 @@ export class ApprovalLifecycleWorker {
     } finally {
       client.release();
     }
+    // Audit-fix (S.1 TaskEventBus): publish a wake event so the
+    // originating agent task can resume. Best-effort — publish failure
+    // MUST NOT block the expire path. The proposal state in Postgres
+    // remains the source of truth; the wake event is just a latency
+    // optimization over the agent's polling fallback.
+    if (this.taskEventBus && proposal.originating_task_id) {
+      try {
+        await this.taskEventBus.publish({
+          tenantId: row.tenant_id,
+          proposalId: row.proposal_id,
+          originatingTaskId: proposal.originating_task_id,
+          actionId: proposal.action_id,
+          actionClass: proposal.action_class,
+          decision: 'expired',
+          reason: 'sla_expired',
+          decidedAtMs: this.now().getTime(),
+        });
+      } catch (err) {
+        this.logger.warn('taskEventBus.publish threw on expire', {
+          proposalId: row.proposal_id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     // Best-effort expiry notification (urgent bypasses quiet hours).
     const recipients: { userId: string }[] = [];
     if (proposal.user_id) recipients.push({ userId: proposal.user_id });
@@ -346,7 +405,8 @@ export class ApprovalLifecycleWorker {
         await client.query(`SET LOCAL app.tenant_id = '${tenantId}'`);
       }
       const r = await client.query<ProposalRow>(
-        `SELECT id, state, action_class, user_id, summary
+        `SELECT id, state, action_class, user_id, summary,
+                action_id, originating_task_id
            FROM oweibo.action_proposals
           WHERE id = $1::uuid`,
         [proposalId],

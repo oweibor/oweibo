@@ -295,7 +295,11 @@ describe('ActionTrustLadder.gate — auto-promotion', () => {
         match: 'SELECT current_mode',
         rows: [{ current_mode: 'dry_run', pinned_by: null, observations: 12, successes: 12 }],
       },
-      { match: 'UPDATE oweibo.tenant_action_class_state', rows: [] },
+      // Audit-fix: tryAutoPromote now uses an atomic
+      // `UPDATE ... RETURNING tenant_id AS id` — the stub must return
+      // one row so the claim is considered successful (zero rows would
+      // mean a concurrent gate already promoted).
+      { match: 'UPDATE oweibo.tenant_action_class_state', rows: [{ id: 'tenant' }] },
     ]);
     const ladder = new ActionTrustLadder(pool, { isEnabled: () => true });
     const decision = await ladder.gate(makeCtx({
@@ -307,6 +311,27 @@ describe('ActionTrustLadder.gate — auto-promotion', () => {
       c.sql.includes('UPDATE oweibo.tenant_action_class_state') &&
       c.sql.includes("current_mode = 'execute'"),
     )).toBe(true);
+  });
+
+  it('audit-fix: skips auto-promote when atomic UPDATE returns zero rows (concurrent winner)', async () => {
+    // Simulates two concurrent gate() calls both observing the
+    // promotion threshold: one wins the UPDATE, the other gets zero
+    // rows back and must fall through to writing a proposal.
+    const { pool } = makePool([
+      {
+        match: 'SELECT current_mode',
+        rows: [{ current_mode: 'dry_run', pinned_by: null, observations: 12, successes: 12 }],
+      },
+      { match: 'UPDATE oweibo.tenant_action_class_state', rows: [] }, // concurrent winner already claimed
+      { match: 'INSERT INTO oweibo.action_proposals', rows: [{ id: 'p-fallback' }] },
+    ]);
+    const ladder = new ActionTrustLadder(pool, { isEnabled: () => true });
+    const decision = await ladder.gate(makeCtx({
+      actionClass: 'write.external_api.nonprod',
+      calibrationSnapshot: makeSnapshot(15, 0.5, 'write.external_api.nonprod'),
+    }));
+    // Falls through to dry_run proposal write (the originally-resolved mode).
+    expect(decision.mode).toBe('dry_run');
   });
 
   it('does not auto-promote when pinned', async () => {

@@ -16,9 +16,21 @@
  *                             organic memories outrank after divergence.
  *   - `projects`            — copy parent's projects (names prefixed
  *                             `[from parent]`) and their invariant maps.
- *   - `org_graph`           — copy parent's org nodes + edges, excluding
- *                             `person` nodes (specific individuals don't
- *                             transfer).
+ *   - `org_graph`           — copy parent's org nodes + edges.
+ *                             `person` nodes are cloned as SHELL nodes:
+ *                             label preserved, `user_id` set to NULL.
+ *                             This preserves the team's `member_of`
+ *                             edge structure (FK invariant) so cloning
+ *                             `team` nodes doesn't produce dangling FKs.
+ *                             Shell person nodes appear in the child
+ *                             tenant's "review needed" admin list; they
+ *                             rebind to real users when those users
+ *                             accept invitations (T.2.h alignment).
+ *                             Audit-fix (T.9): the alternative — skipping
+ *                             person nodes — broke FK invariants because
+ *                             team→member_of→person edges in the parent
+ *                             would FK-violate when re-inserted in the
+ *                             child without the destination node.
  *   - `connectors_recommend` — write recommendations for parent's installed
  *                             connector types; credentials NEVER transfer.
  *   - `settings`            — copy `trustModeDefault`, cohort_channel,

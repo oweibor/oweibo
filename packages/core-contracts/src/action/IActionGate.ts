@@ -9,6 +9,7 @@
  * { mode: 'execute' } deterministically — behavior is byte-identical to
  * the pre-T.−1 codepath.
  */
+import { createHash } from 'crypto';
 import type { ActionClass } from './ActionClass.js';
 
 export interface ActionContext {
@@ -28,6 +29,14 @@ export interface ActionContext {
    * (T.5.a) and pinned for the snapshot's lifetime. The trust ladder reads
    * accountAgeDays and per-class scores from here to avoid a DB round-trip
    * on every gate() call.
+   *
+   * Known limitation: long-running batch tasks pin a single snapshot for
+   * the task's entire lifetime. A task running for > 24 h with a stale
+   * snapshot may miss auto-promotion thresholds crossed mid-task. No
+   * checkpoint/refresh hook is wired today; callers needing fresh state
+   * mid-task must split the work across separate ActionContexts. Future
+   * work: a CalibrationService.refresh(snapshot) hook with an explicit
+   * staleness threshold.
    */
   readonly calibrationSnapshot: TenantReadinessSnapshot;
 }
@@ -92,4 +101,67 @@ export interface IActionGate {
 
   /** Called when a proposal is rejected. Counts as 1 observation, 1 rejection. */
   reject(promoteId: string, principal: GatePrincipal, reason: string): Promise<void>;
+}
+
+/**
+ * Audit-fix (T.−1 #3): the canonical reference implementation every
+ * action-issuing tool (kilo-pipeline, browser-tool, channel-gateway, ...)
+ * MUST use to compute `ActionContext.actionId`. Centralizing the
+ * computation here means:
+ *
+ *   - the (tenant_id, action_id) UNIQUE on action_proposals reliably
+ *     dedupes retries of the same logical action
+ *   - two different issuers can't accidentally collide on the same id
+ *     for semantically-different actions (because originatingTaskId +
+ *     stepNumber differ)
+ *   - a retry after a transient failure produces the same id as long as
+ *     the inputs are reproducible
+ *
+ * Inputs:
+ *   - tenantId            — already namespaces the id; required
+ *   - actionClass         — required; trust-ladder uses it for classification
+ *   - payload             — JSON-serializable; canonicalized below before hashing
+ *   - originatingTaskId   — the agent task that emitted this action;
+ *                           use a stable per-task uuid, not per-attempt
+ *   - stepNumber          — 0-based action index within the task;
+ *                           differentiates per-action within one task
+ *
+ * Output: 32-character hex prefix of SHA-256(canonicalForm). The prefix
+ * is long enough to keep collision probability negligible (~2^-64 over
+ * 32 chars) while staying under the 64-char column constraint on
+ * action_proposals.action_id.
+ */
+export function canonicalActionId(args: {
+  readonly tenantId: string;
+  readonly actionClass: ActionClass;
+  readonly payload: unknown;
+  readonly originatingTaskId: string;
+  readonly stepNumber: number;
+}): string {
+  const payloadHash = createHash('sha256')
+    .update(canonicalJson(args.payload))
+    .digest('hex');
+  const canonical = [
+    args.tenantId,
+    args.actionClass,
+    args.originatingTaskId,
+    String(args.stepNumber),
+    payloadHash,
+  ].join('\x1f'); // \x1f = ASCII unit separator; not legal in any field
+  return createHash('sha256').update(canonical).digest('hex').slice(0, 32);
+}
+
+/**
+ * Deterministic JSON serialization: keys sorted at every object level
+ * so `{a: 1, b: 2}` and `{b: 2, a: 1}` hash identically.
+ */
+function canonicalJson(value: unknown): string {
+  if (value === null || value === undefined) return 'null';
+  if (typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return '[' + value.map(canonicalJson).join(',') + ']';
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return '{' + keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`).join(',') + '}';
 }

@@ -104,9 +104,33 @@ export class ActionPlanGate {
     }
     const forceApproval = plan.actions.some((a) => PLAN_FORCE_APPROVAL_CLASSES.has(a.actionClass));
 
-    // 4. Budget ceiling.
+    // Audit-fix (S.0 #10): refuse all_or_nothing plans that contain any
+    // hard-pinned class. Once steps 1..k-1 execute, a per-action gate
+    // STILL fires `require_approval` for step k (CLASSES_ALWAYS_REQUIRE_
+    // APPROVAL is enforced by ActionTrustLadder independently), and an
+    // operator rejection mid-plan leaves the plan stuck — there is no
+    // rollback_pending state pre-S.3, and even with S.3, `all_or_nothing`
+    // means a single mid-plan rejection has to roll back every prior
+    // step. The right answer is to reject the plan at gate time so the
+    // caller switches atomicity to `sequential_with_checkpoints`.
+    if (plan.atomicity === 'all_or_nothing' && forceApproval) {
+      const offender = plan.actions.find((a) => PLAN_FORCE_APPROVAL_CLASSES.has(a.actionClass));
+      return {
+        mode: 'forbidden',
+        reason:
+          `all_or_nothing plan contains hard-pinned class '${offender?.actionClass}'; ` +
+          `switch atomicity to 'sequential_with_checkpoints' so a mid-plan rejection ` +
+          `does not deadlock the plan`,
+        blastRadius,
+      };
+    }
+
+    // 4. Budget ceiling. A null cost (unknown) doesn't trip the ceiling
+    //    on its own — S.6's QuotaService is the right place to fall back
+    //    to the BudgetEstimator. Treat null as "no plan-level cost signal."
     const ceiling = await this.planCostCeiling(plan.tenantId);
-    const overBudget = blastRadius.estimatedCostUsdCents > ceiling;
+    const planCost = blastRadius.estimatedCostUsdCents;
+    const overBudget = planCost !== null && planCost > ceiling;
 
     if (!forceApproval && !overBudget) {
       return { mode: 'execute_each', blastRadius };

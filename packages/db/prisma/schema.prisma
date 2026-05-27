@@ -1050,3 +1050,48 @@ model BudgetInsurancePool {
   @@map("budget_insurance_pools")
   @@schema("oweibo")
 }
+
+// S.7 (ttv-action-safety-v2): signed forensic packet for HITL handoff.
+// Packet body lives in object storage; this row carries the ref + sig.
+model ForensicPacket {
+  id                String    @id @default(uuid()) @db.Uuid
+  tenantId          String    @map("tenant_id") @db.Uuid
+  planId            String    @map("plan_id") @db.Uuid
+  triggerKind       String    @map("trigger_kind")
+  triggeredBy       String    @map("triggered_by")
+  summary           String?
+  packetStorageRef  String    @map("packet_storage_ref")
+  packetSignature   String    @map("packet_signature")
+  packetByteSize    Int       @default(0) @map("packet_byte_size")
+  state             String    @default("open")
+  resolution        String?
+  resolutionNotes   String?   @map("resolution_notes")
+  resolvedBy        String?   @map("resolved_by") @db.Uuid
+  resolvedAt        DateTime? @map("resolved_at") @db.Timestamptz
+  expiresAt         DateTime  @map("expires_at") @db.Timestamptz
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([planId])
+  @@map("forensic_packets")
+  @@schema("oweibo")
+}
+
+// S.7: replay run audit + queue.
+model ActionReplayRun {
+  id             String    @id @default(uuid()) @db.Uuid
+  tenantId       String    @map("tenant_id") @db.Uuid
+  planId         String    @map("plan_id") @db.Uuid
+  requestedBy    String    @map("requested_by") @db.Uuid
+  replayKind     String    @map("replay_kind")
+  mutation       Json?
+  resultSummary  Json?     @map("result_summary")
+  status         String    @default("queued")
+  failureReason  String?   @map("failure_reason")
+  startedAt      DateTime? @map("started_at") @db.Timestamptz
+  completedAt    DateTime? @map("completed_at") @db.Timestamptz
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([planId, createdAt(sort: Desc)])
+  @@map("action_replay_runs")
+  @@schema("oweibo")
+}

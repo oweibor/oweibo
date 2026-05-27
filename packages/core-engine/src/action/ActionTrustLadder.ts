@@ -217,6 +217,21 @@ export interface ActionTrustLadderOptions {
       readonly homeRegion?: string;
     }): Promise<{ costUsdCents: number; source: string; confidence: string }>;
   };
+  /**
+   * Audit-fix (T.−1 #1): optional calibration-snapshot verifier. When
+   * supplied, gate() verifies `ctx.calibrationSnapshot.sourceSig` before
+   * trusting the snapshot's accountAgeDays / per-class scores. A failed
+   * verification means a tool constructed a synthetic snapshot — the
+   * gate falls back to the most-conservative defaults (accountAgeDays=0,
+   * actionClassScores={}) rather than rejecting the action outright, so
+   * a bug in the verifier never blocks legitimate work but a successful
+   * forgery still gets cold-start treatment.
+   *
+   * When omitted, no verification runs — byte-identical to today.
+   */
+  snapshotVerifier?: {
+    verify(snapshot: import('@oweibo/core-contracts').TenantReadinessSnapshot): boolean;
+  };
 }
 
 // ── Service ────────────────────────────────────────────────────────────────
@@ -232,6 +247,7 @@ export class ActionTrustLadder implements IActionGate {
   private readonly contentInspectors: ActionTrustLadderOptions['contentInspectors'];
   private readonly quotaService: ActionTrustLadderOptions['quotaService'];
   private readonly budgetEstimator: ActionTrustLadderOptions['budgetEstimator'];
+  private readonly snapshotVerifier: ActionTrustLadderOptions['snapshotVerifier'];
 
   constructor(
     private readonly pool: Pool,
@@ -247,11 +263,29 @@ export class ActionTrustLadder implements IActionGate {
     this.contentInspectors = opts.contentInspectors;
     this.quotaService = opts.quotaService;
     this.budgetEstimator = opts.budgetEstimator;
+    this.snapshotVerifier = opts.snapshotVerifier;
   }
 
   async gate(ctx: ActionContext): Promise<GateDecision> {
     if (!this.isEnabled()) {
       return { mode: 'execute' };
+    }
+
+    // Audit-fix (T.−1 #1): verify the calibration snapshot's HMAC before
+    // trusting any of its fields. A forged snapshot is degraded to the
+    // most-conservative cold-start profile (age 0, no per-class scores),
+    // which forces the platform_default matrix to pick the strictest
+    // mode for the requested class.
+    let effectiveCtx: ActionContext = ctx;
+    if (this.snapshotVerifier && !this.snapshotVerifier.verify(ctx.calibrationSnapshot)) {
+      effectiveCtx = {
+        ...ctx,
+        calibrationSnapshot: {
+          ...ctx.calibrationSnapshot,
+          accountAgeDays: 0,
+          actionClassScores: {},
+        },
+      };
     }
 
     // S.2: rate-limit check happens BEFORE the trust-mode resolution so
@@ -268,7 +302,10 @@ export class ActionTrustLadder implements IActionGate {
       }
     }
 
-    const resolved = await this.resolveState(ctx);
+    // resolveState (and the auto-promote nested inside it) read from the
+    // calibration snapshot — pass the effectiveCtx so a failed
+    // verification actually downgrades the decision.
+    const resolved = await this.resolveState(effectiveCtx);
     const shadowOnly = this.isShadowOnly();
 
     // S.5.a: content inspectors may upgrade the mode (execute → approval,
@@ -737,12 +774,21 @@ async function tryAutoPromote(
   if (isCoreActionClass(ctx.actionClass) && CLASSES_ALWAYS_REQUIRE_APPROVAL.has(ctx.actionClass)) {
     return null;
   }
-  await client.query(
+  // Atomic compare-and-set: only promote if the row is still in dry_run
+  // and still unpinned. Zero rows back ⇒ a concurrent gate() already
+  // promoted (or the row was just pinned by an operator); we observe
+  // the new state on the next gate() rather than racing the UPDATE.
+  const result = await client.query<{ id: string }>(
     `UPDATE oweibo.tenant_action_class_state
         SET current_mode = 'execute', last_updated = NOW()
-      WHERE tenant_id = $1::uuid AND action_class = $2 AND pinned_by IS NULL`,
+      WHERE tenant_id = $1::uuid
+        AND action_class = $2
+        AND current_mode = 'dry_run'
+        AND pinned_by IS NULL
+      RETURNING tenant_id AS id`,
     [ctx.tenantId, ctx.actionClass],
   );
+  if (result.rows.length === 0) return null;
   return { ...state, mode: 'execute' };
 }
 

@@ -47,6 +47,26 @@ export class SeedCohortAssigner {
    * from any service (tenant-create handler, backfill script, analysis).
    */
   assign(tenantId: string): SeedCohort {
+    return this.assignWithOverride(tenantId);
+  }
+
+  /**
+   * Audit-fix (T.5.e): per-tenant override path. The tenant-create
+   * handler accepts an optional `cohort_override` field (platform_admin
+   * scope only); when present, the override wins outright. This is the
+   * only way to mark a single tenant as 'exempt' without pre-seeding the
+   * constructor-time `exemptTenantIds` set — important for tenants
+   * created AFTER the worker boots (internal-test tenants created
+   * mid-day, synthetic accounts created by load tests, etc.).
+   *
+   * Persistence: the override is stored on `tenant_bootstrap.seed_cohort`
+   * at insert time; downstream readers (BootstrapWorker, the seed-A/B
+   * analysis subcommand) consult that column directly, never re-running
+   * the SHA256 cohorting for overridden tenants. This method documents
+   * the override semantics for callers that re-derive the cohort.
+   */
+  assignWithOverride(tenantId: string, override?: SeedCohort): SeedCohort {
+    if (override) return override;
     if (this.exempt.has(tenantId)) return 'exempt';
     if (!this.isEnabled()) return 'seeded';
     // SHA256 → first byte → bit 0 picks the cohort. SHA256 is uniform over

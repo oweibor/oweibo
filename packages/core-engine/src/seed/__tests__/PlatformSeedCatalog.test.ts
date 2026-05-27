@@ -87,11 +87,15 @@ describe('PlatformSeedCatalog.loadFromDirectory', () => {
 
 describe('PlatformSeedCatalog.forTenant', () => {
   function makeEntry(overrides: Partial<PlatformSeedMemory> = {}): PlatformSeedMemory {
+    // Audit-fix (T.7): summary derived from seedId so each test entry
+    // hashes uniquely. The dedup gate in PlatformSeedCatalog now
+    // rejects identical-content entries with different seedIds; pre-fix
+    // the fixture leaned on duplicate 'test' summaries.
     return {
       seedId: overrides.seedId ?? 'test',
       catalogVersion: '1',
       kind: 'tool-heuristic',
-      summary: overrides.summary ?? 'test',
+      summary: overrides.summary ?? `summary for ${overrides.seedId ?? 'test'}`,
       importance: 0.5,
       tags: [],
       applicableTo: overrides.applicableTo ?? { templates: ['*'] },

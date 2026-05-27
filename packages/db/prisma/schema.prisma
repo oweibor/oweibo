@@ -642,6 +642,10 @@ model TenantBootstrapStep {
   status      String
   attempts    Int       @default(0)
   lastError   String?   @map("last_error")
+  /// Audit-fix (T.1): structured reason for skipped status. Allows the
+  /// reconciliation sweep to re-attempt 'mode_too_low' skips when the
+  /// tenant matures, without fragile last_error string-matching.
+  skipReason  String?   @map("skip_reason")
   result      Json?
   startedAt   DateTime? @map("started_at") @db.Timestamptz
   completedAt DateTime? @map("completed_at") @db.Timestamptz

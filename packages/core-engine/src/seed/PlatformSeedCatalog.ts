@@ -85,14 +85,18 @@ export class PlatformSeedCatalog {
         all.push(normalize(e as PlatformSeedMemory));
       }
     }
+    // Audit-fix (T.7): dedup runs against NORMALIZED entries so the
+    // contentHash field is populated. Input entries from raw JSON / test
+    // fixtures don't carry a contentHash; we'd collide on `undefined`.
     assertSeedIdsUnique(all);
     return new PlatformSeedCatalog(all);
   }
 
   /** Construct from an in-memory list. Used by tests. */
   static fromEntries(entries: readonly PlatformSeedMemory[]): PlatformSeedCatalog {
-    assertSeedIdsUnique(entries);
-    return new PlatformSeedCatalog(entries.map(normalize));
+    const normalized = entries.map(normalize);
+    assertSeedIdsUnique(normalized);
+    return new PlatformSeedCatalog(normalized);
   }
 
   /**
@@ -218,6 +222,24 @@ function assertSeedIdsUnique(entries: readonly PlatformSeedMemory[]): void {
       throw new Error(`PlatformSeedCatalog: duplicate seedId ${e.seedId}`);
     }
     seen.add(e.seedId);
+  }
+  // Audit-fix (T.7): content-hash collision check. Two seeds with
+  // different content shouldn't share a content_hash (astronomically
+  // unlikely with SHA-256 but cheap to guard). Two seeds with identical
+  // CONTENT but different seedIds is a copy-paste bug that the lint
+  // gate must catch — the install log keys off (tenant_id, seed_id)
+  // not content_hash, so a manually-duplicated entry would otherwise
+  // ship and pollute the recall ranking with redundant content.
+  const byHash = new Map<string, string>();
+  for (const e of entries) {
+    const existing = byHash.get(e.contentHash);
+    if (existing && existing !== e.seedId) {
+      throw new Error(
+        `PlatformSeedCatalog: seeds '${existing}' and '${e.seedId}' have identical content_hash; ` +
+        `either they are duplicates (deduplicate before merging) or this is a SHA-256 collision (investigate)`,
+      );
+    }
+    byHash.set(e.contentHash, e.seedId);
   }
 }
 

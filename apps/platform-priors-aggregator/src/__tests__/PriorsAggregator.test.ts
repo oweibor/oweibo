@@ -59,7 +59,10 @@ describe('applyStrengthCap', () => {
     expect(applyStrengthCap(row, 50)).toEqual(row);
   });
 
-  it('scales both sums proportionally when the max exceeds the cap', () => {
+  it('scales both sums proportionally when the sum (= prior strength) exceeds the cap', () => {
+    // Audit-fix (T.3): cap is now alpha+beta = strength, not max(alpha, beta).
+    // Input: α=200, β=100, strength=300; cap=50 ⇒ scale=50/300=1/6.
+    // Output: α=33.33, β=16.67, strength=50 exactly, ratio 2:1 preserved.
     const row = {
       scope_kind: 'prompt_slot' as const,
       scope_key: 'k',
@@ -67,9 +70,25 @@ describe('applyStrengthCap', () => {
       alpha_sum: 200, beta_sum: 100, contributor_count: 7,
     };
     const out = applyStrengthCap(row, 50);
-    expect(out.alpha_sum).toBeCloseTo(50, 5);
-    expect(out.beta_sum).toBeCloseTo(25, 5);
+    expect(out.alpha_sum + out.beta_sum).toBeCloseTo(50, 5);
+    expect(out.alpha_sum).toBeCloseTo(33.333333, 5);
+    expect(out.beta_sum).toBeCloseTo(16.666666, 5);
     expect(out.alpha_sum / out.beta_sum).toBeCloseTo(row.alpha_sum / row.beta_sum, 5);
+  });
+
+  it('audit-fix: cap is symmetry-independent (Beta(50,50) gets capped, not waved through)', () => {
+    // Pre-fix, max-based cap let strength = 100 pass at cap=50 because
+    // max(50,50)=50 ≤ 50. Now sum-based cap correctly downscales.
+    const row = {
+      scope_kind: 'prompt_slot' as const,
+      scope_key: 'sym',
+      home_region: '*',
+      alpha_sum: 50, beta_sum: 50, contributor_count: 7,
+    };
+    const out = applyStrengthCap(row, 50);
+    expect(out.alpha_sum + out.beta_sum).toBeCloseTo(50, 5);
+    expect(out.alpha_sum).toBeCloseTo(25, 5);
+    expect(out.beta_sum).toBeCloseTo(25, 5);
   });
 });
 
@@ -169,8 +188,10 @@ describe('PriorsAggregator.runOnce', () => {
     await a.runOnce();
     const insert = calls.find((c) => c.sql.includes('INSERT INTO oweibo.platform_bandit_priors'));
     // params order: scope_kind, scope_key, home_region, alpha_sum, beta_sum, ...
-    expect(insert?.params[3]).toBeCloseTo(50, 5);
-    expect(insert?.params[4]).toBeCloseTo(25, 5);
+    // Audit-fix (T.3): sum-based cap. α=200, β=100, strength=300.
+    // scale = 50/300 = 1/6 → α=33.33, β=16.67, strength=50 exactly.
+    expect(insert?.params[3]).toBeCloseTo(33.333333, 5);
+    expect(insert?.params[4]).toBeCloseTo(16.666666, 5);
   });
 
   it('deletes rows that fell below K-anonymity since the previous run', async () => {

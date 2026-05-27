@@ -30,7 +30,11 @@ import type { Pool } from 'pg';
 export interface PriorsAggregatorOptions {
   /** Minimum distinct contributors required to publish a prior. Default 5. */
   kAnonymity?: number;
-  /** Cap on max(alpha_sum, beta_sum). Default 50. */
+  /**
+   * Cap on prior strength = alpha_sum + beta_sum (the Beta-distribution
+   * effective sample size). Default 50. Bounds the prior's influence to
+   * ~50 pseudo-observations before tenant-local evidence dominates.
+   */
   priorStrengthCap?: number;
   /** Window for "active" arms. Default 90 days. */
   windowDays?: number;
@@ -247,14 +251,22 @@ export class PriorsAggregator {
 }
 
 /**
- * Re-normalise alpha + beta so neither exceeds the cap. Preserves the ratio
- * alpha / beta (which is the prior's belief about success rate) while
- * shrinking the absolute strength.
+ * Re-normalise alpha + beta so the *total strength* (= alpha + beta, the
+ * conventional Beta-distribution effective sample size) does not exceed
+ * the cap. Preserves the ratio alpha / (alpha + beta) — the prior's
+ * belief about success rate — while shrinking the absolute strength.
+ *
+ * Audit-fix (T.3): the previous implementation capped on `max(alpha, beta)`
+ * which left strongly-asymmetric priors with strength up to 2× cap (e.g.
+ * α=cap, β=cap → strength=2·cap passed uncapped because max=cap). For a
+ * `cap=50` policy, an aggressive prior like Beta(50,50) carried strength
+ * 100 — enough to dominate the first ~100 observations of a cold-start
+ * tenant. Sum-based capping bounds strength strictly at the cap.
  */
 export function applyStrengthCap(row: AggregatedRow, cap: number): AggregatedRow {
-  const maxStrength = Math.max(row.alpha_sum, row.beta_sum);
-  if (maxStrength <= cap) return row;
-  const scale = cap / maxStrength;
+  const totalStrength = row.alpha_sum + row.beta_sum;
+  if (totalStrength <= cap) return row;
+  const scale = cap / totalStrength;
   return {
     ...row,
     alpha_sum: row.alpha_sum * scale,

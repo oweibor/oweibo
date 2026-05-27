@@ -71,4 +71,46 @@ describe('applyColdStart', () => {
   it('returns at least 1 when capacity * multiplier rounds down to 0', () => {
     expect(applyColdStart(5, { coldStartMultiplier: 0.05, coldStartDurationDays: 30 }, created, new Date('2026-01-02T00:00:00Z'))).toBe(1);
   });
+
+  // Audit-fix (S.2): pin the cold-start ramp formula to its boundary
+  // values so future refactors don't silently change the curve. Formula:
+  //
+  //   day < N/2:        multiplier = coldStartMultiplier (flat)
+  //   N/2 <= day < N:   multiplier = m + ((day - N/2) / (N/2)) * (1 - m)
+  //   day >= N:         multiplier = 1.0
+  //
+  // For the audit's example (m=0.25, N=14, day=10):
+  //   ramp = (10 - 7) / 7 = 3/7 ≈ 0.4286
+  //   eff  = 0.25 + 0.4286 * 0.75 = 0.5714
+  //   capacity 100 → floor(100 * 0.5714) = 57
+  describe('audit-fix: boundary values of the linear ramp', () => {
+    const m = 0.25;
+    const N = 14;
+    const auditPolicy = { coldStartMultiplier: m, coldStartDurationDays: N };
+
+    it('day 0 → flat multiplier', () => {
+      const now = new Date('2026-01-01T00:00:00Z');
+      expect(applyColdStart(100, auditPolicy, created, now)).toBe(25);
+    });
+
+    it('day N/2 = 7 → still at flat multiplier (start of ramp)', () => {
+      const now = new Date('2026-01-08T00:00:00Z'); // day 7
+      expect(applyColdStart(100, auditPolicy, created, now)).toBe(25);
+    });
+
+    it('day 10 (audit example) → 57', () => {
+      const now = new Date('2026-01-11T00:00:00Z'); // day 10
+      expect(applyColdStart(100, auditPolicy, created, now)).toBe(57);
+    });
+
+    it('day N = 14 → full capacity', () => {
+      const now = new Date('2026-01-15T00:00:00Z'); // day 14
+      expect(applyColdStart(100, auditPolicy, created, now)).toBe(100);
+    });
+
+    it('day N+1 → full capacity', () => {
+      const now = new Date('2026-01-16T00:00:00Z'); // day 15
+      expect(applyColdStart(100, auditPolicy, created, now)).toBe(100);
+    });
+  });
 });

@@ -174,6 +174,20 @@ export class ApprovalSlaService {
          ON CONFLICT (proposal_id) DO NOTHING`,
         [proposalId, tenantId, policyId, nextActionAt, hardExpireAt],
       );
+
+      // Audit-fix (S.1): tighten action_proposals.expires_at to the
+      // earlier of its existing value (T.−1's default 7d) or the SLA
+      // policy's hard_expire_at. Without this, two independent clocks
+      // race: a class with a 48h SLA would auto-reject at 48h via the
+      // lifecycle worker but action_proposals.expires_at would still
+      // claim 7 days, confusing operator UIs and any expired-proposal
+      // sweep keyed off the proposal column.
+      await client.query(
+        `UPDATE oweibo.action_proposals
+            SET expires_at = LEAST(expires_at, $2::timestamptz)
+          WHERE id = $1::uuid AND state = 'pending'`,
+        [proposalId, hardExpireAt],
+      );
     });
   }
 

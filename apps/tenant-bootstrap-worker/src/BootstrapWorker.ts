@@ -72,6 +72,8 @@ interface BootstrapRow {
 interface StepRow {
   attempts: number;
   status: StepStatus | 'pending' | 'running';
+  /** Audit-fix (T.1): nullable for backwards compat with rows predating the column. */
+  skip_reason?: string | null;
 }
 
 const DEFAULT_MAX_ATTEMPTS = 3;
@@ -124,9 +126,15 @@ export class BootstrapWorker {
 
     for (const step of this.pipeline) {
       const existing = await this.loadStep(tenantId, step.name);
-      if (existing && (existing.status === 'ok' || existing.status === 'skipped')) {
-        continue;
-      }
+      // Audit-fix (T.1): a step previously skipped with skip_reason
+      // 'mode_too_low' is re-attempted on the reconciliation sweep so
+      // a maturing tenant eventually picks up content seeding that was
+      // gated off during cold-start. All other skip reasons remain
+      // terminal.
+      const reattemptableSkip =
+        existing?.status === 'skipped' && existing?.skip_reason === 'mode_too_low';
+      if (existing && existing.status === 'ok') continue;
+      if (existing && existing.status === 'skipped' && !reattemptableSkip) continue;
       if (existing && existing.attempts >= this.maxAttempts) {
         failed = true;
         lastError = `step ${step.name} exceeded max attempts`;
@@ -148,14 +156,24 @@ export class BootstrapWorker {
       };
       let status: StepStatus;
       let err: string | undefined;
+      let skipReason: string | undefined;
       try {
-        status = await step.execute(ctx);
+        const result = await step.execute(ctx);
+        // Audit-fix (T.1): accept either the bare StepStatus (legacy) or
+        // a StepResult ({ status, skipReason?, message? }).
+        if (typeof result === 'string') {
+          status = result;
+        } else {
+          status = result.status;
+          skipReason = result.skipReason;
+          err = result.message;
+        }
       } catch (e) {
         status = 'failed';
         err = e instanceof Error ? e.message : String(e);
         this.logger.error('BootstrapWorker: step threw', { tenantId, step: step.name, error: err });
       }
-      await this.upsertStep(tenantId, step.name, status, err);
+      await this.upsertStep(tenantId, step.name, status, err, skipReason);
 
       if (status === 'failed') {
         const updated = await this.loadStep(tenantId, step.name);
@@ -217,7 +235,7 @@ export class BootstrapWorker {
       await client.query('BEGIN');
       await setScope(client, tenantId);
       const result = await client.query<StepRow>(
-        `SELECT attempts, status
+        `SELECT attempts, status, skip_reason
            FROM oweibo.tenant_bootstrap_steps
           WHERE tenant_id = $1::uuid AND step_name = $2`,
         [tenantId, stepName],
@@ -237,6 +255,7 @@ export class BootstrapWorker {
     stepName: string,
     status: StepStatus | 'running',
     lastError?: string,
+    skipReason?: string,
   ): Promise<void> {
     const client = await this.pool.connect();
     try {
@@ -246,14 +265,20 @@ export class BootstrapWorker {
       const completedTouch = status === 'ok' || status === 'skipped' || status === 'failed' ? 'NOW()' : 'NULL';
       await client.query(
         `INSERT INTO oweibo.tenant_bootstrap_steps (
-           tenant_id, step_name, status, attempts, last_error, started_at, completed_at
+           tenant_id, step_name, status, attempts, last_error, started_at, completed_at, skip_reason
          ) VALUES (
-           $1::uuid, $2, $3, $4, $5, $6, $7
+           $1::uuid, $2, $3, $4, $5, $6, $7, $8
          )
          ON CONFLICT (tenant_id, step_name) DO UPDATE
            SET status       = EXCLUDED.status,
                attempts     = oweibo.tenant_bootstrap_steps.attempts + CASE WHEN EXCLUDED.status = 'running' THEN 1 ELSE 0 END,
                last_error   = COALESCE(EXCLUDED.last_error, oweibo.tenant_bootstrap_steps.last_error),
+               -- Audit-fix (T.1): always overwrite skip_reason on
+               -- skipped status (so a re-attempted step can clear or
+               -- replace the prior reason); preserve existing value for
+               -- non-skipped statuses.
+               skip_reason  = CASE WHEN EXCLUDED.status = 'skipped' THEN EXCLUDED.skip_reason
+                                   ELSE oweibo.tenant_bootstrap_steps.skip_reason END,
                started_at   = ${startedTouch},
                completed_at = ${completedTouch === 'NULL' ? 'oweibo.tenant_bootstrap_steps.completed_at' : completedTouch}`,
         [
@@ -264,6 +289,7 @@ export class BootstrapWorker {
           lastError ?? null,
           status === 'running' ? new Date() : null,
           status === 'ok' || status === 'skipped' || status === 'failed' ? new Date() : null,
+          skipReason ?? null,
         ],
       );
       await client.query('COMMIT');

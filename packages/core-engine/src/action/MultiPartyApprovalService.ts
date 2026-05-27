@@ -105,14 +105,47 @@ export function platformDefaultMultiPartyPolicy(
 
 // ── Service ──────────────────────────────────────────────────────────────
 
+/**
+ * Audit-fix (S.4): voter eligibility resolver. Called once per
+ * castVote() to confirm the voter is actually in the approver set for
+ * this proposal (resolved via org-graph / role / explicit-list per the
+ * proposal's class policy). Without this seam, any authenticated user
+ * within the tenant could INSERT a vote and skew the quorum tally.
+ *
+ * The resolver returns `true` when the voter is eligible. Returning
+ * `false` causes castVote() to throw without inserting a row.
+ * Implementations typically wrap OrgGraphService.resolveApprovers (or
+ * the role-based equivalent) and check membership.
+ *
+ * When omitted, eligibility checking is skipped — preserves the
+ * pre-fix behaviour for callers that do not yet wire org-graph.
+ */
+export interface IVoterEligibilityResolver {
+  isEligible(args: {
+    readonly tenantId: string;
+    readonly proposalId: string;
+    readonly actionClass: ActionClass;
+    readonly voterUserId: string;
+  }): Promise<boolean>;
+}
+
 export interface MultiPartyApprovalServiceOptions {
   isEnabled?: () => boolean;
   now?: () => Date;
+  /**
+   * S.4 audit-fix: optional voter eligibility resolver. When supplied,
+   * castVote() rejects votes from users not in the resolved approver
+   * set for the proposal's class. When omitted, votes are accepted
+   * from any tenant member (the pre-fix behaviour); this leaves
+   * eligibility enforcement to the calling API layer.
+   */
+  voterEligibilityResolver?: IVoterEligibilityResolver;
 }
 
 export class MultiPartyApprovalService implements IMultiPartyApprovalService {
   private readonly isEnabled: () => boolean;
   private readonly now: () => Date;
+  private readonly voterEligibility?: IVoterEligibilityResolver;
 
   constructor(
     private readonly pool: Pool,
@@ -120,6 +153,7 @@ export class MultiPartyApprovalService implements IMultiPartyApprovalService {
   ) {
     this.isEnabled = opts.isEnabled ?? defaultEnabled;
     this.now = opts.now ?? (() => new Date());
+    this.voterEligibility = opts.voterEligibilityResolver;
   }
 
   // ── Policy ─────────────────────────────────────────────────────────────
@@ -333,6 +367,27 @@ export class MultiPartyApprovalService implements IMultiPartyApprovalService {
         prop.action_class as ActionClass,
       );
 
+      // Audit-fix (S.4): confirm the voter is in the resolved approver
+      // set for this proposal. When acting on behalf of someone, we
+      // check the *delegator's* eligibility (the delegate borrows the
+      // delegator's authority, not their own). When omitted, the check
+      // is skipped — the calling API layer is responsible for
+      // authorization in that case.
+      if (this.voterEligibility) {
+        const checkUserId = req.onBehalfOf ?? req.voterUserId;
+        const eligible = await this.voterEligibility.isEligible({
+          tenantId: req.tenantId,
+          proposalId: req.proposalId,
+          actionClass: prop.action_class as ActionClass,
+          voterUserId: checkUserId,
+        });
+        if (!eligible) {
+          throw new Error(
+            `voter ${checkUserId} is not in the approver set for proposal ${req.proposalId}`,
+          );
+        }
+      }
+
       let viaDelegation = false;
       let delegatorUserId: string | null = null;
       if (req.onBehalfOf) {
@@ -449,6 +504,42 @@ export class MultiPartyApprovalService implements IMultiPartyApprovalService {
     }
     const expiresAt = new Date(this.now().getTime() + args.durationSeconds * 1000);
     await this.tx(args.tenantId, async (client) => {
+      // Audit-fix (S.4): non-transitive delegation. The delegate MUST
+      // NOT already be a delegator with an active row of their own —
+      // otherwise we'd build A→B→C chains that the audit explicitly
+      // forbids. The check + insert is inside the same tx so two
+      // concurrent createDelegation calls can't sneak past each other.
+      const existingAsDelegator = await client.query<{ n: number }>(
+        `SELECT COUNT(*)::int AS n
+           FROM oweibo.approval_delegations
+          WHERE delegator_user_id = $1::uuid
+            AND tenant_id = $2::uuid
+            AND expires_at > NOW()
+            AND revoked_at IS NULL`,
+        [args.delegateUserId, args.tenantId],
+      );
+      if ((existingAsDelegator.rows[0]?.n ?? 0) > 0) {
+        throw new Error(
+          `delegate ${args.delegateUserId} is already a delegator; delegation chains are not allowed`,
+        );
+      }
+      // Symmetric check: the delegator must not already be a delegate
+      // (i.e. receiving authority from someone else). Allowing this
+      // would create the chain in the other direction.
+      const existingAsDelegate = await client.query<{ n: number }>(
+        `SELECT COUNT(*)::int AS n
+           FROM oweibo.approval_delegations
+          WHERE delegate_user_id = $1::uuid
+            AND tenant_id = $2::uuid
+            AND expires_at > NOW()
+            AND revoked_at IS NULL`,
+        [args.delegatorUserId, args.tenantId],
+      );
+      if ((existingAsDelegate.rows[0]?.n ?? 0) > 0) {
+        throw new Error(
+          `delegator ${args.delegatorUserId} is already a delegate; delegation chains are not allowed`,
+        );
+      }
       await client.query(
         `INSERT INTO oweibo.approval_delegations
            (delegator_user_id, delegate_user_id, tenant_id, action_class, expires_at)

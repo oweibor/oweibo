@@ -20,6 +20,26 @@ export interface IVaultClient {
   read(path: string): Promise<Readonly<Record<string, unknown>> | null>;
 }
 
+/**
+ * Audit-fix (T.2.f): pluggable revocation registry. The resolver
+ * consults this on every cache miss before serving Vault data.
+ *
+ * The audit's concern: pub/sub revocation only reaches subscribers
+ * already running. A new CredentialResolver instance starting AFTER
+ * the broadcast hydrates its cache from Vault on first miss and serves
+ * the revoked credential for up to one TTL. Checking this registry on
+ * every miss closes the TOCTOU window. Pub/sub remains the fast-path
+ * invalidation for already-running instances.
+ *
+ * The default no-op implementation preserves pre-fix behavior. Wire
+ * the production implementation that queries oweibo.revoked_connector_
+ * credentials.
+ */
+export interface IRevocationRegistry {
+  /** Returns true if the given Vault path has been revoked. */
+  isRevoked(vaultPath: string): Promise<boolean>;
+}
+
 export interface CredentialResolverOptions {
   /** TTL in ms before a cache entry is re-fetched. Default 60s. */
   ttlMs?: number;
@@ -27,6 +47,12 @@ export interface CredentialResolverOptions {
   maxEntries?: number;
   /** Override the clock for tests. */
   now?: () => number;
+  /**
+   * Audit-fix (T.2.f): consulted on every cache miss. When omitted
+   * the resolver behaves as it did pre-fix — pub/sub-only
+   * invalidation, vulnerable to the new-pod TOCTOU window.
+   */
+  revocationRegistry?: IRevocationRegistry;
 }
 
 interface CacheEntry {
@@ -41,12 +67,14 @@ export class CredentialResolver {
   private readonly ttlMs: number;
   private readonly maxEntries: number;
   private readonly now: () => number;
+  private readonly revocationRegistry: IRevocationRegistry | undefined;
   private readonly cache = new Map<string, CacheEntry>();
 
   constructor(private readonly vault: IVaultClient, opts: CredentialResolverOptions = {}) {
     this.ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS;
     this.maxEntries = opts.maxEntries ?? DEFAULT_MAX_ENTRIES;
     this.now = opts.now ?? (() => Date.now());
+    this.revocationRegistry = opts.revocationRegistry;
   }
 
   /**
@@ -55,8 +83,9 @@ export class CredentialResolver {
    * oweibo.tenant_connectors — typically by looking up the row by id and
    * passing its vault_path through.
    *
-   * Fail-closed: returns null when Vault returns null. Callers must NOT
-   * proceed with the action when this returns null.
+   * Fail-closed: returns null when Vault returns null, when the path is
+   * in the revocation registry (audit-fix T.2.f), or when Vault throws.
+   * Callers must NOT proceed with the action when this returns null.
    */
   async forTenantConnector(vaultPath: string): Promise<Readonly<Record<string, unknown>> | null> {
     const cacheKey = vaultPath;
@@ -67,6 +96,27 @@ export class CredentialResolver {
       this.cache.delete(cacheKey);
       this.cache.set(cacheKey, cached);
       return cached.credentials;
+    }
+
+    // Audit-fix (T.2.f): on every cache miss, consult the revocation
+    // registry BEFORE touching Vault. This closes the TOCTOU window
+    // where a new pod (started after a revocation broadcast) would
+    // otherwise hydrate the revoked credential from Vault and serve it
+    // for up to one TTL until its own first invalidation arrives.
+    if (this.revocationRegistry) {
+      try {
+        const revoked = await this.revocationRegistry.isRevoked(vaultPath);
+        if (revoked) {
+          // Cache the null result so we don't re-check the registry on
+          // every action for the TTL window — the operator-issued
+          // invalidate() call (pub/sub) will clear it sooner.
+          this.set(cacheKey, null, now);
+          return null;
+        }
+      } catch {
+        // A registry blip MUST NOT serve stale credentials. Fail-closed.
+        return null;
+      }
     }
 
     let credentials: Readonly<Record<string, unknown>> | null = null;

@@ -564,20 +564,46 @@ model TenantTemplate {
 
 // T.2.f: per-tenant connector instance. Credentials live in Vault at vault_path.
 model TenantConnector {
-  id             String    @id @default(uuid()) @db.Uuid
-  tenantId       String    @map("tenant_id") @db.Uuid
-  connectorId    String    @map("connector_id")
-  catalogVersion String    @map("catalog_version")
-  instanceLabel  String    @map("instance_label")
-  vaultPath      String    @map("vault_path")
-  status         String    @default("pending")
-  installedBy    String?   @map("installed_by") @db.Uuid
-  installedAt    DateTime  @default(now()) @map("installed_at") @db.Timestamptz
-  lastUsedAt     DateTime? @map("last_used_at") @db.Timestamptz
-  metadata       Json      @default("{}")
+  id                          String    @id @default(uuid()) @db.Uuid
+  tenantId                    String    @map("tenant_id") @db.Uuid
+  connectorId                 String    @map("connector_id")
+  catalogVersion              String    @map("catalog_version")
+  instanceLabel               String    @map("instance_label")
+  vaultPath                   String    @map("vault_path")
+  /// Audit-fix (T.2.f): widened CHECK enum now includes
+  /// 'credential_invalid' (smoke-test failure) and 'credential_expired'
+  /// (TTL-driven). The admin UI surfaces these with an actionable
+  /// re-enter-credentials workflow.
+  status                      String    @default("pending")
+  installedBy                 String?   @map("installed_by") @db.Uuid
+  installedAt                 DateTime  @default(now()) @map("installed_at") @db.Timestamptz
+  lastUsedAt                  DateTime? @map("last_used_at") @db.Timestamptz
+  metadata                    Json      @default("{}")
+  /// Audit-fix (T.2.f): nightly sweeper sets `credential_expired` 14d
+  /// before this timestamp passes; tenant admin gets a notification.
+  credentialExpiresAt         DateTime? @map("credential_expires_at") @db.Timestamptz
+  smokeTestFailureReason      String?   @map("smoke_test_failure_reason")
+  expiryNotificationSentAt    DateTime? @map("expiry_notification_sent_at") @db.Timestamptz
 
   @@unique([tenantId, connectorId, instanceLabel])
   @@map("tenant_connectors")
+  @@schema("oweibo")
+}
+
+/// Audit-fix (T.2.f): revocation registry consulted by CredentialResolver
+/// on every cache miss, closing the pub/sub TOCTOU window where a new
+/// pod hydrated revoked credentials from Vault for up to one TTL window.
+model RevokedConnectorCredential {
+  vaultPath    String   @id @map("vault_path")
+  tenantId     String   @map("tenant_id") @db.Uuid
+  connectorId  String   @map("connector_id") @db.Uuid
+  revokedBy    String?  @map("revoked_by") @db.Uuid
+  reason       String?
+  revokedAt    DateTime @default(now()) @map("revoked_at") @db.Timestamptz
+  expiresAt    DateTime @map("expires_at") @db.Timestamptz
+
+  @@index([tenantId, revokedAt(sort: Desc)])
+  @@map("revoked_connector_credentials")
   @@schema("oweibo")
 }
 
@@ -681,8 +707,39 @@ model ActionProposal {
   dependsOnSteps          Int[]   @default([]) @map("depends_on_steps")
   blastRadiusContribution Json?   @map("blast_radius_contribution")
 
+  /// Audit-fix (S.3): distinguishes recovery proposals from regular ones
+  /// without fragile `recovery.rollback.*` substring matching. The
+  /// orchestrator sets this true when creating a recovery proposal so
+  /// ApprovalSlaService can key the tightened SLA off this column.
+  isRollback              Boolean @default(false) @map("is_rollback")
+
   @@unique([tenantId, actionId])
   @@map("action_proposals")
+  @@schema("oweibo")
+}
+
+/// Audit-fix (S.1): backs the "≤1 notification per 5min per recipient
+/// unless urgent" mitigation that S.1's risk register listed but never
+/// schematized. NotificationDigestService.enqueue() lands rows here;
+/// ApprovalLifecycleWorker's flush hook claims due groups and dispatches
+/// a single bundled notification per (recipient, channel).
+model NotificationDigestQueue {
+  id                String    @id @default(uuid()) @db.Uuid
+  tenantId          String    @map("tenant_id") @db.Uuid
+  proposalId        String?   @map("proposal_id") @db.Uuid
+  recipientUserId   String    @map("recipient_user_id") @db.Uuid
+  channelKind       String    @map("channel_kind")
+  fireEvent         String    @map("fire_event")
+  title             String
+  body              String?
+  linkPath          String?   @map("link_path")
+  urgency           String    @default("normal")
+  state             String    @default("pending")
+  enqueuedAt        DateTime  @default(now()) @map("enqueued_at") @db.Timestamptz
+  flushedAt         DateTime? @map("flushed_at") @db.Timestamptz
+
+  @@index([recipientUserId, channelKind, enqueuedAt])
+  @@map("notification_digest_queue")
   @@schema("oweibo")
 }
 

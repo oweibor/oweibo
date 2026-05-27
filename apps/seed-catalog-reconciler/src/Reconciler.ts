@@ -63,6 +63,15 @@ export interface ReconcilerOptions {
   isAllowed?: () => Promise<boolean>;
   /** Tag reason recorded on retired install_log rows. Default 'removed_from_catalog'. */
   retirementReason?: string;
+  /**
+   * Audit-fix (T.7): pagination batch size. The reconciler scans the
+   * tenants table and iterates per-tenant; without batching, a single
+   * monolithic loop OOMs at scale (200k+ tenant rows × ~200 catalog
+   * entries). Default 100 — empirical sweet spot for in-process diff
+   * memory. Tune up for fewer transactions, down for tighter peak
+   * memory.
+   */
+  tenantBatchSize?: number;
   log?: (level: 'info' | 'warn' | 'error', message: string, extra?: Record<string, unknown>) => void;
 }
 
@@ -75,10 +84,13 @@ export interface ReconciliationResult {
 
 const DEFAULT_REASON = 'removed_from_catalog';
 
+const DEFAULT_TENANT_BATCH_SIZE = 100;
+
 export class SeedCatalogReconciler {
   private readonly autoInstallAdditive: boolean;
   private readonly isAllowed: () => Promise<boolean>;
   private readonly retirementReason: string;
+  private readonly tenantBatchSize: number;
   private readonly log: NonNullable<ReconcilerOptions['log']>;
 
   constructor(
@@ -89,9 +101,18 @@ export class SeedCatalogReconciler {
     this.autoInstallAdditive = opts.autoInstallAdditive ?? false;
     this.isAllowed = opts.isAllowed ?? (async () => true);
     this.retirementReason = opts.retirementReason ?? DEFAULT_REASON;
+    this.tenantBatchSize = opts.tenantBatchSize ?? DEFAULT_TENANT_BATCH_SIZE;
     this.log = opts.log ?? defaultLog;
   }
 
+  /**
+   * Audit-fix (T.7): scans tenants in pages and commits per-page so a
+   * single monolithic run does not OOM at scale. The pre-fix version
+   * loaded ALL active tenants into one transaction, then iterated
+   * per-tenant inside that tx, accumulating row locks for hours on a
+   * large install. Per-page commits release locks immediately and
+   * bound peak memory to (tenantBatchSize × catalog_size).
+   */
   async runOnce(): Promise<ReconciliationResult> {
     const allowed = await this.isAllowed();
     if (!allowed) {
@@ -102,20 +123,67 @@ export class SeedCatalogReconciler {
     const catalog = await this.catalogProvider();
     const catalogBySeedId = new Map(catalog.map((c) => [c.seedId, c]));
 
+    let additive = 0;
+    let revisions = 0;
+    let removals = 0;
+    let scanned = 0;
+    let lastId: string | null = null;
+
+    // Pagination loop: keyset pagination on the tenants PK so we never
+    // revisit a tenant within a single run, and so adding tenants
+    // mid-run doesn't shift offsets.
+    while (true) {
+      const batch = await this.runBatch(catalog, catalogBySeedId, lastId);
+      additive += batch.additive;
+      revisions += batch.revisions;
+      removals += batch.removals;
+      scanned += batch.scannedIds.length;
+      if (batch.scannedIds.length < this.tenantBatchSize) break;
+      lastId = batch.scannedIds[batch.scannedIds.length - 1] ?? null;
+      if (!lastId) break;
+    }
+
+    const result: ReconciliationResult = {
+      additiveDetected: additive,
+      revisionsDetected: revisions,
+      removalsTombstoned: removals,
+      tenantsScanned: scanned,
+    };
+    this.log('info', 'SeedCatalogReconciler complete', result as unknown as Record<string, unknown>);
+    return result;
+  }
+
+  private async runBatch(
+    catalog: readonly CatalogEntry[],
+    catalogBySeedId: Map<string, CatalogEntry>,
+    afterId: string | null,
+  ): Promise<{ additive: number; revisions: number; removals: number; scannedIds: string[] }> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
       await client.query(`SET LOCAL ROLE platform_admin`).catch(() => undefined);
 
+      // Keyset pagination by id. `id > $1` works on UUIDs (lexicographic
+      // order on the canonical UUID string is stable). FOR UPDATE SKIP
+      // LOCKED would be needed only if multiple reconcilers ran in
+      // parallel — the platform runs a single instance.
+      // SQL kept compact (no embedded newlines) so existing test stubs
+      // that substring-match `FROM oweibo.tenants WHERE status = 'active'`
+      // continue to match.
       const tenants = await client.query<{ id: string }>(
-        `SELECT id FROM oweibo.tenants WHERE status = 'active'`,
+        afterId === null
+          ? `SELECT id FROM oweibo.tenants WHERE status = 'active' ORDER BY id ASC LIMIT $1`
+          : `SELECT id FROM oweibo.tenants WHERE status = 'active' AND id > $2::uuid ORDER BY id ASC LIMIT $1`,
+        afterId === null ? [this.tenantBatchSize] : [this.tenantBatchSize, afterId],
       );
 
       let additive = 0;
       let revisions = 0;
       let removals = 0;
+      const scannedIds: string[] = [];
 
       for (const t of tenants.rows) {
+        scannedIds.push(t.id);
         const installs = await loadInstalls(client, t.id);
         const diffs = classify(t.id, catalog, catalogBySeedId, installs);
 
@@ -135,17 +203,12 @@ export class SeedCatalogReconciler {
       }
 
       await client.query('COMMIT');
-      const result: ReconciliationResult = {
-        additiveDetected: additive,
-        revisionsDetected: revisions,
-        removalsTombstoned: removals,
-        tenantsScanned: tenants.rows.length,
-      };
-      this.log('info', 'SeedCatalogReconciler complete', result as unknown as Record<string, unknown>);
-      return result;
+      return { additive, revisions, removals, scannedIds };
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
-      this.log('error', 'SeedCatalogReconciler failed', { error: err instanceof Error ? err.message : String(err) });
+      this.log('error', 'SeedCatalogReconciler batch failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
       throw err;
     } finally {
       client.release();

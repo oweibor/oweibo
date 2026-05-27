@@ -216,18 +216,57 @@ export class MemoryWarmer {
     // the highest-scored occurrence of each summary.
     filtered.sort((a, b) => b.score - a.score);
 
-    // Deduplicate by entry.summary string equality.
-    // Same semantic content can appear in multiple channels (original vs promoted
-    // copy), and ids diverge between them while summaries remain identical.
-    const seen    = new Set<string>();
-    const deduped = filtered.filter(r => {
-      const fp = r.entry.summary;
-      if (seen.has(fp)) return false;
-      seen.add(fp);
-      return true;
-    });
+    // Audit-fix (T.4): deduplicate by (a) exact summary equality AND
+    // (b) token-3-gram Jaccard similarity ≥ 0.85. The latter catches
+    // semantically-identical summaries with different surface wording
+    // — e.g. "Prefer PostgreSQL over MongoDB for strong consistency"
+    // vs "For strong consistency, prefer PostgreSQL" — that would
+    // otherwise both make it into the warm context block.
+    //
+    // Jaccard on 3-grams is the cheap stand-in for embedder cosine:
+    // deterministic, no external dependency, catches the most common
+    // sentence-rewording overlap. The threshold 0.85 is conservative
+    // enough that genuinely-different content with shared vocabulary
+    // (e.g. two distinct lessons that both mention 'PostgreSQL') is
+    // preserved.
+    const keptShingles: Set<string>[] = [];
+    const deduped: typeof filtered = [];
+    for (const r of filtered) {
+      const summary = r.entry.summary;
+      const shingles = trigramShingles(summary);
+      const isDup = keptShingles.some((kept) => jaccard(shingles, kept) >= 0.85);
+      if (isDup) continue;
+      deduped.push(r);
+      keptShingles.push(shingles);
+    }
 
     return deduped.slice(0, topK);
   }
+}
+
+// ─── Semantic-dedup helpers (audit-fix T.4) ─────────────────────────────────
+
+/**
+ * Token-level trigram shingles. Lowercased, ASCII-alphanumeric tokens;
+ * single-token strings degrade to a single-shingle set (so they
+ * dedupe by exact equality, the pre-fix behavior).
+ */
+function trigramShingles(s: string): Set<string> {
+  const tokens = s.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  if (tokens.length === 0) return new Set([s.toLowerCase()]);
+  if (tokens.length < 3) return new Set([tokens.join(' ')]);
+  const out = new Set<string>();
+  for (let i = 0; i <= tokens.length - 3; i++) {
+    out.add(`${tokens[i]} ${tokens[i + 1]} ${tokens[i + 2]}`);
+  }
+  return out;
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 1;
+  let intersection = 0;
+  for (const x of a) if (b.has(x)) intersection++;
+  const union = a.size + b.size - intersection;
+  return union === 0 ? 0 : intersection / union;
 }
 

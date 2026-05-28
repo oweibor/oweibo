@@ -12,16 +12,17 @@ const SEED_DIR = path.join(__dirname, '..', '..', 'seed', 'connectors');
 
 function entry(overrides: Partial<ConnectorCatalogEntry> = {}): ConnectorCatalogEntry {
   return {
-    connectorId: overrides.connectorId ?? 'test',
+    connectorId: 'test',
     displayName: 'Test',
     category: 'custom',
     description: 'test connector',
     catalogVersion: '1',
     credentialSchema: { type: 'object' },
-    capabilities: overrides.capabilities ?? [
+    capabilities: [
       { capabilityId: 'do', summary: 'do', actionClass: 'read.local', inputSchema: {}, outputSchema: {} },
     ],
-    recommendedFor: overrides.recommendedFor ?? ['*'],
+    recommendedFor: ['*'],
+    ...overrides,
   };
 }
 
@@ -121,5 +122,76 @@ describe('shipped catalog', () => {
         expect(c.actionClass.length).toBeGreaterThan(0);
       }
     }
+  });
+});
+
+// ── D.4 certification fields + recommendForDomain ─────────────────────────
+
+describe('ConnectorRegistry — D.4 certification defaults', () => {
+  it('coerces missing certification to "experimental" + empty certifiedFor', () => {
+    const reg = ConnectorRegistry.fromEntries([entry()]);
+    const e = reg.get('test')!;
+    expect(e.certification).toBe('experimental');
+    expect(e.certifiedFor).toEqual([]);
+  });
+
+  it('preserves explicit certification + certifiedFor', () => {
+    const reg = ConnectorRegistry.fromEntries([
+      entry({ certification: 'verified', certifiedFor: ['fintech', 'devops'] }),
+    ]);
+    const e = reg.get('test')!;
+    expect(e.certification).toBe('verified');
+    expect(e.certifiedFor).toEqual(['fintech', 'devops']);
+  });
+});
+
+describe('ConnectorRegistry.recommendForDomain', () => {
+  const A = entry({ connectorId: 'a', recommendedFor: ['*'], certifiedFor: [] });
+  const B = entry({
+    connectorId: 'b',
+    recommendedFor: ['fintech-smb'],
+    certification: 'verified',
+    certifiedFor: ['fintech'],
+  });
+  const C = entry({
+    connectorId: 'c',
+    recommendedFor: [],
+    certification: 'community',
+    certifiedFor: ['healthcare'],
+  });
+  const D = entry({
+    connectorId: 'd',
+    recommendedFor: [],
+    certification: 'experimental',
+    certifiedFor: [],
+  });
+  const reg = ConnectorRegistry.fromEntries([A, B, C, D]);
+
+  it('returns wildcard-recommended entries regardless of domain', () => {
+    const r = reg.recommendForDomain({ templateSlug: 'whatever', domainSlugs: [] });
+    expect(r.map((e) => e.connectorId)).toContain('a');
+  });
+
+  it('returns domain-certified entries when their template does not match', () => {
+    const r = reg.recommendForDomain({ templateSlug: 'other', domainSlugs: ['healthcare'] });
+    expect(r.map((e) => e.connectorId)).toContain('c');
+    expect(r.map((e) => e.connectorId)).not.toContain('d');
+  });
+
+  it('unions template + domain matches (B matches via template OR fintech domain)', () => {
+    const r = reg.recommendForDomain({ templateSlug: 'fintech-smb', domainSlugs: [] });
+    expect(r.map((e) => e.connectorId)).toContain('b');
+    const r2 = reg.recommendForDomain({ templateSlug: 'other', domainSlugs: ['fintech'] });
+    expect(r2.map((e) => e.connectorId)).toContain('b');
+  });
+
+  it('honors minTier filter', () => {
+    const r = reg.recommendForDomain({
+      templateSlug: 'fintech-smb',
+      domainSlugs: ['fintech', 'healthcare'],
+      minTier: 'verified',
+    });
+    // A is experimental, C is community, D is experimental; only B (verified) survives.
+    expect(r.map((e) => e.connectorId).sort()).toEqual(['b']);
   });
 });

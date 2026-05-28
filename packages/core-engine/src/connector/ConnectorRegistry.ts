@@ -28,7 +28,7 @@ export class ConnectorRegistry {
       const raw = await fs.readFile(path.join(dir, f), 'utf-8');
       const parsed = JSON.parse(raw);
       validateEntry(parsed, f);
-      all.push(parsed as ConnectorCatalogEntry);
+      all.push(coerceDefaults(parsed as ConnectorCatalogEntry));
     }
     assertConnectorIdsUnique(all);
     return new ConnectorRegistry(all);
@@ -36,7 +36,7 @@ export class ConnectorRegistry {
 
   static fromEntries(entries: readonly ConnectorCatalogEntry[]): ConnectorRegistry {
     assertConnectorIdsUnique(entries);
-    return new ConnectorRegistry(entries);
+    return new ConnectorRegistry(entries.map(coerceDefaults));
   }
 
   static defaultDirectory(): string {
@@ -64,6 +64,36 @@ export class ConnectorRegistry {
     return this.entries.filter((e) =>
       e.recommendedFor.includes('*') || e.recommendedFor.includes(templateSlug),
     );
+  }
+
+  /**
+   * D.4: domain-aware recommendation. Returns entries that are EITHER
+   * recommended for the supplied template slug (existing semantics) OR
+   * certified for one of the supplied domain slugs. The two paths are
+   * unioned, not intersected, so a connector marked `recommendedFor:
+   * ['*']` always appears even before it is domain-certified.
+   *
+   * Additionally filters by `minTier` when supplied: only connectors at
+   * or above the minimum certification tier are returned. Useful for
+   * enterprise tenants that want to constrain installable connectors
+   * to the `verified` or `enterprise` tiers.
+   */
+  recommendForDomain(input: {
+    readonly templateSlug: string;
+    readonly domainSlugs: readonly string[];
+    readonly minTier?: 'experimental' | 'community' | 'verified' | 'enterprise';
+  }): ConnectorCatalogEntry[] {
+    const tierOrder = { experimental: 0, community: 1, verified: 2, enterprise: 3 };
+    const minRank = input.minTier ? tierOrder[input.minTier] : 0;
+    return this.entries.filter((e) => {
+      const cert = (e.certification ?? 'experimental') as keyof typeof tierOrder;
+      if (tierOrder[cert] < minRank) return false;
+      const templateMatch =
+        e.recommendedFor.includes('*') || e.recommendedFor.includes(input.templateSlug);
+      const certified = e.certifiedFor ?? [];
+      const domainMatch = input.domainSlugs.some((d) => certified.includes(d));
+      return templateMatch || domainMatch;
+    });
   }
 
   /** All loaded catalog entries. */
@@ -115,4 +145,19 @@ function assertConnectorIdsUnique(entries: readonly ConnectorCatalogEntry[]): vo
     }
     seen.add(e.connectorId);
   }
+}
+
+/**
+ * D.4: coerce pre-D.4 catalog entries to the canonical shape. A missing
+ * `certification` field is treated as 'experimental'; missing
+ * `certifiedFor` becomes []. The result is the same entry plus those
+ * defaults so downstream code can rely on the fields being present.
+ */
+function coerceDefaults(e: ConnectorCatalogEntry): ConnectorCatalogEntry {
+  if (e.certification !== undefined && e.certifiedFor !== undefined) return e;
+  return {
+    ...e,
+    certification: e.certification ?? 'experimental',
+    certifiedFor: e.certifiedFor ?? [],
+  };
 }

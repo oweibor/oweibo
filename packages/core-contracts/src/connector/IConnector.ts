@@ -41,6 +41,21 @@ export interface ConnectorCapability {
   };
 }
 
+/**
+ * D.4 (domain-depth): certification tier a connector has reached.
+ *
+ *   - 'experimental' — author-asserted; no automated test bar
+ *   - 'community'    — passes SDK contract tests + basic integration
+ *   - 'verified'     — community + rollback adapter + platform review
+ *   - 'enterprise'   — verified + per-domain certification + 90d telemetry
+ *                       + named maintainer with SLA
+ *
+ * Pre-D.4 catalog entries that omit `certification` default to
+ * `experimental` at registry-load time so existing JSON files keep
+ * working.
+ */
+export type CertificationTier = 'experimental' | 'community' | 'verified' | 'enterprise';
+
 export interface ConnectorCatalogEntry {
   readonly connectorId: string;
   readonly displayName: string;
@@ -52,6 +67,22 @@ export interface ConnectorCatalogEntry {
   readonly capabilities: readonly ConnectorCapability[];
   /** Tenant templates that should auto-recommend this connector. `'*'` = any. */
   readonly recommendedFor: readonly string[];
+  /**
+   * D.4: certification tier reached by this catalog version. Optional in
+   * the contract for backwards compatibility — the registry coerces a
+   * missing value to 'experimental' at load time.
+   */
+  readonly certification?: CertificationTier;
+  /**
+   * D.4: domain slugs (D.0) this connector has been certified for. A
+   * connector certified for a domain has passed that domain's
+   * certification battery (D.4 SDK). When a tenant queries
+   * recommendations for a domain, the registry filters connectors by
+   * presence in this array. Empty `[]` means the connector is generic
+   * — it is recommended for tenants without a bound domain but does
+   * not appear in domain-specific recommendation lists.
+   */
+  readonly certifiedFor?: readonly string[];
 }
 
 /** A per-tenant installed instance, as stored in oweibo.tenant_connectors. */

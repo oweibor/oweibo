@@ -101,6 +101,9 @@ export * from './domain/IDomainRubric.js';
 // ── D.3 (domain-depth): per-domain compliance rule packs ─────────────────────
 export * from './domain/IComplianceRulePack.js';
 
+// ── D.5 (domain-depth): SME review loop types ────────────────────────────────
+export * from './domain/ISmeReview.js';
+
 // ── Events ────────────────────────────────────────────────────────────────────
 export * from './events/billing.events.js';
 export * from './events/inventory.events.js';

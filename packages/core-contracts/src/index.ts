@@ -95,6 +95,9 @@ export * from './domain/IDomainRegistry.js';
 // ── D.1 (domain-depth): per-domain ontology packs ────────────────────────────
 export * from './domain/IOntologyPack.js';
 
+// ── D.2 (domain-depth): per-domain eval rubrics ──────────────────────────────
+export * from './domain/IDomainRubric.js';
+
 // ── Events ────────────────────────────────────────────────────────────────────
 export * from './events/billing.events.js';
 export * from './events/inventory.events.js';

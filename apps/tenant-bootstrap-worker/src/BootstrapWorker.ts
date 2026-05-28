@@ -30,6 +30,7 @@ import { SeedPriorsStep } from './steps/SeedPriorsStep.js';
 import { SeedGoalTemplatesStep } from './steps/SeedGoalTemplatesStep.js';
 import { SeedConnectorsStep } from './steps/SeedConnectorsStep.js';
 import { DomainIntakeStep } from './steps/DomainIntakeStep.js';
+import { InstallOntologyPackStep } from './steps/InstallOntologyPackStep.js';
 import { SeedOrgGraphStep } from './steps/SeedOrgGraphStep.js';
 import { CloneFromTenantStep } from './steps/CloneFromTenantStep.js';
 
@@ -45,6 +46,11 @@ export const STEP_PIPELINE: readonly IBootstrapStep[] = [
   new SeedGoalTemplatesStep(),
   new SeedConnectorsStep(), // T.2.f
   new DomainIntakeStep(),   // T.2.g
+  // D.1: runs AFTER DomainIntakeStep so the classified domain is
+  // available to the installer; runs BEFORE SeedOrgGraphStep so the
+  // org-graph step can read domain-archetype roles from the ontology
+  // pack metadata (D.6 enhancement, byte-noop today).
+  new InstallOntologyPackStep(),
   new SeedOrgGraphStep(),   // T.2.h
 ];
 

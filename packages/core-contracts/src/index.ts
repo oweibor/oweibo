@@ -92,6 +92,9 @@ export * from './org/OrgGraph.js';
 export * from './domain/DomainSlug.js';
 export * from './domain/IDomainRegistry.js';
 
+// ── D.1 (domain-depth): per-domain ontology packs ────────────────────────────
+export * from './domain/IOntologyPack.js';
+
 // ── Events ────────────────────────────────────────────────────────────────────
 export * from './events/billing.events.js';
 export * from './events/inventory.events.js';

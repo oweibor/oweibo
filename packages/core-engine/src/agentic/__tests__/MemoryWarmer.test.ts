@@ -137,3 +137,70 @@ describe('MemoryWarmer with platform-lesson channel', () => {
     }
   });
 });
+
+describe('MemoryWarmer — D.1 recallBudgets per-tag-prefix cap', () => {
+  it('caps entries with a matching tag prefix at the configured limit', async () => {
+    // Five "ontology" entries all tagged `domain:fintech:ontology`, scored
+    // 0.9 down to 0.5 so they sort deterministically.
+    const ontology = [
+      rankedEntry('o1', 'ontology-a', 0.9, ['domain:fintech:ontology']),
+      rankedEntry('o2', 'ontology-b', 0.8, ['domain:fintech:ontology']),
+      rankedEntry('o3', 'ontology-c', 0.7, ['domain:fintech:ontology']),
+      rankedEntry('o4', 'ontology-d', 0.6, ['domain:fintech:ontology']),
+      rankedEntry('o5', 'ontology-e', 0.5, ['domain:fintech:ontology']),
+    ];
+    const ltm = ltmStub(ontology);
+    const warmer = new MemoryWarmer(ltm, stmStub);
+    const out = await warmer.warmForTask({
+      tenantId: 't', sessionId: 's', agentScope: 'executor:task',
+      taskDescription: 'q',
+      topK: 10,
+      recallBudgets: { 'domain:': 3 },
+    });
+    const ontologyKept = out.filter((r) => {
+      const tags = (r.entry as { tags?: readonly string[] }).tags;
+      return tags?.some((t) => t.startsWith('domain:')) ?? false;
+    });
+    expect(ontologyKept).toHaveLength(3);
+    // Highest-scored survives the cap.
+    expect(ontologyKept[0]!.entry.summary).toBe('ontology-a');
+  });
+
+  it('preserves entries that do not match any budgeted prefix', async () => {
+    const ontology = rankedEntry('o1', 'onto', 0.9, ['domain:fintech:ontology']);
+    const organic = rankedEntry('og1', 'organic-1', 0.6, ['topic:reliability']);
+    const organic2 = rankedEntry('og2', 'organic-2', 0.55, ['topic:reliability']);
+    const ltm = ltmStub([ontology, organic, organic2]);
+    const warmer = new MemoryWarmer(ltm, stmStub);
+    const out = await warmer.warmForTask({
+      tenantId: 't', sessionId: 's', agentScope: 'executor:task',
+      taskDescription: 'q',
+      topK: 10,
+      recallBudgets: { 'domain:': 1 },
+    });
+    const summaries = out.map((r) => r.entry.summary);
+    expect(summaries).toContain('organic-1');
+    expect(summaries).toContain('organic-2');
+  });
+
+  it('omitting recallBudgets preserves pre-D.1 behavior (no cap applied)', async () => {
+    const ontology = [
+      rankedEntry('o1', 'ontology-a', 0.9, ['domain:fintech:ontology']),
+      rankedEntry('o2', 'ontology-b', 0.8, ['domain:fintech:ontology']),
+      rankedEntry('o3', 'ontology-c', 0.7, ['domain:fintech:ontology']),
+      rankedEntry('o4', 'ontology-d', 0.6, ['domain:fintech:ontology']),
+    ];
+    const ltm = ltmStub(ontology);
+    const warmer = new MemoryWarmer(ltm, stmStub);
+    const out = await warmer.warmForTask({
+      tenantId: 't', sessionId: 's', agentScope: 'executor:task',
+      taskDescription: 'q',
+      topK: 10,
+    });
+    const ontologyKept = out.filter((r) => {
+      const tags = (r.entry as { tags?: readonly string[] }).tags;
+      return tags?.some((t) => t.startsWith('domain:')) ?? false;
+    });
+    expect(ontologyKept.length).toBeGreaterThan(3);
+  });
+});

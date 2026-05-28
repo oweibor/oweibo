@@ -110,6 +110,19 @@ export class MemoryWarmer {
      *  omits this when the region_aware_intake flag is off; the recall
      *  service then skips the region filter entirely. */
     homeRegion?:     string;
+    /**
+     * D.1 (domain-depth): per-tag-prefix caps applied after scoring and
+     * deduplication, before the final topK slice. Each key is a tag
+     * prefix matched via `startsWith`; the value caps the number of
+     * entries with that prefix included in the merged result.
+     *
+     * Default: `{ 'domain:': 3 }` is wired in by callers that detect a
+     * tenant has at least one bound domain — bounds the ontology-pack
+     * contribution so it doesn't monopolise the warm-context block when
+     * many glossary entries are simultaneously plausible. Omit to
+     * preserve byte-identical-to-T.4 behavior.
+     */
+    recallBudgets?:  Readonly<Record<string, number>>;
   }): Promise<WarmResult[]> {
     const {
       tenantId,
@@ -118,6 +131,7 @@ export class MemoryWarmer {
       projectId,
       topK = 6,
       homeRegion,
+      recallBudgets,
     } = params;
 
     // ── Four parallel recall channels ─────────────────────────────────────────
@@ -240,7 +254,17 @@ export class MemoryWarmer {
       keptShingles.push(shingles);
     }
 
-    return deduped.slice(0, topK);
+    // D.1 (domain-depth): tag-prefix recall budgets. Walk the deduped list
+    // (already sorted descending by score) and drop lower-scored entries
+    // whose tag-prefix bucket has reached its cap. The pipeline order —
+    // dedup → budgets → slice — guarantees we keep the highest-scored
+    // occurrence per bucket.
+    const budgeted =
+      recallBudgets && Object.keys(recallBudgets).length > 0
+        ? applyRecallBudgets(deduped, recallBudgets)
+        : deduped;
+
+    return budgeted.slice(0, topK);
   }
 }
 
@@ -268,5 +292,46 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   for (const x of a) if (b.has(x)) intersection++;
   const union = a.size + b.size - intersection;
   return union === 0 ? 0 : intersection / union;
+}
+
+// ─── D.1 (domain-depth): per-tag-prefix recall budgets ─────────────────────
+
+/**
+ * Drop entries beyond the per-prefix cap. Input MUST be sorted descending
+ * by score (caller's responsibility) so the kept entries are the
+ * highest-scored matches per prefix. An entry counts toward a prefix if
+ * any of its tags `startsWith` the prefix key; entries with no `tags`
+ * field (STM entries) are unaffected.
+ */
+function applyRecallBudgets(
+  ordered: readonly WarmResult[],
+  budgets: Readonly<Record<string, number>>,
+): WarmResult[] {
+  const prefixes = Object.entries(budgets);
+  const counts = new Map<string, number>(prefixes.map(([p]) => [p, 0]));
+  const out: WarmResult[] = [];
+  for (const r of ordered) {
+    const tags = (r.entry as { tags?: readonly string[] }).tags;
+    let overCap = false;
+    if (tags && tags.length > 0) {
+      for (const [prefix, cap] of prefixes) {
+        const matches = tags.some((t) => t.startsWith(prefix));
+        if (!matches) continue;
+        const used = counts.get(prefix) ?? 0;
+        if (used >= cap) {
+          overCap = true;
+          break;
+        }
+      }
+      if (overCap) continue;
+      for (const [prefix] of prefixes) {
+        if (tags.some((t) => t.startsWith(prefix))) {
+          counts.set(prefix, (counts.get(prefix) ?? 0) + 1);
+        }
+      }
+    }
+    out.push(r);
+  }
+  return out;
 }
 

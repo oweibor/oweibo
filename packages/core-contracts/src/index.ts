@@ -104,6 +104,9 @@ export * from './domain/IComplianceRulePack.js';
 // ── D.5 (domain-depth): SME review loop types ────────────────────────────────
 export * from './domain/ISmeReview.js';
 
+// ── D.6 (domain-depth): multi-domain tenant bindings ─────────────────────────
+export * from './domain/ITenantDomainBinding.js';
+
 // ── Events ────────────────────────────────────────────────────────────────────
 export * from './events/billing.events.js';
 export * from './events/inventory.events.js';

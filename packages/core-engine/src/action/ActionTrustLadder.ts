@@ -232,6 +232,24 @@ export interface ActionTrustLadderOptions {
   snapshotVerifier?: {
     verify(snapshot: import('@oweibo/core-contracts').TenantReadinessSnapshot): boolean;
   };
+  /**
+   * D.3: optional per-domain compliance rule evaluator. Consulted AFTER
+   * content inspection (S.5.a) but BEFORE quota preflight (S.6). Domain
+   * rules may BLOCK an action (forbidden) but cannot downgrade an
+   * existing block. Shadow-only bypasses the check entirely. Per-rule
+   * results are persisted fire-and-forget to
+   * oweibo.compliance_rule_evaluations for audit.
+   *
+   * When omitted, no domain compliance check runs — byte-identical to today.
+   */
+  complianceRuleEvaluator?: {
+    evaluateActionTime(ctx: {
+      readonly tenantId: string;
+      readonly actionClass: import('@oweibo/core-contracts').ActionClass;
+      readonly payload: unknown;
+      readonly summary?: string;
+    }): Promise<import('@oweibo/core-contracts').ComplianceEvaluationOutcome>;
+  };
 }
 
 // ── Service ────────────────────────────────────────────────────────────────
@@ -248,6 +266,7 @@ export class ActionTrustLadder implements IActionGate {
   private readonly quotaService: ActionTrustLadderOptions['quotaService'];
   private readonly budgetEstimator: ActionTrustLadderOptions['budgetEstimator'];
   private readonly snapshotVerifier: ActionTrustLadderOptions['snapshotVerifier'];
+  private readonly complianceRuleEvaluator: ActionTrustLadderOptions['complianceRuleEvaluator'];
 
   constructor(
     private readonly pool: Pool,
@@ -264,6 +283,7 @@ export class ActionTrustLadder implements IActionGate {
     this.quotaService = opts.quotaService;
     this.budgetEstimator = opts.budgetEstimator;
     this.snapshotVerifier = opts.snapshotVerifier;
+    this.complianceRuleEvaluator = opts.complianceRuleEvaluator;
   }
 
   async gate(ctx: ActionContext): Promise<GateDecision> {
@@ -330,6 +350,30 @@ export class ActionTrustLadder implements IActionGate {
 
     if (inspectionForbidReason !== null) {
       return { mode: 'forbidden', reason: inspectionForbidReason };
+    }
+
+    // D.3: per-domain compliance rule evaluation. Runs AFTER content
+    // inspection (which handles platform-wide patterns) and BEFORE quota
+    // preflight. A `block` verdict short-circuits the gate. `bypass`
+    // signals a policy-authorised override and is treated as
+    // non-blocking. `warn` / `info` / `pass` flow through without
+    // changing the mode. Shadow-only mode bypasses the evaluator
+    // entirely — the action will execute regardless and we don't want
+    // to fire bypass workflows on shadows. Audit insert is
+    // fire-and-forget so a transient DB hiccup never blocks the gate.
+    if (this.complianceRuleEvaluator && !shadowOnly) {
+      const compliance = await this.complianceRuleEvaluator.evaluateActionTime({
+        tenantId: ctx.tenantId,
+        actionClass: ctx.actionClass,
+        payload: ctx.payload,
+        summary: ctx.summary,
+      });
+      void this.recordComplianceRuleEvaluations(ctx, compliance.perRule).catch(() => undefined);
+      if (compliance.worstVerdict === 'block') {
+        const blocking = compliance.perRule.find((r) => r.verdict === 'block');
+        const reason = blocking ? `compliance:${blocking.ruleId}` : 'compliance_block';
+        return { mode: 'forbidden', reason };
+      }
     }
 
     // S.6: quota preflight runs AFTER content inspection and BEFORE the
@@ -601,6 +645,51 @@ export class ActionTrustLadder implements IActionGate {
             p.result.verdict,
             p.result.reason ?? null,
             p.result.details !== undefined ? JSON.stringify(p.result.details) : null,
+          ],
+        );
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * D.3: write per-rule evaluation rows for audit. Fire-and-forget from
+   * the caller's perspective — a failure here never blocks the gate.
+   * Rules with verdict='pass' are skipped (they're noise; the absence
+   * of a row implies pass for that rule).
+   */
+  private async recordComplianceRuleEvaluations(
+    ctx: ActionContext,
+    perRule: ReadonlyArray<import('@oweibo/core-contracts').ComplianceRuleResult>,
+  ): Promise<void> {
+    const noteworthy = perRule.filter((r) => r.verdict !== 'pass');
+    if (noteworthy.length === 0) return;
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await setTenantScopeFromCtx(client, ctx);
+      for (const r of noteworthy) {
+        await client.query(
+          `INSERT INTO oweibo.compliance_rule_evaluations
+             (tenant_id, rule_id, domain_slug, pack_version,
+              enforcement_phase, verdict, details,
+              bypass_principal, bypass_reason)
+           VALUES ($1::uuid, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)`,
+          [
+            ctx.tenantId,
+            r.ruleId,
+            r.domainSlug ?? null,
+            r.packVersion,
+            r.phase,
+            r.verdict,
+            r.details !== undefined ? JSON.stringify(r.details) : '{}',
+            r.bypassPrincipal ?? null,
+            r.bypassReason ?? null,
           ],
         );
       }

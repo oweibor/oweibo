@@ -1,14 +1,3 @@
-/**
- * T.−1: IActionGate — the gate every real-world action passes through.
- *
- * Wrap an execution call with `await actionGate.gate(ctx)`. The returned
- * decision indicates whether to execute live, record a dry-run proposal,
- * route to a shadow target, request approval, or block outright.
- *
- * With the action_trust_ladder.enabled feature flag off, `gate()` returns
- * { mode: 'execute' } deterministically — behavior is byte-identical to
- * the pre-T.−1 codepath.
- */
 import type { ActionClass } from './ActionClass.js';
 export interface ActionContext {
     readonly tenantId: string;
@@ -27,6 +16,14 @@ export interface ActionContext {
      * (T.5.a) and pinned for the snapshot's lifetime. The trust ladder reads
      * accountAgeDays and per-class scores from here to avoid a DB round-trip
      * on every gate() call.
+     *
+     * Known limitation: long-running batch tasks pin a single snapshot for
+     * the task's entire lifetime. A task running for > 24 h with a stale
+     * snapshot may miss auto-promotion thresholds crossed mid-task. No
+     * checkpoint/refresh hook is wired today; callers needing fresh state
+     * mid-task must split the work across separate ActionContexts. Future
+     * work: a CalibrationService.refresh(snapshot) hook with an explicit
+     * staleness threshold.
      */
     readonly calibrationSnapshot: TenantReadinessSnapshot;
 }
@@ -62,6 +59,19 @@ export type GateDecision = {
 } | {
     mode: 'forbidden';
     reason: string;
+}
+/**
+ * S.2: rate-limit decision. Returned when the (tenant × actionClass) token
+ * bucket is empty under the policy's `soft` enforcement mode. Callers MUST
+ * either back off and retry after `retryAfterMs` OR abort if the wait is
+ * too long. Treating this as `forbidden` is INCORRECT — it is retryable.
+ *
+ * Hard enforcement returns `forbidden { reason: 'rate_limit_exceeded' }`
+ * instead, signalling the caller to give up.
+ */
+ | {
+    mode: 'rate_limited';
+    retryAfterMs: number;
 };
 /** Minimal principal shape — the gate needs identity for audit; full type lives in @oweibo/db. */
 export interface GatePrincipal {
@@ -82,4 +92,39 @@ export interface IActionGate {
     /** Called when a proposal is rejected. Counts as 1 observation, 1 rejection. */
     reject(promoteId: string, principal: GatePrincipal, reason: string): Promise<void>;
 }
+/**
+ * Audit-fix (T.−1 #3): the canonical reference implementation every
+ * action-issuing tool (kilo-pipeline, browser-tool, channel-gateway, ...)
+ * MUST use to compute `ActionContext.actionId`. Centralizing the
+ * computation here means:
+ *
+ *   - the (tenant_id, action_id) UNIQUE on action_proposals reliably
+ *     dedupes retries of the same logical action
+ *   - two different issuers can't accidentally collide on the same id
+ *     for semantically-different actions (because originatingTaskId +
+ *     stepNumber differ)
+ *   - a retry after a transient failure produces the same id as long as
+ *     the inputs are reproducible
+ *
+ * Inputs:
+ *   - tenantId            — already namespaces the id; required
+ *   - actionClass         — required; trust-ladder uses it for classification
+ *   - payload             — JSON-serializable; canonicalized below before hashing
+ *   - originatingTaskId   — the agent task that emitted this action;
+ *                           use a stable per-task uuid, not per-attempt
+ *   - stepNumber          — 0-based action index within the task;
+ *                           differentiates per-action within one task
+ *
+ * Output: 32-character hex prefix of SHA-256(canonicalForm). The prefix
+ * is long enough to keep collision probability negligible (~2^-64 over
+ * 32 chars) while staying under the 64-char column constraint on
+ * action_proposals.action_id.
+ */
+export declare function canonicalActionId(args: {
+    readonly tenantId: string;
+    readonly actionClass: ActionClass;
+    readonly payload: unknown;
+    readonly originatingTaskId: string;
+    readonly stepNumber: number;
+}): string;
 //# sourceMappingURL=IActionGate.d.ts.map

@@ -80,12 +80,60 @@ export type ExtendedActionClass = string & { readonly [ExtendedActionClassBrand]
 export type ActionClass = CoreActionClass | ExtendedActionClass;
 
 /**
+ * Default trust-ladder policy for an extended action class. Mirrors the
+ * matrix in T.−1 PLATFORM_DEFAULTS but parameterised so each domain rule
+ * pack declares its own cold-start posture.
+ */
+export interface TrustLadderPolicy {
+  /** Mode for accountAgeDays < 7 (regardless of score). */
+  readonly young: 'execute' | 'dry_run' | 'shadow' | 'require_approval' | 'forbidden';
+  /** Mode for accountAgeDays >= 7 + per-class score >= 0.6. */
+  readonly withSignal: 'execute' | 'dry_run' | 'shadow' | 'require_approval' | 'forbidden';
+  /** Mode for accountAgeDays >= 30 + per-class score >= 0.85. */
+  readonly established: 'execute' | 'dry_run' | 'shadow' | 'require_approval' | 'forbidden';
+  /**
+   * When true, the class is also added to the always-require-approval
+   * group at registry-load time — overrides the matrix entries above.
+   * Set true for classes whose blast radius is irreversible (phi.write,
+   * pci.cardholder_data_modify, …).
+   */
+  readonly alwaysRequireApproval?: boolean;
+}
+
+/**
+ * Runtime declaration for a new extended action class registered by a
+ * domain rule pack. The slug is a raw string here; `register()` brands
+ * it to `ExtendedActionClass` and stores the (slug → declaration) pair.
+ */
+export interface ExtendedActionClassDeclaration {
+  /** e.g. 'phi.read', 'pci.cardholder_data_access' — convention: 'namespace.verb'. */
+  readonly slug: string;
+  readonly description: string;
+  readonly defaultPolicy: TrustLadderPolicy;
+  /** Domain slug that owns this extension; informational. */
+  readonly sourceDomain?: string;
+}
+
+/**
  * Minimal registry interface for extended action classes. Domain rule packs
  * (D.3) register policies here; the trust ladder consults the registry when
  * resolving an extended class.
+ *
+ * D.3 contract extension: adds `register()` and `lookup()`. Registration
+ * is one-way — there is no `unregister()`. A platform restart is the
+ * authoritative path for retiring a class.
  */
 export interface IActionClassExtensionRegistry {
   isRegistered(slug: string): boolean;
+  /**
+   * Register an extended action class. Idempotent on identical slugs:
+   * re-registering the same slug with an identical declaration is a
+   * no-op; re-registering with a different declaration throws so
+   * conflicting domain packs surface at load time.
+   */
+  register(decl: ExtendedActionClassDeclaration): void;
+  /** Look up a declaration by slug; returns undefined when unregistered. */
+  lookup(slug: string): ExtendedActionClassDeclaration | undefined;
 }
 
 /** Runtime validator + brand. Throws if `s` is not registered. */

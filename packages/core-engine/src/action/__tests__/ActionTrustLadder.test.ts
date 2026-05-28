@@ -465,3 +465,133 @@ describe('ActionTrustLadder.reject', () => {
     )).toBe(true);
   });
 });
+
+// ── D.3 compliance rule evaluator integration ─────────────────────────────
+
+describe('ActionTrustLadder.gate — D.3 compliance rule evaluator hook', () => {
+  const cleanCtx = () =>
+    makeCtx({
+      actionClass: 'read.local',
+      calibrationSnapshot: makeSnapshot(60, 0.95, 'read.local'),
+    });
+
+  it('passes through when no evaluator is wired (backwards compat)', async () => {
+    const { pool } = makePool([]);
+    const ladder = new ActionTrustLadder(pool, { isEnabled: () => true });
+    const r = await ladder.gate(cleanCtx());
+    expect(r.mode).toBe('execute');
+  });
+
+  it('returns forbidden with `compliance:<ruleId>` reason when evaluator blocks', async () => {
+    const { pool } = makePool([]);
+    const ladder = new ActionTrustLadder(pool, {
+      isEnabled: () => true,
+      complianceRuleEvaluator: {
+        async evaluateActionTime() {
+          return {
+            worstVerdict: 'block',
+            perRule: [
+              {
+                ruleId: 'fintech-no-pan-in-logs',
+                domainSlug: 'fintech',
+                packVersion: '1.0.0-stub',
+                phase: 'action_time',
+                verdict: 'block',
+                severity: 'block',
+              },
+            ],
+          };
+        },
+      },
+    });
+    const r = await ladder.gate(cleanCtx());
+    expect(r.mode).toBe('forbidden');
+    if (r.mode === 'forbidden') {
+      expect(r.reason).toBe('compliance:fintech-no-pan-in-logs');
+    }
+  });
+
+  it('does not block when evaluator returns warn / info / bypass / pass', async () => {
+    const { pool } = makePool([]);
+    const ladder = new ActionTrustLadder(pool, {
+      isEnabled: () => true,
+      complianceRuleEvaluator: {
+        async evaluateActionTime() {
+          return {
+            worstVerdict: 'warn',
+            perRule: [
+              {
+                ruleId: 'r-warn',
+                domainSlug: 'fintech',
+                packVersion: '1.0.0-stub',
+                phase: 'action_time',
+                verdict: 'warn',
+                severity: 'warn',
+              },
+            ],
+          };
+        },
+      },
+    });
+    const r = await ladder.gate(cleanCtx());
+    expect(r.mode).toBe('execute');
+  });
+
+  it('bypasses the evaluator entirely in shadow-only mode', async () => {
+    const { pool } = makePool([
+      { match: 'INSERT INTO oweibo.action_proposals', rows: [] },
+    ]);
+    const evaluator = {
+      evaluateActionTime: jest.fn(),
+    };
+    const ladder = new ActionTrustLadder(pool, {
+      isEnabled: () => true,
+      isShadowOnly: () => true,
+      complianceRuleEvaluator: evaluator,
+    });
+    await ladder.gate(cleanCtx());
+    expect(evaluator.evaluateActionTime).not.toHaveBeenCalled();
+  });
+
+  it('persists noteworthy verdicts to compliance_rule_evaluations (fire-and-forget)', async () => {
+    const { pool, calls } = makePool([]);
+    const ladder = new ActionTrustLadder(pool, {
+      isEnabled: () => true,
+      complianceRuleEvaluator: {
+        async evaluateActionTime() {
+          return {
+            worstVerdict: 'warn',
+            perRule: [
+              {
+                ruleId: 'fintech-warning',
+                domainSlug: 'fintech',
+                packVersion: '1.0.0-stub',
+                phase: 'action_time',
+                verdict: 'warn',
+                severity: 'warn',
+                details: { matched: true },
+              },
+              {
+                ruleId: 'pass-quietly',
+                domainSlug: 'fintech',
+                packVersion: '1.0.0-stub',
+                phase: 'action_time',
+                verdict: 'pass',
+                severity: 'block',
+              },
+            ],
+          };
+        },
+      },
+    });
+    await ladder.gate(cleanCtx());
+    // Allow the fire-and-forget insert to run.
+    await new Promise((r) => setImmediate(r));
+    const inserts = calls.filter((c) =>
+      c.sql.includes('INSERT INTO oweibo.compliance_rule_evaluations'),
+    );
+    // 'pass' rows are filtered out — only the warn row should land.
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0]!.params).toContain('fintech-warning');
+  });
+});

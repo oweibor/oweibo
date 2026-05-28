@@ -110,6 +110,9 @@ export * from './domain/ITenantDomainBinding.js';
 // ── D.7 (domain-depth): domain-knowledge currency ────────────────────────────
 export * from './domain/IDomainCurrency.js';
 
+// ── D.8 (domain-depth): depth measurement & reporting ────────────────────────
+export * from './domain/IDomainDepth.js';
+
 // ── Events ────────────────────────────────────────────────────────────────────
 export * from './events/billing.events.js';
 export * from './events/inventory.events.js';

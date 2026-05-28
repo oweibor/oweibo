@@ -10,18 +10,21 @@
  *
  * Pattern matches InMemoryGoalTemplateMatcher: catalog is in-memory with
  * precomputed embeddings; cosine similarity is computed in process.
+ *
+ * D.0 (domain-depth) — `DomainSlug` is now an alias for the canonical
+ * registry slug type (a plain string validated at runtime). An optional
+ * `IDomainRegistry` constructor seam validates that every ontology entry's
+ * slug exists in the canonical catalog; the default (no registry) preserves
+ * pre-D.0 behavior for tests and consumers that operate on ad-hoc slugs.
  */
-export type DomainSlug =
-  | 'finance'
-  | 'healthcare'
-  | 'ml-research'
-  | 'devops'
-  | 'ecommerce'
-  | 'legal'
-  | 'gaming'
-  | 'media'
-  | 'logistics'
-  | 'education';
+import type { DomainSlug as RegistryDomainSlug, IDomainRegistry } from '@oweibo/core-contracts';
+
+/**
+ * @deprecated The string-literal union was removed by D.0. Slugs are now
+ * validated at runtime against `IDomainRegistry`. This alias is retained
+ * so existing imports keep compiling.
+ */
+export type DomainSlug = RegistryDomainSlug;
 
 export interface DomainOntologyEntry {
   readonly domain: DomainSlug;
@@ -47,6 +50,12 @@ export type QueryEmbedder = (text: string) => Promise<ReadonlyArray<number>>;
 export interface DomainClassifierOptions {
   /** Minimum similarity for a match. Default 0.70 (per ttv.md §T.2.g). */
   threshold?: number;
+  /**
+   * D.0: optional canonical-taxonomy seam. When supplied, every ontology
+   * entry's slug is validated against the registry at construction time.
+   * Omit to preserve pre-D.0 behavior — ad-hoc slugs are accepted.
+   */
+  registry?: IDomainRegistry;
 }
 
 const DEFAULT_THRESHOLD = 0.7;
@@ -60,6 +69,15 @@ export class DomainClassifier {
     opts: DomainClassifierOptions = {},
   ) {
     this.threshold = opts.threshold ?? DEFAULT_THRESHOLD;
+    if (opts.registry) {
+      for (const entry of ontology) {
+        if (!opts.registry.has(entry.domain)) {
+          throw new Error(
+            `DomainClassifier: ontology entry slug ${JSON.stringify(entry.domain)} is not in the canonical domain registry`,
+          );
+        }
+      }
+    }
   }
 
   /**

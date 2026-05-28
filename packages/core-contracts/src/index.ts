@@ -88,6 +88,10 @@ export * from './connector/IConnector.js';
 // ── T.2.h: org-graph nodes / edges / facts / stakeholder interests ───────────
 export * from './org/OrgGraph.js';
 
+// ── D.0 (domain-depth): canonical domain registry ────────────────────────────
+export * from './domain/DomainSlug.js';
+export * from './domain/IDomainRegistry.js';
+
 // ── Events ────────────────────────────────────────────────────────────────────
 export * from './events/billing.events.js';
 export * from './events/inventory.events.js';

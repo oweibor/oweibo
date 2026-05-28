@@ -71,6 +71,31 @@ describe('DomainClassifier', () => {
   });
 });
 
+describe('DomainClassifier — D.0 registry seam', () => {
+  const stubRegistry = {
+    has: (slug: string) => slug === 'fintech',
+    get: () => undefined,
+    require: () => { throw new Error('no'); },
+    list: () => [],
+    listByMaturity: () => [],
+  };
+
+  it('accepts ontology entries whose slugs are in the registry', () => {
+    const ok = { ...FINANCE, domain: 'fintech' };
+    expect(() => new DomainClassifier([ok], embedder([1, 0, 0]), { registry: stubRegistry })).not.toThrow();
+  });
+
+  it('rejects ontology entries whose slugs are not in the registry', () => {
+    expect(
+      () => new DomainClassifier([FINANCE], embedder([1, 0, 0]), { registry: stubRegistry }),
+    ).toThrow(/not in the canonical domain registry/);
+  });
+
+  it('without a registry, ad-hoc slugs are accepted (pre-D.0 behavior)', () => {
+    expect(() => new DomainClassifier([FINANCE], embedder([1, 0, 0]))).not.toThrow();
+  });
+});
+
 describe('cosineSimilarity', () => {
   it('returns 1 for identical vectors', () => {
     expect(cosineSimilarity([1, 0, 0], [1, 0, 0])).toBe(1);

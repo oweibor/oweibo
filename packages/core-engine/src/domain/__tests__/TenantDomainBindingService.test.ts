@@ -131,6 +131,11 @@ describe('TenantDomainBindingService.replaceBindings — validation', () => {
 
   it('permits > soft cap with force=true', async () => {
     const { pool } = makePool([
+      // domain_registry lookup must return all the requested slugs so
+      // the existence validation passes.
+      { match: 'FROM oweibo.domain_registry', rows: [
+        { slug: 'a' }, { slug: 'b' }, { slug: 'c' }, { slug: 'd' },
+      ] },
       { match: 'DELETE FROM oweibo.tenant_domain_binding', rows: [] },
       { match: 'INSERT INTO oweibo.tenant_domain_binding', rows: [] },
       { match: 'SELECT tenant_id, domain_slug', rows: [] },
@@ -150,6 +155,23 @@ describe('TenantDomainBindingService.replaceBindings — validation', () => {
     ).resolves.toBeDefined();
   });
 
+  it('rejects unknown domain_slug not in registry', async () => {
+    const { pool } = makePool([
+      // Registry returns only 'fintech' — 'ghost' missing.
+      { match: 'FROM oweibo.domain_registry', rows: [{ slug: 'fintech' }] },
+    ]);
+    const svc = new TenantDomainBindingService(pool);
+    await expect(
+      svc.replaceBindings({
+        tenantId: TENANT,
+        bindings: [
+          { domainSlug: 'fintech', role: 'primary', rawWeight: 0.5, boundBy: { type: 'admin', id: 'a' } },
+          { domainSlug: 'ghost', role: 'secondary', rawWeight: 0.5, boundBy: { type: 'admin', id: 'a' } },
+        ],
+      }),
+    ).rejects.toThrow(/unknown domain slug.*ghost/);
+  });
+
   it('permits an empty binding set (unbind)', async () => {
     const { pool, calls } = makePool([
       { match: 'DELETE FROM oweibo.tenant_domain_binding', rows: [] },
@@ -166,6 +188,9 @@ describe('TenantDomainBindingService.replaceBindings — validation', () => {
 describe('TenantDomainBindingService.replaceBindings — write path', () => {
   it('deletes existing then inserts each binding row in a transaction', async () => {
     const { pool, calls } = makePool([
+      { match: 'FROM oweibo.domain_registry', rows: [
+        { slug: 'fintech' }, { slug: 'healthcare' },
+      ] },
       { match: 'DELETE FROM oweibo.tenant_domain_binding', rows: [] },
       { match: 'INSERT INTO oweibo.tenant_domain_binding', rows: [] },
       { match: 'SELECT tenant_id, domain_slug', rows: [] },
@@ -190,6 +215,12 @@ describe('TenantDomainBindingService.replaceBindings — write path', () => {
     const calls: string[] = [];
     const queryFn = (sql: string): Promise<QueryResult<QueryResultRow>> => {
       calls.push(sql);
+      if (sql.includes('FROM oweibo.domain_registry')) {
+        return Promise.resolve({
+          rows: [{ slug: 'fintech' }],
+          rowCount: 1, command: '', oid: 0, fields: [],
+        });
+      }
       if (sql.includes('INSERT INTO oweibo.tenant_domain_binding')) {
         return Promise.reject(new Error('boom'));
       }

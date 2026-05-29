@@ -304,7 +304,7 @@ describe('MultiPartyApprovalService.createGrant', () => {
       grantedToKind: 'agent',
       durationSeconds: 60,
       maxUses: 1,
-    })).rejects.toThrow(/requires 2 approver/);
+    })).rejects.toThrow(/requires 2 (distinct )?approver/);
   });
 
   it('refuses when grantedToKind=user without grantedToUserId', async () => {
@@ -368,7 +368,7 @@ describe('MultiPartyApprovalService.castVote', () => {
     const { pool } = makePool([
       {
         match: 'FROM oweibo.action_proposals',
-        rows: [{ action_class: 'deploy.prod' }],
+        rows: [{ action_class: 'deploy.prod', state: 'pending' }],
       },
       {
         match: 'GROUP BY vote',
@@ -393,7 +393,7 @@ describe('MultiPartyApprovalService.castVote', () => {
     const { pool } = makePool([
       {
         match: 'FROM oweibo.action_proposals',
-        rows: [{ action_class: 'deploy.prod' }],
+        rows: [{ action_class: 'deploy.prod', state: 'pending' }],
       },
       {
         match: 'GROUP BY vote',
@@ -414,7 +414,7 @@ describe('MultiPartyApprovalService.castVote', () => {
     const { pool } = makePool([
       {
         match: 'FROM oweibo.action_proposals',
-        rows: [{ action_class: 'deploy.prod' }],
+        rows: [{ action_class: 'deploy.prod', state: 'pending' }],
       },
       {
         match: 'GROUP BY vote',
@@ -436,7 +436,7 @@ describe('MultiPartyApprovalService.castVote', () => {
     const { pool } = makePool([
       {
         match: 'FROM oweibo.action_proposals',
-        rows: [{ action_class: 'financial.payment' }], // allowDelegation=false
+        rows: [{ action_class: 'financial.payment', state: 'pending' }], // allowDelegation=false
       },
     ]);
     const svc = new MultiPartyApprovalService(pool);
@@ -453,7 +453,7 @@ describe('MultiPartyApprovalService.castVote', () => {
     const { pool } = makePool([
       {
         match: 'FROM oweibo.action_proposals',
-        rows: [{ action_class: 'deploy.prod' }],
+        rows: [{ action_class: 'deploy.prod', state: 'pending' }],
       },
       // No delegation row returned
       { match: 'FROM oweibo.approval_delegations', rows: [] },
@@ -472,7 +472,7 @@ describe('MultiPartyApprovalService.castVote', () => {
     const { pool, calls } = makePool([
       {
         match: 'FROM oweibo.action_proposals',
-        rows: [{ action_class: 'deploy.prod' }],
+        rows: [{ action_class: 'deploy.prod', state: 'pending' }],
       },
       { match: 'FROM oweibo.approval_delegations', rows: [{ ok: true }] },
       { match: 'GROUP BY vote', rows: [{ vote: 'approve', n: 1 }] },

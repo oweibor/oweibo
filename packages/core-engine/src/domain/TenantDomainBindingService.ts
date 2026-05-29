@@ -57,6 +57,7 @@ export class TenantDomainBindingService {
    *   2. all weights in [0, 1]
    *   3. no duplicate slugs
    *   4. cardinality <= soft cap unless `force = true`
+   *   5. every domain_slug exists in oweibo.domain_registry
    *
    * An empty `bindings` array unbinds the tenant entirely — permitted.
    */
@@ -67,6 +68,26 @@ export class TenantDomainBindingService {
     try {
       await client.query('BEGIN');
       await this.setAdminScope(client, input.tenantId);
+
+      // Audit-fix: reject unknown domain slugs up-front. A typo or stale
+      // slug would otherwise create a binding that no rubric resolver
+      // or rule pack ever matches — silent dead-binding.
+      if (input.bindings.length > 0) {
+        const slugs = input.bindings.map((b) => b.domainSlug);
+        const r = await client.query<{ slug: string }>(
+          `SELECT slug FROM oweibo.domain_registry WHERE slug = ANY($1::text[])`,
+          [slugs],
+        );
+        const found = new Set(r.rows.map((row) => row.slug));
+        const missing = slugs.filter((s) => !found.has(s));
+        if (missing.length > 0) {
+          throw new Error(
+            `TenantDomainBindingService: unknown domain slug(s) [${missing.join(', ')}]; ` +
+            `slugs must be registered in oweibo.domain_registry`,
+          );
+        }
+      }
+
       await client.query(
         `DELETE FROM oweibo.tenant_domain_binding WHERE tenant_id = $1::uuid`,
         [input.tenantId],

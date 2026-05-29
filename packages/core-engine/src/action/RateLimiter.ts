@@ -30,6 +30,12 @@ export interface RateLimiterOptions {
   now?: () => Date;
   /** Cache TTL for tenant.created_at lookups. Default 60 s. */
   tenantCacheTtlMs?: number;
+  /**
+   * Hard cap on cache size — prevents unbounded growth as new tenants
+   * are queried. When the cap is reached, the oldest entry is evicted
+   * (insertion-order LRU). Default 50 000 (≈ a few MB).
+   */
+  tenantCacheMaxEntries?: number;
   /** Optional log sink for fire-and-forget event logging failures. */
   log?: (level: 'info' | 'warn' | 'error', message: string, extra?: Record<string, unknown>) => void;
 }
@@ -42,14 +48,25 @@ export type RateLimitDecision =
 interface TenantCacheEntry {
   createdAt: Date;
   cachedAtMs: number;
+  /** Sentinel for unknown-tenant lookups so we negative-cache for a shorter TTL. */
+  unknown: boolean;
 }
 
 const DEFAULT_TENANT_CACHE_TTL_MS = 60 * 1000;
+const DEFAULT_TENANT_CACHE_MAX_ENTRIES = 50_000;
+/**
+ * Negative-cache TTL: when a tenant id resolves to nothing in the DB
+ * (deleted? not yet committed? typo?) we still cache the miss so a
+ * loop of bad calls doesn't slam the pool — but with a short TTL so
+ * a newly-created tenant becomes visible quickly.
+ */
+const NEGATIVE_CACHE_TTL_MS = 5_000;
 
 export class RateLimiter {
   private readonly isEnabled: () => boolean;
   private readonly now: () => Date;
   private readonly tenantCacheTtlMs: number;
+  private readonly tenantCacheMaxEntries: number;
   private readonly log: NonNullable<RateLimiterOptions['log']>;
   private readonly tenantCache = new Map<string, TenantCacheEntry>();
   private readonly resolver: RateLimitPolicyResolver;
@@ -62,6 +79,7 @@ export class RateLimiter {
     this.isEnabled = opts.isEnabled ?? defaultEnabled;
     this.now = opts.now ?? (() => new Date());
     this.tenantCacheTtlMs = opts.tenantCacheTtlMs ?? DEFAULT_TENANT_CACHE_TTL_MS;
+    this.tenantCacheMaxEntries = opts.tenantCacheMaxEntries ?? DEFAULT_TENANT_CACHE_MAX_ENTRIES;
     this.log = opts.log ?? (() => undefined);
     this.resolver = new RateLimitPolicyResolver(pool, { now: opts.now });
   }
@@ -136,8 +154,11 @@ export class RateLimiter {
   private async loadTenantCreatedAt(tenantId: string): Promise<Date> {
     const cached = this.tenantCache.get(tenantId);
     const nowMs = this.now().getTime();
-    if (cached && nowMs - cached.cachedAtMs < this.tenantCacheTtlMs) {
-      return cached.createdAt;
+    if (cached) {
+      const ttl = cached.unknown ? NEGATIVE_CACHE_TTL_MS : this.tenantCacheTtlMs;
+      if (nowMs - cached.cachedAtMs < ttl) {
+        return cached.createdAt;
+      }
     }
     const client = await this.pool.connect();
     try {
@@ -147,12 +168,36 @@ export class RateLimiter {
         `SELECT created_at FROM oweibo.tenants WHERE id = $1::uuid LIMIT 1`,
         [tenantId],
       );
-      const createdAt = r.rows[0]?.created_at ?? new Date(0);
-      this.tenantCache.set(tenantId, { createdAt, cachedAtMs: nowMs });
+      const found = r.rows[0];
+      // Audit-fix: negative-cache unknown tenants with a SHORT TTL so a
+      // newly-created tenant becomes visible quickly, but a burst of
+      // bad ids doesn't slam the pool. `new Date(0)` is the conservative
+      // "infinitely old" fallback that gives the tenant no cold-start ramp.
+      const createdAt = found?.created_at ?? new Date(0);
+      this.recordTenantCache(tenantId, {
+        createdAt,
+        cachedAtMs: nowMs,
+        unknown: !found,
+      });
       return createdAt;
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * Insertion-ordered LRU eviction: when the cache hits its cap, drop
+   * the oldest entry before inserting the new one. Map preserves
+   * insertion order, so `keys().next()` is the eviction candidate.
+   */
+  private recordTenantCache(tenantId: string, entry: TenantCacheEntry): void {
+    if (this.tenantCache.has(tenantId)) {
+      this.tenantCache.delete(tenantId);
+    } else if (this.tenantCache.size >= this.tenantCacheMaxEntries) {
+      const oldest = this.tenantCache.keys().next().value;
+      if (oldest !== undefined) this.tenantCache.delete(oldest);
+    }
+    this.tenantCache.set(tenantId, entry);
   }
 
   private async logEvent(

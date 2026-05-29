@@ -73,6 +73,10 @@ export class DomainIntakeStep implements IBootstrapStep {
 
   constructor(private readonly opts: DomainIntakeStepOptions = {}) {}
 
+  isWired(): boolean {
+    return Boolean(this.opts.processor);
+  }
+
   async execute(ctx: IBootstrapStepContext): Promise<StepStatus> {
     if (!readBoolFlag(ctx.features, 'tenant.bootstrap.domain_intake.enabled')) {
       return 'skipped';

@@ -28,6 +28,16 @@
  * gate `record()` on an external dedupe key. The trust ladder's
  * action_proposals.action_id uniqueness covers this for the normal
  * gate path.
+ *
+ * Concurrency note: preflight is check-then-act. To reduce the race
+ * window between preflight and record(), loadConsumed locks the
+ * (tenant, quota_kind, scope, window, window_start) row with FOR
+ * UPDATE so concurrent preflights for the same key serialize. This
+ * does NOT fully prevent two parallel actions from both passing
+ * preflight (they hold the lock only during their own preflight
+ * txn). For absolute caps on small limits (e.g. financial.payment
+ * daily count = 5), enforce the limit at the gate layer with an
+ * external reservation pattern.
  */
 import type { Pool, PoolClient } from 'pg';
 import type {
@@ -179,6 +189,89 @@ export class QuotaService implements IQuotaService {
     });
   }
 
+  // ── Read-only usage (admin UI) ──────────────────────────────────────────
+
+  /**
+   * Return the current consumed/limit for every (kind, scope, window)
+   * the tenant has consumption rows for. Used by /actions/quotas/usage.
+   * Optional actionClass filter narrows to '*' + that-class rows.
+   */
+  async usage(tenantId: string, actionClass?: string): Promise<readonly {
+    quotaKind: string;
+    scope: string;
+    window: QuotaWindow;
+    windowStart: string;
+    consumed: number;
+    limit: number | null;
+    enforcementMode: 'hard' | 'soft' | null;
+    resetAt: string;
+  }[]> {
+    const now = this.now();
+    return this.tx(tenantId, async (client) => {
+      const filter = actionClass ? `AND (c.scope = '*' OR c.scope = $2)` : '';
+      const params: unknown[] = [tenantId];
+      if (actionClass) params.push(actionClass);
+      const r = await client.query<{
+        quota_kind: string;
+        scope: string;
+        window: QuotaWindow;
+        window_start: string;
+        consumed: string;
+        limit_value: string | null;
+        cold_start_limit: string | null;
+        cold_start_duration_days: number | null;
+        enforcement_mode: 'hard' | 'soft' | null;
+      }>(
+        `SELECT
+           c.quota_kind, c.scope, c.window, c.window_start::text AS window_start,
+           c.consumed::text AS consumed,
+           p.limit_value::text AS limit_value,
+           p.cold_start_limit::text AS cold_start_limit,
+           p.cold_start_duration_days,
+           p.enforcement_mode
+         FROM oweibo.quota_consumption c
+         LEFT JOIN oweibo.quota_policies p
+           ON p.tenant_id = c.tenant_id
+          AND p.quota_kind = c.quota_kind
+          AND p.scope = c.scope
+          AND p.window = c.window
+         WHERE c.tenant_id = $1::uuid ${filter}
+         ORDER BY c.window, c.quota_kind, c.scope
+         LIMIT 500`,
+        params,
+      );
+      const ageDays = await this.accountAgeResolver(tenantId);
+      return r.rows.map((row) => {
+        let limit: number | null = null;
+        if (row.limit_value !== null) {
+          const policy: QuotaPolicy = {
+            tenantId,
+            quotaKind: row.quota_kind as QuotaKind,
+            scope: row.scope as ActionClass | '*',
+            window: row.window,
+            limitValue: Number(row.limit_value),
+            ...(row.cold_start_limit !== null
+              ? { coldStartLimit: Number(row.cold_start_limit) }
+              : {}),
+            coldStartDurationDays: row.cold_start_duration_days ?? 0,
+            enforcementMode: (row.enforcement_mode ?? 'hard') as QuotaEnforcementMode,
+          };
+          limit = effectiveLimit(policy, ageDays);
+        }
+        return {
+          quotaKind: row.quota_kind,
+          scope: row.scope,
+          window: row.window,
+          windowStart: row.window_start,
+          consumed: Number(row.consumed),
+          limit,
+          enforcementMode: row.enforcement_mode,
+          resetAt: nextResetAt(row.window, now),
+        };
+      });
+    });
+  }
+
   // ── Internals ───────────────────────────────────────────────────────────
 
   private async loadMatchingPolicies(tenantId: string, actionClass: ActionClass): Promise<QuotaPolicy[]> {
@@ -205,11 +298,17 @@ export class QuotaService implements IQuotaService {
 
   private async loadConsumed(tenantId: string, policy: QuotaPolicy, windowStart: string): Promise<number> {
     return this.tx(tenantId, async (client) => {
+      // FOR UPDATE serialises concurrent preflights for the same
+      // (tenant, kind, scope, window) — narrows but does not eliminate
+      // the preflight→record race window. SKIP LOCKED would let a
+      // concurrent caller skip past the lock and over-account; we want
+      // them to wait so they see the latest consumed value.
       const r = await client.query<{ consumed: string }>(
         `SELECT consumed::text
            FROM oweibo.quota_consumption
           WHERE tenant_id = $1::uuid AND quota_kind = $2 AND scope = $3
-            AND window = $4 AND window_start = $5::date`,
+            AND window = $4 AND window_start = $5::date
+          FOR UPDATE`,
         [tenantId, policy.quotaKind, policy.scope, policy.window, windowStart],
       );
       const row = r.rows[0];
@@ -227,9 +326,11 @@ export class QuotaService implements IQuotaService {
         return 1;
       case 'usd_cost_per_class':
       case 'usd_cost_total':
-        return Math.max(0, Math.floor(args.estimatedCostUsdCents ?? 0));
+        // Round UP for cost-based deltas — flooring gave the tenant up
+        // to <1¢ of slack per call which adds up across enterprise volumes.
+        return Math.max(0, Math.ceil(args.estimatedCostUsdCents ?? 0));
       case 'blast_radius_user_count':
-        return Math.max(0, Math.floor(args.blastRadiusUsers ?? 0));
+        return Math.max(0, Math.ceil(args.blastRadiusUsers ?? 0));
     }
   }
 

@@ -63,6 +63,10 @@ export class SeedMemoriesStep implements IBootstrapStep {
 
   constructor(private readonly opts: SeedMemoriesStepOptions = {}) {}
 
+  isWired(): boolean {
+    return Boolean(this.opts.writer && this.opts.catalog);
+  }
+
   async execute(ctx: IBootstrapStepContext): Promise<StepStatus> {
     if (!readBoolFlag(ctx.features, 'tenant.bootstrap.seed_memories.enabled')) {
       return 'skipped';

@@ -31,7 +31,13 @@ import type {
 } from '@oweibo/core-contracts';
 
 export interface BypassAuthorization {
-  /** 'platform_admin', 'tenant_admin', or absent. */
+  /**
+   * Asserted by the resolver. The resolver IS the trust boundary — it must
+   * validate that the calling principal actually has this authority before
+   * returning a non-null result. The evaluator only checks that the asserted
+   * kind is compatible with the rule's bypassPolicy; it cannot independently
+   * verify the principal.
+   */
   readonly kind?: 'platform_admin' | 'tenant_admin';
   readonly principal: string;
   readonly reason: string;
@@ -42,19 +48,29 @@ export type BypassResolver = (input: {
   ctx: ActionTimeRuleContext;
 }) => Promise<BypassAuthorization | null> | BypassAuthorization | null;
 
+export interface IComplianceEvaluatorLogger {
+  warn(message: string, extra?: Record<string, unknown>): void;
+}
+
 export interface ComplianceRuleEvaluatorOptions {
   /** Optional bypass seam. Returns null when no bypass is authorised. */
   bypassResolver?: BypassResolver;
+  /** Observability sink for evaluator-internal anomalies. */
+  log?: IComplianceEvaluatorLogger;
 }
 
 export class ComplianceRuleEvaluator implements IComplianceRuleEvaluator {
   private readonly bypassResolver: BypassResolver;
+  private readonly log: IComplianceEvaluatorLogger;
 
   constructor(
     private readonly registry: IComplianceRulePackRegistry,
     opts: ComplianceRuleEvaluatorOptions = {},
   ) {
     this.bypassResolver = opts.bypassResolver ?? (() => null);
+    this.log = opts.log ?? {
+      warn: (message, extra) => console.warn(`[ComplianceRuleEvaluator] ${message}`, extra ?? {}),
+    };
   }
 
   async evaluateActionTime(ctx: ActionTimeRuleContext): Promise<ComplianceEvaluationOutcome> {
@@ -62,8 +78,33 @@ export class ComplianceRuleEvaluator implements IComplianceRuleEvaluator {
     const perRule: ComplianceRuleResult[] = [];
     for (const { rule, pack } of applicable) {
       if (!ruleAppliesToClass(rule, ctx.actionClass)) continue;
-      const fired = runRule(rule, ctx);
-      if (!fired) {
+      const evaluated = runRule(rule, ctx);
+      if (evaluated.kind === 'error') {
+        // Audit-fix: a thrown check used to be swallowed and treated as
+        // pass. Treat it as fail-closed (block) for block-severity rules
+        // so a buggy check cannot let an unsafe action through, and log
+        // for operator visibility. Lower-severity rules surface as warn.
+        const verdict: ComplianceRuleVerdict = rule.severity === 'block' ? 'block' : 'warn';
+        this.log.warn(`compliance rule check threw`, {
+          ruleId: rule.ruleId,
+          domainSlug: pack.domainSlug,
+          packVersion: pack.packVersion,
+          actionClass: ctx.actionClass,
+          tenantId: ctx.tenantId,
+          error: evaluated.error,
+        });
+        perRule.push({
+          ruleId: rule.ruleId,
+          domainSlug: pack.domainSlug,
+          packVersion: pack.packVersion,
+          phase: 'action_time',
+          verdict,
+          severity: rule.severity,
+          details: { error: evaluated.error, reason: 'rule_check_threw' },
+        });
+        continue;
+      }
+      if (evaluated.kind === 'no_fire') {
         perRule.push({
           ruleId: rule.ruleId,
           domainSlug: pack.domainSlug,
@@ -86,6 +127,17 @@ export class ComplianceRuleEvaluator implements IComplianceRuleEvaluator {
           if (bypass && isAuthorised(rule.bypassPolicy, bypass.kind)) {
             verdict = 'bypass';
           } else {
+            // A resolver that returns a kind incompatible with the
+            // bypassPolicy is a config bug — surface it so it doesn't
+            // silently degrade to 'block'.
+            if (bypass) {
+              this.log.warn(`bypass kind mismatched bypassPolicy`, {
+                ruleId: rule.ruleId,
+                bypassPolicy: rule.bypassPolicy,
+                returnedKind: bypass.kind ?? null,
+                principal: bypass.principal,
+              });
+            }
             verdict = 'block';
           }
         } else {
@@ -101,7 +153,7 @@ export class ComplianceRuleEvaluator implements IComplianceRuleEvaluator {
         phase: 'action_time',
         verdict,
         severity: rule.severity,
-        details: fired.details,
+        details: evaluated.fired.details,
         ...(bypass && verdict === 'bypass'
           ? { bypassPrincipal: bypass.principal, bypassReason: bypass.reason }
           : {}),
@@ -124,21 +176,28 @@ interface FiredResult {
   readonly details?: unknown;
 }
 
-function runRule(rule: ComplianceRule, ctx: ActionTimeRuleContext): FiredResult | null {
+type RuleEvaluation =
+  | { kind: 'no_fire' }
+  | { kind: 'fired'; fired: FiredResult }
+  | { kind: 'error'; error: string };
+
+function runRule(rule: ComplianceRule, ctx: ActionTimeRuleContext): RuleEvaluation {
   if (rule.check !== 'deterministic') {
     // Non-deterministic rules are not fired here — they're audit-only at
     // this seam. A deployment with an llm_judge executor would wire a
     // composed evaluator (see D.2 composeExecutors for the pattern).
-    return null;
+    return { kind: 'no_fire' };
   }
   const cfg = (rule.checkConfig ?? {}) as Record<string, unknown>;
   const fn = typeof cfg['fn'] === 'string' ? (cfg['fn'] as string) : '';
   const checker = DETERMINISTIC_FNS[fn];
-  if (!checker) return null;
+  if (!checker) return { kind: 'no_fire' };
   try {
-    return checker(cfg, ctx);
-  } catch {
-    return null;
+    const out = checker(cfg, ctx);
+    if (out === null) return { kind: 'no_fire' };
+    return { kind: 'fired', fired: out };
+  } catch (err) {
+    return { kind: 'error', error: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -178,13 +237,44 @@ type DeterministicCheckFn = (
   ctx: ActionTimeRuleContext,
 ) => FiredResult | null;
 
+// Defensive limits to keep tenant- or domain-author-supplied regexes from
+// becoming a ReDoS vector. The cache is bounded so a long sequence of
+// distinct patterns can't grow it without bound.
+const REGEX_PATTERN_MAX_LEN = 512;
+const REGEX_HAYSTACK_MAX_LEN = 64 * 1024;
+const REGEX_CACHE_MAX = 256;
+const regexCache = new Map<string, RegExp | null>();
+
+function compileRegex(pattern: string): RegExp | null {
+  if (pattern.length > REGEX_PATTERN_MAX_LEN) return null;
+  const cached = regexCache.get(pattern);
+  if (cached !== undefined) return cached;
+  let re: RegExp | null;
+  try {
+    re = new RegExp(pattern);
+  } catch {
+    re = null;
+  }
+  // LRU-lite: drop oldest entry when over cap.
+  if (regexCache.size >= REGEX_CACHE_MAX) {
+    const oldest = regexCache.keys().next().value;
+    if (oldest !== undefined) regexCache.delete(oldest);
+  }
+  regexCache.set(pattern, re);
+  return re;
+}
+
 const DETERMINISTIC_FNS: Readonly<Record<string, DeterministicCheckFn>> = {
   // Fires when the regex pattern MATCHES any string in the payload.
   payloadRegexAbsent: (cfg, ctx) => {
     const pattern = stringOf(cfg, 'pattern');
     if (!pattern) return null;
-    const re = new RegExp(pattern);
-    const haystack = stringifyPayload(ctx.payload);
+    const re = compileRegex(pattern);
+    if (!re) return null;
+    let haystack = stringifyPayload(ctx.payload);
+    if (haystack.length > REGEX_HAYSTACK_MAX_LEN) {
+      haystack = haystack.slice(0, REGEX_HAYSTACK_MAX_LEN);
+    }
     if (re.test(haystack)) {
       return { details: { matched: true, pattern } };
     }

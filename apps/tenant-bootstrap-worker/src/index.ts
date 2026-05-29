@@ -33,11 +33,49 @@ async function main(): Promise<void> {
     10,
   );
 
-  const pool = new Pool({ connectionString: DATABASE_URL, max: 3 });
+  // Pool size 10 covers: the live-event pipeline (one tx per step) +
+  // the concurrent reconcile sweep (up to 100 tenants iterated, each
+  // running a small handful of nested transactions). 3 was a frequent
+  // bottleneck under bursty tenant creation.
+  const pool = new Pool({ connectionString: DATABASE_URL, max: 10 });
   const sub = new IORedis(REDIS_URL, { maxRetriesPerRequest: null, lazyConnect: true });
   await sub.connect();
 
   const worker = new BootstrapWorker(pool, defaultFeaturesLoader);
+
+  // Audit-fix: the default STEP_PIPELINE instantiates each step without
+  // its writer/seeder/cloner adapters. In production this silently
+  // marks every tenant 'ready' with zero content installed. Refuse to
+  // start unless either (a) every step is wired (the operator passed a
+  // custom pipeline via the runtime wiring layer), or (b) the operator
+  // explicitly acknowledges the no-op mode via env override.
+  const report = worker.validatePipeline();
+  if (report.unwired.length > 0) {
+    const allowUnwired = process.env['BOOTSTRAP_ALLOW_UNWIRED_STEPS'] === 'true';
+    const lines = [
+      '[tenant-bootstrap-worker] pipeline validation: unwired adapters detected',
+      `  wired:   [${report.wired.join(', ')}]`,
+      `  unwired: [${report.unwired.join(', ')}]`,
+      '  Steps without adapters silently return "skipped" — tenants will be',
+      '  marked READY with no seeded content. Wire adapters via the runtime',
+      '  composition layer (custom BootstrapWorker pipeline) before starting',
+      '  this worker in a real environment.',
+    ];
+    if (!allowUnwired) {
+      lines.push(
+        '  Refusing to start. Set BOOTSTRAP_ALLOW_UNWIRED_STEPS=true to override',
+        '  (acknowledging that this worker will not seed any tenant content).',
+      );
+      console.error(lines.join('\n'));
+      await sub.quit().catch(() => undefined);
+      await pool.end().catch(() => undefined);
+      process.exit(2);
+    }
+    console.warn(lines.join('\n'));
+    console.warn('[tenant-bootstrap-worker] BOOTSTRAP_ALLOW_UNWIRED_STEPS=true; proceeding in no-op mode.');
+  } else {
+    console.log(`[tenant-bootstrap-worker] all ${report.wired.length} pipeline step(s) wired.`);
+  }
 
   const channel = `oweibo.lifecycle.${TENANT_CREATED_V1_SUBJECT}`;
   await sub.subscribe(channel);

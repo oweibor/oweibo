@@ -292,18 +292,21 @@ export class ActionTrustLadder implements IActionGate {
     }
 
     // Audit-fix (T.−1 #1): verify the calibration snapshot's HMAC before
-    // trusting any of its fields. A forged snapshot is degraded to the
-    // most-conservative cold-start profile (age 0, no per-class scores),
-    // which forces the platform_default matrix to pick the strictest
-    // mode for the requested class.
+    // trusting any of its fields. A forged snapshot is degraded to a
+    // fully-replaced conservative cold-start snapshot — building from
+    // scratch rather than spreading the original ensures no future field
+    // added to TenantReadinessSnapshot leaks through with attacker-
+    // controlled value (which the spread pattern would silently allow).
     let effectiveCtx: ActionContext = ctx;
     if (this.snapshotVerifier && !this.snapshotVerifier.verify(ctx.calibrationSnapshot)) {
       effectiveCtx = {
         ...ctx,
         calibrationSnapshot: {
-          ...ctx.calibrationSnapshot,
+          tenantId: ctx.tenantId,
           accountAgeDays: 0,
           actionClassScores: {},
+          snapshotAt: new Date(0).toISOString(),
+          sourceSig: 'unverified',
         },
       };
     }
@@ -759,7 +762,13 @@ export class ActionTrustLadder implements IActionGate {
     try {
       await client.query('BEGIN');
       await setTenantScopeFromCtx(client, ctx);
-      // ON CONFLICT (tenant_id, action_id) DO NOTHING — same actionId is never doubled.
+      // ON CONFLICT (tenant_id, action_id): the same actionId is never
+      // doubled, but if the gate re-runs with a different effective mode
+      // (e.g. a content inspector now upgrades execute→require_approval),
+      // the persisted row must reflect that or audit will lie. Only
+      // upgrade pending rows — once decided, the historical row is
+      // immutable. Upgrades follow the same severity order as the
+      // gate's own upgrade-only rule for content inspection.
       const result = await client.query<{ id: string }>(
         `INSERT INTO oweibo.action_proposals (
            id, tenant_id, user_id, action_class, action_id, mode,
@@ -770,7 +779,21 @@ export class ActionTrustLadder implements IActionGate {
            $6, $7::jsonb, $8, $9::jsonb, 'pending',
            NOW(), NOW() + INTERVAL '7 days'
          )
-         ON CONFLICT (tenant_id, action_id) DO UPDATE SET action_id = EXCLUDED.action_id
+         ON CONFLICT (tenant_id, action_id) DO UPDATE
+           SET mode = CASE
+             WHEN oweibo.action_proposals.state <> 'pending' THEN oweibo.action_proposals.mode
+             WHEN EXCLUDED.mode = 'require_approval' THEN 'require_approval'
+             WHEN EXCLUDED.mode = 'shadow' AND oweibo.action_proposals.mode = 'dry_run' THEN 'shadow'
+             ELSE oweibo.action_proposals.mode
+           END,
+           payload = CASE
+             WHEN oweibo.action_proposals.state = 'pending' THEN EXCLUDED.payload
+             ELSE oweibo.action_proposals.payload
+           END,
+           summary = CASE
+             WHEN oweibo.action_proposals.state = 'pending' THEN EXCLUDED.summary
+             ELSE oweibo.action_proposals.summary
+           END
          RETURNING id`,
         [
           ctx.tenantId,
@@ -833,19 +856,37 @@ async function bumpObservation(
 ): Promise<void> {
   const successDelta = outcome === 'success' ? 1 : 0;
   const rejectionDelta = outcome === 'rejection' || outcome === 'failure' ? 1 : 0;
+  // Audit-fix: when no row exists yet, the platform_default matrix's
+  // most-conservative ('young') column is the right initial mode — NOT
+  // a hard-coded 'dry_run' which silently downgrades classes that
+  // default to 'execute' (e.g. read.*).
+  const initialMode = initialModeForBump(actionClass);
   await client.query(
     `INSERT INTO oweibo.tenant_action_class_state (
        tenant_id, action_class, current_mode, observations, successes, rejections, last_updated
      ) VALUES (
-       $1::uuid, $2, 'dry_run', 1, $3, $4, NOW()
+       $1::uuid, $2, $5, 1, $3, $4, NOW()
      )
      ON CONFLICT (tenant_id, action_class) DO UPDATE
        SET observations = oweibo.tenant_action_class_state.observations + 1,
            successes    = oweibo.tenant_action_class_state.successes    + EXCLUDED.successes,
            rejections   = oweibo.tenant_action_class_state.rejections   + EXCLUDED.rejections,
            last_updated = NOW()`,
-    [tenantId, actionClass, successDelta, rejectionDelta],
+    [tenantId, actionClass, successDelta, rejectionDelta, initialMode],
   );
+}
+
+function initialModeForBump(actionClass: string): TrustMode {
+  // isCoreActionClass narrows ActionClass → CoreActionClass; we pass a
+  // bare string so cast first. The guard itself just does a Set lookup
+  // so it's safe to call with arbitrary input.
+  const ac = actionClass as ActionClass;
+  if (isCoreActionClass(ac)) {
+    return PLATFORM_DEFAULTS[ac].young;
+  }
+  // Extended classes default to require_approval until a domain rule
+  // pack registers them with a per-class default.
+  return 'require_approval';
 }
 
 async function tryAutoPromote(
@@ -853,7 +894,11 @@ async function tryAutoPromote(
   ctx: ActionContext,
   state: ResolvedState,
 ): Promise<ResolvedState | null> {
-  if (state.mode !== 'dry_run') return null;
+  // Audit-fix: include `shadow` as a promotable starting state. The
+  // platform-default matrix transitions write.external_api.nonprod and
+  // write.tenant_db.nonprod through shadow → execute at higher tiers,
+  // but an explicit shadow row would never auto-promote without this.
+  if (state.mode !== 'dry_run' && state.mode !== 'shadow') return null;
   if (state.pinnedBy) return null;
   if (ctx.calibrationSnapshot.accountAgeDays < AUTO_PROMOTE_MIN_AGE_DAYS) return null;
   if (state.observations < AUTO_PROMOTE_MIN_OBS) return null;
@@ -863,19 +908,20 @@ async function tryAutoPromote(
   if (isCoreActionClass(ctx.actionClass) && CLASSES_ALWAYS_REQUIRE_APPROVAL.has(ctx.actionClass)) {
     return null;
   }
-  // Atomic compare-and-set: only promote if the row is still in dry_run
-  // and still unpinned. Zero rows back ⇒ a concurrent gate() already
-  // promoted (or the row was just pinned by an operator); we observe
-  // the new state on the next gate() rather than racing the UPDATE.
+  // Atomic compare-and-set: only promote if the row is still in the
+  // expected starting state and still unpinned. Zero rows back ⇒ a
+  // concurrent gate() already promoted (or the row was just pinned by
+  // an operator); we observe the new state on the next gate() rather
+  // than racing the UPDATE.
   const result = await client.query<{ id: string }>(
     `UPDATE oweibo.tenant_action_class_state
         SET current_mode = 'execute', last_updated = NOW()
       WHERE tenant_id = $1::uuid
         AND action_class = $2
-        AND current_mode = 'dry_run'
+        AND current_mode = $3
         AND pinned_by IS NULL
       RETURNING tenant_id AS id`,
-    [ctx.tenantId, ctx.actionClass],
+    [ctx.tenantId, ctx.actionClass, state.mode],
   );
   if (result.rows.length === 0) return null;
   return { ...state, mode: 'execute' };

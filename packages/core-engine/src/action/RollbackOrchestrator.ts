@@ -209,8 +209,8 @@ export class RollbackOrchestrator {
       const r = await client.query<ProposalRow>(
         `SELECT id, tenant_id, action_class, state, rollback_kind, rollback_detail, plan_id
            FROM oweibo.action_proposals
-          WHERE id = $1::uuid`,
-        [actionId],
+          WHERE id = $1::uuid AND tenant_id = $2::uuid`,
+        [actionId, tenantId],
       );
       return r.rows[0] ?? null;
     });
@@ -270,10 +270,17 @@ export class RollbackOrchestrator {
   }
 
   private async markProposal(tenantId: string, actionId: string, state: 'rolled_back' | 'rollback_failed'): Promise<void> {
+    // Audit-fix: only transition from an executed state. A stale call
+    // (e.g. after the row already moved to rolled_back via a concurrent
+    // path) is a no-op, never a stomp. Also pin the tenant id.
     await withTenantTx(this.pool, tenantId, async (client) => {
       await client.query(
-        `UPDATE oweibo.action_proposals SET state = $2 WHERE id = $1::uuid`,
-        [actionId, state],
+        `UPDATE oweibo.action_proposals
+            SET state = $2
+          WHERE id = $1::uuid
+            AND tenant_id = $3::uuid
+            AND state IN ('executed_live', 'executed_shadow')`,
+        [actionId, state, tenantId],
       );
     });
   }

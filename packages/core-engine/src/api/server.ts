@@ -14,6 +14,7 @@ import { createHITLRouter } from './routes/hitl.routes.js';
 import { createSkillsRouter } from './routes/skills.routes.js';
 import { createPlatformRouter } from './routes/platform.routes.js';
 import { createActionsRouter } from './routes/actions.routes.js';
+import { createActionsExtendedRouter } from './routes/actionsExtended.routes.js';
 import { createAuthMiddleware } from './middleware/authenticate.js';
 import { openapiSpec } from './openapi.js';
 import type { SecretsManager } from '../secrets/SecretsManager.js';
@@ -95,6 +96,9 @@ export async function createServer(
     actionTrustLadder?: ActionTrustLadder;
     dryRunRegistry?: DryRunRegistry;
     shadowExecutor?: ShadowExecutor;
+    /** S.4 / S.6: enables /api/v1/actions/{grants,approvals,quotas}/* routes. */
+    multiPartyApproval?: import('../action/MultiPartyApprovalService.js').MultiPartyApprovalService;
+    quotaService?: import('../action/QuotaService.js').QuotaService;
   },
   config: Partial<ServerConfig> = {},
 ): Promise<{ app: import('express').Application; port: number }> {
@@ -154,6 +158,15 @@ export async function createServer(
       trustLadder: deps.actionTrustLadder,
       registry: deps.dryRunRegistry,
       shadowExecutor: deps.shadowExecutor,
+    }));
+  }
+
+  // S.4 / S.6: extended action routes (grants, approvals/votes, quotas).
+  // Mounted at the same /actions prefix so admin-web hits a single base.
+  if (deps.multiPartyApproval && deps.quotaService) {
+    v1.use('/actions', createActionsExtendedRouter({
+      multiPartyApproval: deps.multiPartyApproval,
+      quotaService: deps.quotaService,
     }));
   }
 

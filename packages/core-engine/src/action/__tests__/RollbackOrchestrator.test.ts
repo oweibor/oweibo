@@ -241,7 +241,8 @@ describe('RollbackOrchestrator.execute', () => {
     expect(r.details).toMatch(/preflight failed/);
     // No UPDATE to mark proposal as rollback_failed should have fired.
     const markFailed = calls.find((c) =>
-      c.sql.includes(`UPDATE oweibo.action_proposals SET state`) &&
+      c.sql.includes(`UPDATE oweibo.action_proposals`) &&
+      c.sql.includes(`SET state`) &&
       (c.params[1] === 'rollback_failed' || c.params[1] === 'rolled_back'),
     );
     expect(markFailed).toBeUndefined();
@@ -264,7 +265,8 @@ describe('RollbackOrchestrator.execute', () => {
     });
     expect(r.success).toBe(false);
     const mark = calls.find((c) =>
-      c.sql.includes(`UPDATE oweibo.action_proposals SET state`) &&
+      c.sql.includes(`UPDATE oweibo.action_proposals`) &&
+      c.sql.includes(`SET state`) &&
       c.params[1] === 'rollback_failed',
     );
     expect(mark).toBeDefined();
@@ -283,7 +285,8 @@ describe('RollbackOrchestrator.execute', () => {
     expect(r.success).toBe(true);
     expect(r.state).toBe('fully_reverted');
     const mark = calls.find((c) =>
-      c.sql.includes(`UPDATE oweibo.action_proposals SET state`) &&
+      c.sql.includes(`UPDATE oweibo.action_proposals`) &&
+      c.sql.includes(`SET state`) &&
       c.params[1] === 'rolled_back',
     );
     expect(mark).toBeDefined();

@@ -271,9 +271,12 @@ export class MultiPartyApprovalService implements IMultiPartyApprovalService {
         `grant maxUses ${req.maxUses} exceeds policy cap ${policy.maxGrantActionCount}`,
       );
     }
-    if (req.grantedByUserIds.length < policy.quorum) {
+    // Audit-fix: dedupe grantedByUserIds before the quorum check —
+    // otherwise [u1, u1] satisfies quorum=2.
+    const uniqueGrantedBy = Array.from(new Set(req.grantedByUserIds));
+    if (uniqueGrantedBy.length < policy.quorum) {
       throw new Error(
-        `grant requires ${policy.quorum} approver(s); only ${req.grantedByUserIds.length} supplied`,
+        `grant requires ${policy.quorum} distinct approver(s); only ${uniqueGrantedBy.length} supplied`,
       );
     }
     if (req.grantedToKind === 'user' && !req.grantedToUserId) {
@@ -296,7 +299,7 @@ export class MultiPartyApprovalService implements IMultiPartyApprovalService {
         [
           req.tenantId,
           req.actionClass,
-          req.grantedByUserIds,
+          uniqueGrantedBy,
           req.grantedToKind,
           req.grantedToUserId ?? null,
           req.scopeFilter ? JSON.stringify(req.scopeFilter) : null,
@@ -310,7 +313,7 @@ export class MultiPartyApprovalService implements IMultiPartyApprovalService {
         id: row.id,
         tenantId: req.tenantId,
         actionClass: req.actionClass,
-        grantedByUserIds: req.grantedByUserIds,
+        grantedByUserIds: uniqueGrantedBy,
         grantedToKind: req.grantedToKind,
         ...(req.grantedToUserId ? { grantedToUserId: req.grantedToUserId } : {}),
         ...(req.scopeFilter ? { scopeFilter: req.scopeFilter } : {}),
@@ -321,6 +324,55 @@ export class MultiPartyApprovalService implements IMultiPartyApprovalService {
         createdAt: row.created_at.toISOString(),
       };
       return grant;
+    });
+  }
+
+  /**
+   * Read-only list of active (non-expired, non-revoked, non-exhausted)
+   * grants for the tenant. Used by the admin-web /approvals/grants page.
+   * Returns rows ordered by created_at DESC (newest first), capped at 200.
+   */
+  async listGrants(tenantId: string): Promise<readonly TimeWindowedGrant[]> {
+    return this.tx(tenantId, async (client) => {
+      const r = await client.query<{
+        id: string;
+        action_class: string;
+        granted_by_user_ids: string[];
+        granted_to_kind: 'agent' | 'user';
+        granted_to_user_id: string | null;
+        scope_filter: GrantScopeFilter | null;
+        expires_at: Date;
+        max_uses: number;
+        uses: number;
+        state: 'active' | 'expired' | 'revoked' | 'exhausted';
+        created_at: Date;
+      }>(
+        `SELECT id, action_class, granted_by_user_ids, granted_to_kind,
+                granted_to_user_id, scope_filter, expires_at, max_uses, uses,
+                state, created_at
+           FROM oweibo.time_windowed_grants
+          WHERE tenant_id = $1::uuid
+            AND state = 'active'
+            AND expires_at > NOW()
+            AND uses < max_uses
+          ORDER BY created_at DESC
+          LIMIT 200`,
+        [tenantId],
+      );
+      return r.rows.map<TimeWindowedGrant>((row) => ({
+        id: row.id,
+        tenantId,
+        actionClass: row.action_class as ActionClass,
+        grantedByUserIds: row.granted_by_user_ids,
+        grantedToKind: row.granted_to_kind,
+        ...(row.granted_to_user_id ? { grantedToUserId: row.granted_to_user_id } : {}),
+        ...(row.scope_filter ? { scopeFilter: row.scope_filter } : {}),
+        expiresAt: row.expires_at.toISOString(),
+        maxUses: row.max_uses,
+        uses: row.uses,
+        state: row.state,
+        createdAt: row.created_at.toISOString(),
+      }));
     });
   }
 
@@ -353,14 +405,22 @@ export class MultiPartyApprovalService implements IMultiPartyApprovalService {
     return this.tx(req.tenantId, async (client) => {
       // Look up the proposal's class so we can resolve the policy. Read
       // happens inside the tx so the snapshot is consistent with the vote
-      // insert that follows.
-      const propRows = await client.query<{ action_class: string }>(
-        `SELECT action_class FROM oweibo.action_proposals
-          WHERE id = $1::uuid AND tenant_id = $2::uuid`,
+      // insert that follows. Audit-fix: also pull state and reject votes
+      // on proposals that already resolved — accepting them is confusing
+      // in the audit log and pollutes the tally.
+      const propRows = await client.query<{ action_class: string; state: string }>(
+        `SELECT action_class, state FROM oweibo.action_proposals
+          WHERE id = $1::uuid AND tenant_id = $2::uuid
+          FOR UPDATE`,
         [req.proposalId, req.tenantId],
       );
       const prop = propRows.rows[0];
       if (!prop) throw new Error(`castVote: proposal ${req.proposalId} not found`);
+      if (prop.state !== 'pending') {
+        throw new Error(
+          `castVote: proposal ${req.proposalId} is ${prop.state}; only pending proposals accept votes`,
+        );
+      }
       const policy = await this.resolvePolicyInTx(
         client,
         req.tenantId,
@@ -504,38 +564,36 @@ export class MultiPartyApprovalService implements IMultiPartyApprovalService {
     }
     const expiresAt = new Date(this.now().getTime() + args.durationSeconds * 1000);
     await this.tx(args.tenantId, async (client) => {
-      // Audit-fix (S.4): non-transitive delegation. The delegate MUST
-      // NOT already be a delegator with an active row of their own —
-      // otherwise we'd build A→B→C chains that the audit explicitly
-      // forbids. The check + insert is inside the same tx so two
-      // concurrent createDelegation calls can't sneak past each other.
-      const existingAsDelegator = await client.query<{ n: number }>(
-        `SELECT COUNT(*)::int AS n
+      // Audit-fix (S.4): non-transitive delegation. Single query checks
+      // both chain directions atomically — (a) the delegate must not be
+      // an active delegator, and (b) the delegator must not be an
+      // active delegate. Doing this in one round-trip closes the
+      // window where two concurrent createDelegation calls in opposite
+      // chain directions could each pass the other's check.
+      const chainCheck = await client.query<{ role: 'delegate_is_delegator' | 'delegator_is_delegate' }>(
+        `SELECT 'delegate_is_delegator'::text AS role
            FROM oweibo.approval_delegations
           WHERE delegator_user_id = $1::uuid
-            AND tenant_id = $2::uuid
+            AND tenant_id = $3::uuid
             AND expires_at > NOW()
-            AND revoked_at IS NULL`,
-        [args.delegateUserId, args.tenantId],
+            AND revoked_at IS NULL
+          UNION ALL
+         SELECT 'delegator_is_delegate'::text AS role
+           FROM oweibo.approval_delegations
+          WHERE delegate_user_id = $2::uuid
+            AND tenant_id = $3::uuid
+            AND expires_at > NOW()
+            AND revoked_at IS NULL
+          LIMIT 1`,
+        [args.delegateUserId, args.delegatorUserId, args.tenantId],
       );
-      if ((existingAsDelegator.rows[0]?.n ?? 0) > 0) {
+      const conflict = chainCheck.rows[0]?.role;
+      if (conflict === 'delegate_is_delegator') {
         throw new Error(
           `delegate ${args.delegateUserId} is already a delegator; delegation chains are not allowed`,
         );
       }
-      // Symmetric check: the delegator must not already be a delegate
-      // (i.e. receiving authority from someone else). Allowing this
-      // would create the chain in the other direction.
-      const existingAsDelegate = await client.query<{ n: number }>(
-        `SELECT COUNT(*)::int AS n
-           FROM oweibo.approval_delegations
-          WHERE delegate_user_id = $1::uuid
-            AND tenant_id = $2::uuid
-            AND expires_at > NOW()
-            AND revoked_at IS NULL`,
-        [args.delegatorUserId, args.tenantId],
-      );
-      if ((existingAsDelegate.rows[0]?.n ?? 0) > 0) {
+      if (conflict === 'delegator_is_delegate') {
         throw new Error(
           `delegator ${args.delegatorUserId} is already a delegate; delegation chains are not allowed`,
         );

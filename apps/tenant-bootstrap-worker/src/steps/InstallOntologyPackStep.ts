@@ -66,6 +66,10 @@ export class InstallOntologyPackStep implements IBootstrapStep {
 
   constructor(private readonly opts: InstallOntologyPackStepOptions = {}) {}
 
+  isWired(): boolean {
+    return Boolean(this.opts.installer);
+  }
+
   async execute(ctx: IBootstrapStepContext): Promise<StepResult> {
     if (!readBoolFlag(ctx.features, 'tenant.bootstrap.install_ontology_pack.enabled')) {
       return { status: 'skipped', skipReason: 'feature_flag_off' };

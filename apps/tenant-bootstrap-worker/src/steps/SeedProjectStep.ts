@@ -49,6 +49,10 @@ export class SeedProjectStep implements IBootstrapStep {
   readonly name = 'seed_project';
   constructor(private readonly opts: SeedProjectStepOptions = {}) {}
 
+  isWired(): boolean {
+    return Boolean(this.opts.seeder && this.opts.resolveSpec);
+  }
+
   async execute(ctx: IBootstrapStepContext): Promise<StepStatus> {
     if (!readBoolFlag(ctx.features, 'tenant.bootstrap.seed_project.enabled')) {
       return 'skipped';

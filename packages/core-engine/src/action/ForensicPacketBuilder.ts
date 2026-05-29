@@ -85,15 +85,17 @@ export class ForensicPacketBuilder {
     try {
       await client.query('BEGIN');
       // Platform admin scope so cross-tenant compliance review works; the
-      // caller is responsible for authorization.
+      // caller is responsible for authorization. Every load* query MUST
+      // still filter by tenant_id explicitly — running as platform_admin
+      // bypasses RLS, so an unscoped query would leak across tenants.
       await client.query(`SET LOCAL ROLE platform_admin`).catch(() => undefined);
 
-      [proposals, originalGoal] = await this.loadProposalsAndGoal(client, args.planId);
+      [proposals, originalGoal] = await this.loadProposalsAndGoal(client, args.tenantId, args.planId);
       const actionIds = proposals.map((p) => p.proposalId);
       executions = await this.loadExecutions(client, actionIds, proposals);
-      verifications = await this.loadVerifications(client, actionIds);
-      rollbacks = await this.loadRollbacks(client, actionIds);
-      inspections = await this.loadInspections(client, actionIds, proposals);
+      verifications = await this.loadVerifications(client, args.tenantId, actionIds);
+      rollbacks = await this.loadRollbacks(client, args.tenantId, actionIds);
+      inspections = await this.loadInspections(client, args.tenantId, actionIds, proposals);
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
@@ -102,16 +104,26 @@ export class ForensicPacketBuilder {
       client.release();
     }
 
+    // String fields can carry PII too (operators paste account IDs into
+    // rejection reasons, decision notes, etc.). Stringify-then-redact gives
+    // us the same pattern coverage as the JSON path.
+    const redactStr = (s: string): string => {
+      const r = this.redactor.redact(s);
+      return typeof r === 'string' ? r : JSON.stringify(r);
+    };
+
     const packet: ForensicPacket = {
       packetId,
       tenantId: args.tenantId,
       planId: args.planId,
-      summary: args.summary ?? `Forensic packet for plan ${args.planId}`,
+      summary: redactStr(args.summary ?? `Forensic packet for plan ${args.planId}`),
       triggerKind: args.triggerKind,
       triggeredBy: args.triggeredBy,
-      originalGoal,
+      originalGoal: redactStr(originalGoal),
       proposals: proposals.map((p) => ({
         ...p,
+        summary: redactStr(p.summary),
+        decisionReason: p.decisionReason !== null ? redactStr(p.decisionReason) : null,
         payload: this.redactor.redact(p.payload),
       })),
       executions,
@@ -120,8 +132,14 @@ export class ForensicPacketBuilder {
         expected: this.redactor.redact(v.expected),
         observed: this.redactor.redact(v.observed),
       })),
-      rollbacks,
-      inspections,
+      rollbacks: rollbacks.map((r) => ({
+        ...r,
+        reason: redactStr(r.reason),
+      })),
+      inspections: inspections.map((i) => ({
+        ...i,
+        reason: i.reason !== null ? redactStr(i.reason) : null,
+      })),
       contextSnapshots: {},
       suggestedActions: deriveSuggestions(executions, verifications, rollbacks),
       builtAtMs: this.now().getTime(),
@@ -142,14 +160,22 @@ export class ForensicPacketBuilder {
   // ── Internals ──────────────────────────────────────────────────────────
 
   private async loadProposalsAndGoal(
-    client: PoolClient, planId: string,
+    client: PoolClient, tenantId: string, planId: string,
   ): Promise<[ActionProposalSnapshot[], string]> {
     // S.0: action_plans carries the originating goal; sibling proposals
-    // join on plan_id.
+    // join on plan_id. Audit-fix: filter by tenant_id even though we run
+    // as platform_admin — otherwise a caller passing a planId from
+    // another tenant would leak that tenant's data into this packet.
     const planRow = await client.query<{ goal: string | null; summary: string | null }>(
-      `SELECT goal, summary FROM oweibo.action_plans WHERE id = $1::uuid`,
-      [planId],
+      `SELECT goal, summary FROM oweibo.action_plans
+        WHERE id = $1::uuid AND tenant_id = $2::uuid`,
+      [planId, tenantId],
     );
+    if (planRow.rows.length === 0) {
+      throw new Error(
+        `ForensicPacketBuilder: plan ${planId} not found for tenant ${tenantId}`,
+      );
+    }
     const originalGoal = planRow.rows[0]?.goal ?? planRow.rows[0]?.summary ?? '<no goal recorded>';
 
     const propRows = await client.query<{
@@ -169,9 +195,9 @@ export class ForensicPacketBuilder {
       `SELECT id, action_class, action_id, mode, state, summary, payload,
               rollback_kind, grant_id, created_at, decided_at, decision_reason
          FROM oweibo.action_proposals
-        WHERE plan_id = $1::uuid
+        WHERE plan_id = $1::uuid AND tenant_id = $2::uuid
         ORDER BY created_at ASC`,
-      [planId],
+      [planId, tenantId],
     );
     const proposals = propRows.rows.map<ActionProposalSnapshot>((r) => ({
       proposalId: r.id,
@@ -219,7 +245,7 @@ export class ForensicPacketBuilder {
   }
 
   private async loadVerifications(
-    client: PoolClient, proposalIds: readonly string[],
+    client: PoolClient, tenantId: string, proposalIds: readonly string[],
   ): Promise<VerificationRecord[]> {
     if (proposalIds.length === 0) return [];
     const r = await client.query<{
@@ -234,9 +260,9 @@ export class ForensicPacketBuilder {
       `SELECT proposal_id, verifier_name, timing, drift_severity,
               expected, observed, verified_at
          FROM oweibo.post_execution_verifications
-        WHERE proposal_id = ANY($1::uuid[])
+        WHERE proposal_id = ANY($1::uuid[]) AND tenant_id = $2::uuid
         ORDER BY verified_at ASC`,
-      [proposalIds],
+      [proposalIds, tenantId],
     );
     return r.rows.map<VerificationRecord>((row) => ({
       proposalId: row.proposal_id,
@@ -250,7 +276,7 @@ export class ForensicPacketBuilder {
   }
 
   private async loadRollbacks(
-    client: PoolClient, proposalIds: readonly string[],
+    client: PoolClient, tenantId: string, proposalIds: readonly string[],
   ): Promise<RollbackRecord[]> {
     if (proposalIds.length === 0) return [];
     const r = await client.query<{
@@ -264,9 +290,9 @@ export class ForensicPacketBuilder {
       `SELECT original_action_id, adapter_name, reason, result_state,
               started_at, completed_at
          FROM oweibo.rollback_executions
-        WHERE original_action_id = ANY($1::uuid[])
+        WHERE original_action_id = ANY($1::uuid[]) AND tenant_id = $2::uuid
         ORDER BY started_at ASC`,
-      [proposalIds],
+      [proposalIds, tenantId],
     );
     return r.rows.map<RollbackRecord>((row) => ({
       originalActionId: row.original_action_id,
@@ -279,12 +305,14 @@ export class ForensicPacketBuilder {
   }
 
   private async loadInspections(
-    client: PoolClient, proposalIds: readonly string[], proposals: readonly ActionProposalSnapshot[],
+    client: PoolClient, tenantId: string, proposalIds: readonly string[], proposals: readonly ActionProposalSnapshot[],
   ): Promise<InspectionRecord[]> {
     if (proposalIds.length === 0 && proposals.length === 0) return [];
     // content_inspection_results may have null proposal_id (when the
     // gate returned execute and skipped writing a proposal row); we
-    // still want them indexed by action_id.
+    // still want them indexed by action_id. Audit-fix: tenant_id is
+    // required since the action_id branch is text and could in principle
+    // collide across tenants (SHA256-truncated).
     const actionIds = proposals.map((p) => p.actionId);
     const r = await client.query<{
       proposal_id: string | null;
@@ -295,9 +323,10 @@ export class ForensicPacketBuilder {
     }>(
       `SELECT proposal_id, inspector_name, verdict, reason, inspected_at
          FROM oweibo.content_inspection_results
-        WHERE proposal_id = ANY($1::uuid[]) OR action_id = ANY($2::text[])
+        WHERE tenant_id = $3::uuid
+          AND (proposal_id = ANY($1::uuid[]) OR action_id = ANY($2::text[]))
         ORDER BY inspected_at ASC`,
-      [proposalIds, actionIds],
+      [proposalIds, actionIds, tenantId],
     );
     return r.rows.map<InspectionRecord>((row) => ({
       proposalId: row.proposal_id,

@@ -45,6 +45,19 @@ import { PrivacyAuditService }      from './distillation/PrivacyAuditService.js'
 import { ActionTrustLadder }        from './action/ActionTrustLadder.js';
 import { DryRunRegistry }           from './action/DryRunRegistry.js';
 import { ShadowExecutor }           from './action/ShadowExecutor.js';
+import { ApprovalSlaService }       from './action/ApprovalSlaService.js';
+import { MultiPartyApprovalService } from './action/MultiPartyApprovalService.js';
+import { QuotaService }             from './action/QuotaService.js';
+import { BudgetEstimator }          from './action/BudgetEstimator.js';
+import { RateLimiter }              from './action/RateLimiter.js';
+import { InMemoryTokenBucketStore } from './action/TokenBucketStore.js';
+import { ContentInspectorRegistry } from './action/ContentInspectorRegistry.js';
+import { GenericPiiInspector }      from './action/inspectors/GenericPiiInspector.js';
+import { EmailContentInspector }    from './action/inspectors/EmailContentInspector.js';
+import { SqlContentInspector }      from './action/inspectors/SqlContentInspector.js';
+import { GitContentInspector }      from './action/inspectors/GitContentInspector.js';
+import { DeploymentContentInspector } from './action/inspectors/DeploymentContentInspector.js';
+import { FinancialContentInspector } from './action/inspectors/FinancialContentInspector.js';
 import { OutboxRelay }              from './infrastructure/OutboxRelay.js';
 import { PromptRegistry }          from '@oweibo/prompt-registry';
 import { PromptAssembler }         from '@oweibo/prompt-registry';
@@ -168,6 +181,8 @@ async function main(): Promise<void> {
   let actionTrustLadder: ActionTrustLadder | undefined;
   let dryRunRegistry: DryRunRegistry | undefined;
   let shadowExecutor: ShadowExecutor | undefined;
+  let multiPartyApproval: MultiPartyApprovalService | undefined;
+  let quotaService: QuotaService | undefined;
   if (process.env['DATABASE_URL']) {
     pgPool = new Pool({ connectionString: process.env['DATABASE_URL'] });
     const promptRegistry = new PromptRegistry(
@@ -184,10 +199,46 @@ async function main(): Promise<void> {
     cohortAdmin = new CohortAdminService(pgPool);
     gepaInspector = new GepaInspectorService(pgPool);
     privacyAudit = new PrivacyAuditService(pgPool);
-    // T.−1: action trust ladder. Disabled by env flag until shadow-only rollout
-    // completes — gate() returns {mode:'execute'} when ACTION_TRUST_LADDER_ENABLED
-    // is not 'true', so the wrap is byte-identical to today for callers.
-    actionTrustLadder = new ActionTrustLadder(pgPool);
+    // T.−1: action trust ladder + S.1–S.7 + D.3 integrations.
+    //
+    // Each integration is independently flag-gated inside the
+    // construct-and-pass pattern below. Disabled-by-flag means the
+    // integration is constructed but its tryConsume/preflight/evaluate
+    // short-circuits to allow/no_grant/pass — the gate stays
+    // byte-identical-to-today when ACTION_TRUST_LADDER_ENABLED=false.
+    const slaService = new ApprovalSlaService(pgPool);
+    multiPartyApproval = new MultiPartyApprovalService(pgPool);
+    quotaService = new QuotaService(pgPool);
+    const budgetEstimator = new BudgetEstimator(pgPool);
+    // In-memory token bucket is per-process — multi-replica deployments
+    // MUST replace this with RedisTokenBucketStore (see file header).
+    // Surfaced as a startup warning instead of failing closed so
+    // single-replica dev/test deployments keep working.
+    if (process.env['ACTION_RATE_LIMITING_ENABLED'] === 'true'
+        && process.env['NODE_ENV'] === 'production') {
+      console.warn('[oweibo] ACTION_RATE_LIMITING_ENABLED=true with in-memory token bucket — multi-replica deployments will NOT enforce a global rate limit; wire RedisTokenBucketStore for production');
+    }
+    const tokenBucket = new InMemoryTokenBucketStore();
+    const rateLimiter = new RateLimiter(pgPool, tokenBucket);
+    const contentInspectors = new ContentInspectorRegistry();
+    contentInspectors.register(new GenericPiiInspector());
+    contentInspectors.register(new EmailContentInspector());
+    contentInspectors.register(new SqlContentInspector());
+    contentInspectors.register(new GitContentInspector());
+    contentInspectors.register(new DeploymentContentInspector());
+    contentInspectors.register(new FinancialContentInspector());
+    actionTrustLadder = new ActionTrustLadder(pgPool, {
+      slaAttacher: slaService,
+      rateLimiter: { tryConsume: (t, c) => rateLimiter.tryConsume(t, c) },
+      grantChecker: { tryConsume: (req) => multiPartyApproval.tryConsume(req) },
+      contentInspectors: { run: (ctx) => contentInspectors.run(ctx) },
+      quotaService: { preflight: (args) => quotaService.preflight(args) },
+      budgetEstimator: { estimate: (args) => budgetEstimator.estimate(args) },
+      // complianceRuleEvaluator + snapshotVerifier are intentionally
+      // left undefined until the per-domain rule-pack registry and the
+      // calibration-snapshot HMAC key resolver are wired (separate
+      // composition concerns).
+    });
     dryRunRegistry = new DryRunRegistry(pgPool);
     shadowExecutor = new ShadowExecutor(pgPool);
 
@@ -306,6 +357,9 @@ async function main(): Promise<void> {
     ...(privacyAudit       ? { privacyAudit }       : {}),
     ...(actionTrustLadder && dryRunRegistry && shadowExecutor
       ? { actionTrustLadder, dryRunRegistry, shadowExecutor }
+      : {}),
+    ...(multiPartyApproval && quotaService
+      ? { multiPartyApproval, quotaService }
       : {}),
   });
 

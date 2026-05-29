@@ -43,6 +43,11 @@ export class SeedSkillsStep implements IBootstrapStep {
 
   constructor(private readonly opts: SeedSkillsStepOptions = {}) {}
 
+  isWired(): boolean {
+    return Boolean(this.opts.seeder
+      && (this.opts.bundlePath || process.env['OWEIBO_SEED_SKILL_BUNDLE_PATH']));
+  }
+
   async execute(ctx: IBootstrapStepContext): Promise<StepStatus> {
     if (!readBoolFlag(ctx.features, 'tenant.bootstrap.seed_skills.enabled')) {
       return 'skipped';

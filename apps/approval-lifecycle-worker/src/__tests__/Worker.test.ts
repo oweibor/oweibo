@@ -16,12 +16,16 @@ import {
   type IEscalationEngine,
   type INotificationRouter,
 } from '../Worker.js';
-import type { ApprovalSlaPolicy } from '@oweibo/core-contracts';
+import type { ActionClass, ApprovalSlaPolicy } from '@oweibo/core-contracts';
 
 // Stub policy — avoids importing across workspaces in this test.
 function stubPolicy(tenantId: string, actionClass: string): ApprovalSlaPolicy {
   return {
-    tenantId, actionClass,
+    tenantId,
+    // Cast: bare string is matched by prefix in production resolvers;
+    // for this stub we accept any value and surface it as a structural
+    // ActionClass | '*'.
+    actionClass: actionClass as ActionClass | '*',
     initialNotifyAfterSeconds: 0,
     escalateAfterSeconds: [600, 1200],
     hardExpireAfterSeconds: 3600,

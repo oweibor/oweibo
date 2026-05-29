@@ -34,6 +34,10 @@ export class SeedGoalTemplatesStep implements IBootstrapStep {
 
   constructor(private readonly opts: SeedGoalTemplatesStepOptions = {}) {}
 
+  isWired(): boolean {
+    return Boolean(this.opts.acknowledger);
+  }
+
   async execute(ctx: IBootstrapStepContext): Promise<StepStatus> {
     if (!readBoolFlag(ctx.features, 'tenant.bootstrap.seed_goal_templates.enabled')) {
       return 'skipped';

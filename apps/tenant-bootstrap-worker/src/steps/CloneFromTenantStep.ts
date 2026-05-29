@@ -61,6 +61,10 @@ export class CloneFromTenantStep implements IBootstrapStep {
 
   constructor(private readonly opts: CloneFromTenantStepOptions = {}) {}
 
+  isWired(): boolean {
+    return Boolean(this.opts.cloner);
+  }
+
   async execute(ctx: IBootstrapStepContext): Promise<StepStatus> {
     if (!readBoolFlag(ctx.features, 'tenant_lineage.enabled')) {
       return 'skipped';

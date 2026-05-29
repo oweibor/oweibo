@@ -72,4 +72,16 @@ export interface IBootstrapStep {
    * unknown" which the reconciler will not re-attempt.
    */
   execute(ctx: IBootstrapStepContext): Promise<StepStatus | StepResult>;
+  /**
+   * Audit-fix: optional self-check that returns true when the step has
+   * its required adapters (writer/seeder/cloner/etc.) injected and will
+   * be able to do real work, vs. silently returning 'skipped' on every
+   * call. BootstrapWorker.validatePipeline() uses this to refuse a
+   * production start with no adapters wired.
+   *
+   * Steps without any optional adapters return true unconditionally
+   * (they have nothing to wire). Steps with optional adapter seams
+   * return false until those adapters are injected.
+   */
+  isWired?(): boolean;
 }

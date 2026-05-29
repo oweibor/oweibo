@@ -66,43 +66,52 @@ const noFeatures = async (): Promise<Readonly<Record<string, unknown>>> => ({});
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 describe('BootstrapWorker.handleTenantCreated', () => {
-  it('no-ops when state=ready', async () => {
+  it('no-ops when state=ready (claim UPDATE skips row outside pending/failed)', async () => {
     const { pool, calls } = makePool([
-      {
-        match: 'SELECT tenant_id, state, template_slug',
-        rows: [{ tenant_id: TENANT_ID, state: 'ready', template_slug: 'default', attempts: 1 }],
-      },
+      // After the fix, claimBootstrap is an UPDATE WHERE state IN
+      // ('pending','failed'); state='ready' rows match no row, so
+      // RETURNING yields []. The worker treats that as a no-op claim.
+      { match: 'RETURNING tenant_id, state, template_slug', rows: [] },
     ]);
     const worker = new BootstrapWorker(pool, noFeatures, { logger: silent, pipeline: [] });
     const result = await worker.handleTenantCreated(TENANT_ID);
     expect(result).toBe('noop');
-    // No transition / step writes
-    expect(calls.find((c) => c.sql.includes('UPDATE oweibo.tenant_bootstrap'))).toBeUndefined();
+    // No step writes — pipeline wasn't entered
+    expect(calls.find((c) => c.sql.includes('INSERT INTO oweibo.tenant_bootstrap_steps'))).toBeUndefined();
   });
 
-  it('no-ops when state=disabled', async () => {
+  it('no-ops when state=disabled (claim UPDATE skips row outside pending/failed)', async () => {
     const { pool } = makePool([
-      {
-        match: 'SELECT tenant_id, state, template_slug',
-        rows: [{ tenant_id: TENANT_ID, state: 'disabled', template_slug: 'default', attempts: 0 }],
-      },
+      { match: 'RETURNING tenant_id, state, template_slug', rows: [] },
     ]);
     const worker = new BootstrapWorker(pool, noFeatures, { logger: silent, pipeline: [] });
     expect(await worker.handleTenantCreated(TENANT_ID)).toBe('noop');
   });
 
-  it('warns and returns noop when no bootstrap row exists', async () => {
+  it('returns noop when no bootstrap row exists', async () => {
     const { pool } = makePool([
-      { match: 'SELECT tenant_id, state, template_slug', rows: [] },
+      { match: 'RETURNING tenant_id, state, template_slug', rows: [] },
     ]);
     const worker = new BootstrapWorker(pool, noFeatures, { logger: silent, pipeline: [] });
     expect(await worker.handleTenantCreated(TENANT_ID)).toBe('noop');
+  });
+
+  it('returns noop when another worker already claimed the row (concurrent invocation)', async () => {
+    // Two replicas receive the same Redis pubsub event. The slower one's
+    // claim UPDATE WHERE state IN (pending, failed) hits 0 rows because
+    // the faster one set state='running' first.
+    const { pool, calls } = makePool([
+      { match: 'RETURNING tenant_id, state, template_slug', rows: [] },
+    ]);
+    const worker = new BootstrapWorker(pool, noFeatures, { logger: silent, pipeline: [] });
+    expect(await worker.handleTenantCreated(TENANT_ID)).toBe('noop');
+    expect(calls.find((c) => c.sql.includes('INSERT INTO oweibo.tenant_bootstrap_steps'))).toBeUndefined();
   });
 
   it('runs all steps and ends ready when every step skips', async () => {
     const { pool, calls } = makePool([
       {
-        match: 'SELECT tenant_id, state, template_slug',
+        match: 'RETURNING tenant_id, state, template_slug',
         rows: [{ tenant_id: TENANT_ID, state: 'pending', template_slug: 'default', attempts: 0 }],
       },
       { match: 'SELECT attempts, status', rows: [] },
@@ -131,7 +140,7 @@ describe('BootstrapWorker.handleTenantCreated', () => {
   it('threads features through to step context', async () => {
     const { pool } = makePool([
       {
-        match: 'SELECT tenant_id, state, template_slug',
+        match: 'RETURNING tenant_id, state, template_slug',
         rows: [{ tenant_id: TENANT_ID, state: 'pending', template_slug: 'starter', attempts: 0 }],
       },
       { match: 'SELECT attempts, status', rows: [] },
@@ -149,7 +158,7 @@ describe('BootstrapWorker.handleTenantCreated', () => {
   it('skips already-ok step rows', async () => {
     let lookupCount = 0;
     const queryFn = (sql: string): Promise<QueryResult<QueryResultRow>> => {
-      if (sql.includes('SELECT tenant_id, state, template_slug')) {
+      if (sql.includes('RETURNING tenant_id, state, template_slug')) {
         return Promise.resolve({
           rows: [{ tenant_id: TENANT_ID, state: 'pending', template_slug: 'default', attempts: 0 }],
           rowCount: 1, command: '', oid: 0, fields: [],
@@ -188,7 +197,7 @@ describe('BootstrapWorker.handleTenantCreated', () => {
   it('marks state=failed when a step returns failed beyond max attempts', async () => {
     let stepLookupCount = 0;
     const queryFn = (sql: string): Promise<QueryResult<QueryResultRow>> => {
-      if (sql.includes('SELECT tenant_id, state, template_slug')) {
+      if (sql.includes('RETURNING tenant_id, state, template_slug')) {
         return Promise.resolve({
           rows: [{ tenant_id: TENANT_ID, state: 'pending', template_slug: 'default', attempts: 0 }],
           rowCount: 1, command: '', oid: 0, fields: [],
@@ -233,7 +242,7 @@ describe('BootstrapWorker.handleTenantCreated', () => {
   it('treats a step that throws as failed', async () => {
     const { pool } = makePool([
       {
-        match: 'SELECT tenant_id, state, template_slug',
+        match: 'RETURNING tenant_id, state, template_slug',
         rows: [{ tenant_id: TENANT_ID, state: 'pending', template_slug: 'default', attempts: 0 }],
       },
       { match: 'SELECT attempts, status', rows: [] },
@@ -253,7 +262,7 @@ describe('BootstrapWorker.handleTenantCreated', () => {
   it('treats first failure as retryable when under max attempts', async () => {
     let stepLookupCount = 0;
     const queryFn = (sql: string): Promise<QueryResult<QueryResultRow>> => {
-      if (sql.includes('SELECT tenant_id, state, template_slug')) {
+      if (sql.includes('RETURNING tenant_id, state, template_slug')) {
         return Promise.resolve({
           rows: [{ tenant_id: TENANT_ID, state: 'pending', template_slug: 'default', attempts: 0 }],
           rowCount: 1, command: '', oid: 0, fields: [],

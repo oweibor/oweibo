@@ -84,6 +84,13 @@ interface StepRow {
 
 const DEFAULT_MAX_ATTEMPTS = 3;
 
+export interface PipelineValidationReport {
+  /** Step names that report `isWired() === true` (or omit isWired). */
+  readonly wired: readonly string[];
+  /** Step names that report `isWired() === false` — would silently no-op. */
+  readonly unwired: readonly string[];
+}
+
 export class BootstrapWorker {
   private readonly maxAttempts: number;
   private readonly logger: IBootstrapStepLogger;
@@ -102,21 +109,46 @@ export class BootstrapWorker {
   }
 
   /**
+   * Audit-fix: introspect the pipeline and report which steps have
+   * their adapters wired. Production entry points should call this at
+   * startup and refuse to run if `unwired.length > 0` — otherwise
+   * every tenant bootstrap silently no-ops with state='ready' and
+   * zero content seeded.
+   */
+  validatePipeline(): PipelineValidationReport {
+    const wired: string[] = [];
+    const unwired: string[] = [];
+    for (const step of this.pipeline) {
+      // Steps that don't implement isWired() are assumed wired (they
+      // have no adapter seam).
+      if (step.isWired === undefined || step.isWired()) {
+        wired.push(step.name);
+      } else {
+        unwired.push(step.name);
+      }
+    }
+    return { wired, unwired };
+  }
+
+  /**
    * Drives a single tenant through the pipeline. Idempotent — safe to invoke
    * repeatedly for the same tenant id (steps that already returned 'ok' or
    * 'skipped' are not re-executed; failed steps retry up to maxAttempts).
+   *
+   * Audit-fix: the running-state transition is now an atomic CAS that
+   * only fires when the row is in 'pending' or 'failed'. Two concurrent
+   * invocations (e.g. multiple replicas receiving the same Redis pubsub
+   * message, or a reconcile sweep racing the live event) end with one
+   * worker doing the work and the other returning 'noop' — no
+   * double-incremented attempts and no duplicate pipeline iteration.
    */
   async handleTenantCreated(tenantId: string): Promise<'ready' | 'failed' | 'noop'> {
-    const bootstrap = await this.loadBootstrap(tenantId);
+    const bootstrap = await this.claimBootstrap(tenantId);
     if (!bootstrap) {
-      this.logger.warn('BootstrapWorker: no tenant_bootstrap row', { tenantId });
+      // Either the row doesn't exist OR another worker already claimed it.
+      // Both are no-ops from this caller's perspective.
       return 'noop';
     }
-    if (bootstrap.state === 'ready' || bootstrap.state === 'disabled') {
-      return 'noop';
-    }
-
-    await this.transitionState(tenantId, 'running', { incrementAttempts: true });
 
     const features = await this.loadFeatures(tenantId);
     // T.8: when the platform-wide flag is on, load tenant home_region so
@@ -201,15 +233,31 @@ export class BootstrapWorker {
 
   // ── Persistence helpers ─────────────────────────────────────────────────
 
-  private async loadBootstrap(tenantId: string): Promise<BootstrapRow | null> {
+  /**
+   * Atomically claim a tenant_bootstrap row by transitioning it from
+   * 'pending' or 'failed' to 'running'. Returns the freshly-claimed row
+   * shape so the caller can drive the pipeline. Returns null if:
+   *   - the row doesn't exist (a stray event for a non-bootstrapped tenant)
+   *   - the row is in 'ready' or 'disabled' (already done / opted-out)
+   *   - the row is already 'running' (another worker has it)
+   *
+   * The single UPDATE-RETURNING means no other worker can observe the
+   * pre-running state — perfect serialisation under PG read-committed.
+   */
+  private async claimBootstrap(tenantId: string): Promise<BootstrapRow | null> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
       await setScope(client, tenantId);
       const result = await client.query<BootstrapRow>(
-        `SELECT tenant_id, state, template_slug, attempts, seed_cohort
-           FROM oweibo.tenant_bootstrap
-          WHERE tenant_id = $1::uuid`,
+        `UPDATE oweibo.tenant_bootstrap
+            SET state        = 'running',
+                attempts     = attempts + 1,
+                started_at   = COALESCE(started_at, NOW()),
+                updated_at   = NOW()
+          WHERE tenant_id = $1::uuid
+            AND state IN ('pending', 'failed')
+          RETURNING tenant_id, state, template_slug, attempts, seed_cohort`,
         [tenantId],
       );
       await client.query('COMMIT');

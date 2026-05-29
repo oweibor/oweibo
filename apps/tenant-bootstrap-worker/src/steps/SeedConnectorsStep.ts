@@ -38,6 +38,10 @@ export class SeedConnectorsStep implements IBootstrapStep {
 
   constructor(private readonly opts: SeedConnectorsStepOptions = {}) {}
 
+  isWired(): boolean {
+    return Boolean(this.opts.recommender);
+  }
+
   async execute(ctx: IBootstrapStepContext): Promise<StepStatus> {
     if (!readBoolFlag(ctx.features, 'tenant.bootstrap.seed_connectors.enabled')) {
       return 'skipped';

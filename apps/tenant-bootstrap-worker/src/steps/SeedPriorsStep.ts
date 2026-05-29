@@ -39,6 +39,10 @@ export class SeedPriorsStep implements IBootstrapStep {
 
   constructor(private readonly opts: SeedPriorsStepOptions = {}) {}
 
+  isWired(): boolean {
+    return Boolean(this.opts.seeder);
+  }
+
   async execute(ctx: IBootstrapStepContext): Promise<StepStatus> {
     if (!readBoolFlag(ctx.features, 'tenant.bootstrap.seed_priors.enabled')) {
       return 'skipped';

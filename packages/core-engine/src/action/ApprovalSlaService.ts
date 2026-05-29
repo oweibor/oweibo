@@ -14,6 +14,7 @@
  */
 import type { Pool, PoolClient } from 'pg';
 import type {
+  ActionClass,
   ApprovalSlaPolicy,
   ApproverResolutionKind,
   NotificationChannelRef,
@@ -72,9 +73,13 @@ export function platformDefaultPolicy(
       matchLen = entry.prefix.length;
     }
   }
+  // The caller passes a bare `string` (action class slugs aren't branded
+  // at every call site); structurally it satisfies ActionClass | '*' once
+  // it's matched by prefix above. Cast at the assignment so downstream
+  // consumers see the constrained type.
   return {
     tenantId,
-    actionClass,
+    actionClass: actionClass as ActionClass | '*',
     initialNotifyAfterSeconds: match.initialNotifyAfterSeconds,
     escalateAfterSeconds: match.escalateAfterSeconds,
     hardExpireAfterSeconds: match.hardExpireAfterSeconds,
@@ -131,7 +136,7 @@ export class ApprovalSlaService {
       if (!row) return platformDefaultPolicy(tenantId, actionClass);
       return {
         tenantId,
-        actionClass: row.action_class,
+        actionClass: row.action_class as ActionClass | '*',
         initialNotifyAfterSeconds: row.initial_notify_after_seconds,
         escalateAfterSeconds: row.escalate_after_seconds,
         hardExpireAfterSeconds: row.hard_expire_after_seconds,
@@ -156,23 +161,24 @@ export class ApprovalSlaService {
     const hardExpireAt = new Date(now.getTime() + policy.hardExpireAfterSeconds * 1000);
 
     await this.tx(tenantId, async (client) => {
-      // Resolve the policy_id, if a DB row backs this policy. May be NULL
-      // when we're using the platform default matrix.
-      const policyRows = await client.query<{ id: string }>(
-        `SELECT id FROM oweibo.approval_sla_policies
-          WHERE tenant_id = $1::uuid AND action_class = $2
-          LIMIT 1`,
-        [tenantId, policy.actionClass],
-      );
-      const policyId = policyRows.rows[0]?.id ?? null;
-
+      // Audit-fix: single round-trip — resolve policy_id and insert
+      // state in one query so a DELETE between the previously-separate
+      // lookup and insert can't end up persisting NULL when the policy
+      // actually existed. Subquery returns NULL when no row matches,
+      // matching the platform-default-matrix case.
       await client.query(
         `INSERT INTO oweibo.approval_sla_state
            (proposal_id, tenant_id, policy_id, current_stage,
             next_action_at, hard_expire_at, created_at)
-         VALUES ($1::uuid, $2::uuid, $3, 0, $4, $5, NOW())
+         VALUES (
+           $1::uuid, $2::uuid,
+           (SELECT id FROM oweibo.approval_sla_policies
+             WHERE tenant_id = $2::uuid AND action_class = $3
+             LIMIT 1),
+           0, $4, $5, NOW()
+         )
          ON CONFLICT (proposal_id) DO NOTHING`,
-        [proposalId, tenantId, policyId, nextActionAt, hardExpireAt],
+        [proposalId, tenantId, policy.actionClass, nextActionAt, hardExpireAt],
       );
 
       // Audit-fix (S.1): tighten action_proposals.expires_at to the

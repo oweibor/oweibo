@@ -14,6 +14,7 @@
  */
 import type { Pool, PoolClient } from 'pg';
 import type {
+  ActionClass,
   RateLimitPolicy,
   RateLimitEnforcementMode,
 } from '@oweibo/core-contracts';
@@ -63,7 +64,10 @@ export function platformDefaultRateLimit(
       matchLen = prefix.length;
     }
   }
-  return { tenantId, actionClass, ...entry };
+  // actionClass arrives as bare string; matched-by-prefix above means it
+  // structurally satisfies ActionClass | '*'. Cast at the boundary so
+  // downstream consumers see the constrained type.
+  return { tenantId, actionClass: actionClass as ActionClass | '*', ...entry };
 }
 
 // ── Cold-start scaler ──────────────────────────────────────────────────────
@@ -144,7 +148,7 @@ export class RateLimitPolicyResolver {
       if (!row) return platformDefaultRateLimit(tenantId, actionClass);
       return {
         tenantId,
-        actionClass: row.action_class,
+        actionClass: row.action_class as ActionClass | '*',
         perMinute: row.per_minute,
         perHour: row.per_hour,
         perDay: row.per_day,

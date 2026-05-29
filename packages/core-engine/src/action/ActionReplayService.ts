@@ -219,7 +219,11 @@ export class ActionReplayService {
           [planId],
         );
       }
-      return rows.rows.map<ReplayInputProposal>((r) => ({
+      // F.0: `let rows;` above leaves the type as the union of two
+      // branches; TS treats it as untyped, so map<T>() rejects the
+      // type argument. Spell the result type via a local annotation
+      // instead.
+      const out: ReplayInputProposal[] = rows.rows.map((r) => ({
         proposalId: r.id,
         actionClass: r.action_class,
         actionId: r.action_id,
@@ -229,6 +233,7 @@ export class ActionReplayService {
         payload: r.payload,
         userId: r.user_id,
       }));
+      return out;
     });
   }
 

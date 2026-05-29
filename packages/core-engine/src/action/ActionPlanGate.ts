@@ -54,12 +54,17 @@ export interface ActionPlanGateOptions {
   /**
    * Tenant plan-budget ceiling in USD cents. Plans whose aggregate cost
    * exceeds this trigger plan-level approval even when every action would
-   * individually execute. Default 50_000 ($500).
+   * individually execute. When omitted, the gate reads
+   * tenants.plan_cost_ceiling_usd_cents (added in the action-safety
+   * fixes migration) and falls back to PLATFORM_DEFAULT_PLAN_CEILING_USD_CENTS.
    */
   planCostCeilingUsdCents?: (tenantId: string) => Promise<number>;
   /** Override clock; used by tests. */
   now?: () => Date;
 }
+
+/** Per-tenant ceiling fallback when the tenant row doesn't override. */
+export const PLATFORM_DEFAULT_PLAN_CEILING_USD_CENTS = 50_000;
 
 export class ActionPlanGate {
   private readonly isEnabled: () => boolean;
@@ -68,8 +73,39 @@ export class ActionPlanGate {
 
   constructor(private readonly pool: Pool, opts: ActionPlanGateOptions = {}) {
     this.isEnabled = opts.isEnabled ?? defaultEnabled;
-    this.planCostCeiling = opts.planCostCeilingUsdCents ?? (async () => 50_000);
+    this.planCostCeiling = opts.planCostCeilingUsdCents ?? ((tenantId) => this.loadTenantPlanCeiling(tenantId));
     this.now = opts.now ?? (() => new Date());
+  }
+
+  /**
+   * Default ceiling resolver — reads tenants.plan_cost_ceiling_usd_cents
+   * (nullable) and falls back to the platform constant. Runs as
+   * platform_admin since the tenants row is platform-scoped.
+   */
+  private async loadTenantPlanCeiling(tenantId: string): Promise<number> {
+    if (!/^[0-9a-f-]{36}$/i.test(tenantId)) {
+      return PLATFORM_DEFAULT_PLAN_CEILING_USD_CENTS;
+    }
+    const client = await this.pool.connect();
+    try {
+      await client.query(`SET LOCAL ROLE platform_admin`).catch(() => undefined);
+      const r = await client.query<{ plan_cost_ceiling_usd_cents: number | null }>(
+        `SELECT plan_cost_ceiling_usd_cents
+           FROM oweibo.tenants WHERE id = $1::uuid LIMIT 1`,
+        [tenantId],
+      );
+      const row = r.rows[0];
+      if (row && typeof row.plan_cost_ceiling_usd_cents === 'number') {
+        return row.plan_cost_ceiling_usd_cents;
+      }
+      return PLATFORM_DEFAULT_PLAN_CEILING_USD_CENTS;
+    } catch {
+      // A column-missing or other DB hiccup must NOT block plan gating;
+      // fall back to the platform default so behaviour stays defined.
+      return PLATFORM_DEFAULT_PLAN_CEILING_USD_CENTS;
+    } finally {
+      client.release();
+    }
   }
 
   async gatePlan(plan: ActionPlan): Promise<PlanGateDecision> {
@@ -188,7 +224,7 @@ export class ActionPlanGate {
       // plan approval (vs per-action approvals which have step_number set).
       const proposalActionId = `plan:${planId}`;
       const reason = overBudget
-        ? `plan exceeds budget ceiling ($${(blastRadius.estimatedCostUsdCents / 100).toFixed(2)})`
+        ? `plan exceeds budget ceiling ($${((blastRadius.estimatedCostUsdCents ?? 0) / 100).toFixed(2)})`
         : 'plan contains class requiring approval';
       const proposal = await client.query<{ id: string }>(
         `INSERT INTO oweibo.action_proposals (
@@ -252,10 +288,24 @@ export function validatePlanStructure(
   }
   const seenSteps = new Set<number>();
   for (const a of actions) {
+    // Audit-fix: enforce the [1..N] contract documented above. Negative
+    // and zero step numbers slipped through before; downstream consumers
+    // (NULL marker for plan-approval row, ordering, depends_on rendering)
+    // assume positive ints.
+    if (!Number.isInteger(a.stepNumber) || a.stepNumber < 1) {
+      return { ok: false, error: `step number ${a.stepNumber} is not a positive integer` };
+    }
     if (seenSteps.has(a.stepNumber)) {
       return { ok: false, error: `duplicate step ${a.stepNumber}` };
     }
     seenSteps.add(a.stepNumber);
+  }
+  // Steps must be contiguous 1..N — gaps make depends_on / step indexing
+  // ambiguous and prevent downstream tools assuming a contiguous range.
+  for (let i = 1; i <= actions.length; i++) {
+    if (!seenSteps.has(i)) {
+      return { ok: false, error: `plan step ${i} missing; steps must form a contiguous 1..N sequence` };
+    }
   }
   for (const a of actions) {
     for (const d of a.dependsOn ?? []) {

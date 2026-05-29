@@ -82,6 +82,9 @@ import { PgTenantDomainBindingLookup } from './domain/PgTenantDomainBindingLooku
 import { DomainRegistry }             from './domain/DomainRegistry.js';
 import { TenantDomainBindingService } from './domain/TenantDomainBindingService.js';
 import { PgComplianceEvaluationReader } from './domain/PgComplianceEvaluationReader.js';
+import { ConnectorRegistry }           from './connector/ConnectorRegistry.js';
+import { PgTenantConnectorService }    from './connector/PgTenantConnectorService.js';
+import { TenantTemplateRegistry }      from './seed/TenantTemplateRegistry.js';
 import { CalibrationService }        from './infrastructure/CalibrationService.js';
 import { TtvMetricsService }         from './observability/TtvMetricsService.js';
 import { DomainCurrencyMonitor }     from './domain/DomainCurrencyMonitor.js';
@@ -408,6 +411,23 @@ async function main(): Promise<void> {
     // surface needs in /tenants/:tenantId/lineage/*.
     const lineageRecorder = new LineageRecorder(pgPool);
 
+    // ── F.4.7: connectors + templates admin surfaces ──────────────────────
+    // ConnectorRegistry loads the platform catalog from disk; degrades
+    // to an empty registry when the directory is missing (the route
+    // still mounts and surfaces 'unknown_connector' on install).
+    let connectorRegistry: ConnectorRegistry;
+    try {
+      connectorRegistry = await ConnectorRegistry.loadFromDirectory(
+        ConnectorRegistry.defaultDirectory(),
+      );
+    } catch (err) {
+      console.warn('[oweibo] connector catalog load failed; using empty registry:',
+        err instanceof Error ? err.message : String(err));
+      connectorRegistry = ConnectorRegistry.fromEntries([]);
+    }
+    const tenantConnectorService = new PgTenantConnectorService(pgPool);
+    const tenantTemplateRegistry = new TenantTemplateRegistry(pgPool);
+
     // ── F.2.3: forensic packet pipeline + HITL handoff ────────────────────
     //
     // Storage backend is selected via OWEIBO_FORENSIC_STORAGE_KIND
@@ -645,6 +665,10 @@ async function main(): Promise<void> {
     // SLA and rate-limit-policy resolvers are new here.
     approvalSlaService: slaService,
     rateLimitPolicyResolver,
+    // F.4.7: connectors + templates admin surfaces.
+    connectorRegistry,
+    tenantConnectorService,
+    tenantTemplateRegistry,
   });
 
   // ── Channel Gateway (optional) ────────────────────────────────────────────

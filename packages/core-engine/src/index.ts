@@ -172,6 +172,18 @@ export type {
   ComplianceEvaluationPhase,
 } from './domain/PgComplianceEvaluationReader.js';
 
+// ── F.4.7 connectors + templates admin services ─────────────────────────────
+export {
+  PgTenantConnectorService,
+  CredentialNotResolvableError,
+  DuplicateConnectorInstanceError,
+} from './connector/PgTenantConnectorService.js';
+export type {
+  InstalledConnectorRow,
+  InstallRequest,
+  TenantConnectorStatus,
+} from './connector/PgTenantConnectorService.js';
+
 // ── F.4.4 platform floors + tenant policy CRUD ───────────────────────────────
 export {
   PolicyBelowFloorError,

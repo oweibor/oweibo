@@ -21,6 +21,8 @@ import { createTenantActionsRouter } from './routes/tenantActions.routes.js';
 import { createDomainsRouter } from './routes/domains.routes.js';
 import { createCalibrationRouter } from './routes/calibration.routes.js';
 import { createPoliciesRouter } from './routes/policies.routes.js';
+import { createConnectorsRouter } from './routes/connectors.routes.js';
+import { createTemplatesRouter } from './routes/templates.routes.js';
 import { createAuthMiddleware } from './middleware/authenticate.js';
 import { openapiSpec } from './openapi.js';
 import type { SecretsManager } from '../secrets/SecretsManager.js';
@@ -125,6 +127,10 @@ export async function createServer(
     /** F.4.4: enables /api/v1/tenants/:tenantId/actions/policies/* routes. */
     approvalSlaService?: import('../action/ApprovalSlaService.js').ApprovalSlaService;
     rateLimitPolicyResolver?: import('../action/RateLimitPolicy.js').RateLimitPolicyResolver;
+    /** F.4.7: enables /api/v1/tenants/:tenantId/connectors/* + /templates/* routes. */
+    connectorRegistry?: import('../connector/ConnectorRegistry.js').ConnectorRegistry;
+    tenantConnectorService?: import('../connector/PgTenantConnectorService.js').PgTenantConnectorService;
+    tenantTemplateRegistry?: import('../seed/TenantTemplateRegistry.js').TenantTemplateRegistry;
   },
   config: Partial<ServerConfig> = {},
 ): Promise<{ app: import('express').Application; port: number }> {
@@ -270,6 +276,25 @@ export async function createServer(
       multiparty: deps.multiPartyApproval,
       ratelimit:  deps.rateLimitPolicyResolver,
       quota:      deps.quotaService,
+    }));
+  }
+
+  // F.4.7: connectors admin surface. Requires catalog + per-tenant
+  // service. Optional binding lookup narrows recommendations by domain.
+  if (deps.connectorRegistry && deps.tenantConnectorService) {
+    v1.use('/tenants/:tenantId/connectors', createConnectorsRouter({
+      catalog:          deps.connectorRegistry,
+      tenantConnectors: deps.tenantConnectorService,
+      ...(deps.tenantDomainBindingLookup
+        ? { bindingLookup: deps.tenantDomainBindingLookup }
+        : {}),
+    }));
+  }
+
+  // F.4.7: tenant template catalog read surface.
+  if (deps.tenantTemplateRegistry) {
+    v1.use('/tenants/:tenantId/templates', createTemplatesRouter({
+      templates: deps.tenantTemplateRegistry,
     }));
   }
 

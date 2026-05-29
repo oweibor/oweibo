@@ -18,6 +18,7 @@ import { createActionsExtendedRouter } from './routes/actionsExtended.routes.js'
 import { createForensicsRouter } from './routes/forensics.routes.js';
 import { createLineageRouter } from './routes/lineage.routes.js';
 import { createTenantActionsRouter } from './routes/tenantActions.routes.js';
+import { createDomainsRouter } from './routes/domains.routes.js';
 import { createAuthMiddleware } from './middleware/authenticate.js';
 import { openapiSpec } from './openapi.js';
 import type { SecretsManager } from '../secrets/SecretsManager.js';
@@ -110,6 +111,13 @@ export async function createServer(
     lineageRecorder?: import('../action/LineageRecorder.js').LineageRecorder;
     /** F.4.3: enables rollback + plan-level reads at /tenants/:tenantId/actions. */
     rollbackOrchestrator?: import('../action/RollbackOrchestrator.js').RollbackOrchestrator;
+    /** F.4.5: enables /api/v1/tenants/:tenantId/domains/* routes. */
+    domainRegistry?: import('../domain/DomainRegistry.js').DomainRegistry;
+    tenantDomainBindings?: import('../domain/TenantDomainBindingService.js').TenantDomainBindingService;
+    tenantDomainBindingLookup?: import('../domain/PgTenantDomainBindingLookup.js').PgTenantDomainBindingLookup;
+    smeReviewService?: import('../domain/SmeReviewService.js').SmeReviewService;
+    domainDepthMetrics?: import('../domain/DomainDepthMetrics.js').DomainDepthMetrics;
+    complianceEvaluations?: import('../domain/PgComplianceEvaluationReader.js').PgComplianceEvaluationReader;
   },
   config: Partial<ServerConfig> = {},
 ): Promise<{ app: import('express').Application; port: number }> {
@@ -216,6 +224,25 @@ export async function createServer(
       lineage: deps.lineageRecorder,
     }));
   }
+
+  // F.4.5: domain admin surface. Needs the full set of services so the
+  // 8 endpoints behind the mount can resolve. When any are missing the
+  // mount is skipped entirely — partial wiring would yield half-working
+  // routes that crash on demand.
+  if (
+    deps.domainRegistry && deps.tenantDomainBindings && deps.tenantDomainBindingLookup
+    && deps.smeReviewService && deps.domainDepthMetrics && deps.complianceEvaluations
+  ) {
+    v1.use('/tenants/:tenantId/domains', createDomainsRouter({
+      registry:        deps.domainRegistry,
+      bindingService:  deps.tenantDomainBindings,
+      bindingLookup:   deps.tenantDomainBindingLookup,
+      smeReview:       deps.smeReviewService,
+      depthMetrics:    deps.domainDepthMetrics,
+      evaluations:     deps.complianceEvaluations,
+    }));
+  }
+
 
   if (deps.pool && deps.operationalMode) {
     v1.use('/platform', createPlatformRouter({

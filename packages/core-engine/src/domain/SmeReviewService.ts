@@ -146,6 +146,38 @@ export class SmeReviewService {
     }
   }
 
+  /**
+   * F.4.5: tenant-facing list of SME review queue items. Used by the
+   * admin sme-review page to show pending/assigned reviews of the
+   * tenant's own artifacts. Bypasses reviewer credential scoping —
+   * tenants see their own queue regardless of which reviewer is on the
+   * hook.
+   */
+  async listPendingForTenant(
+    tenantId: string,
+    opts: { states?: readonly SmeQueueState[]; limit?: number } = {},
+  ): Promise<readonly SmeQueueItem[]> {
+    const limit = Math.min(opts.limit ?? 50, 200);
+    const states = opts.states ?? ['pending', 'assigned', 'reviewed'];
+    const client = await this.pool.connect();
+    try {
+      await this.setAdminScope(client);
+      const r = await client.query<QueueRow>(
+        `SELECT id, domain_slug, tenant_id, task_id, artifact_kind, artifact_ref,
+                anonymized_payload, state, required_reviews, sampled_at, closed_at
+           FROM oweibo.sme_review_queue
+          WHERE tenant_id = $1::uuid
+            AND state = ANY($2::text[])
+          ORDER BY sampled_at DESC
+          LIMIT $3`,
+        [tenantId, states, limit],
+      );
+      return r.rows.map(rowToQueueItem);
+    } finally {
+      client.release();
+    }
+  }
+
   async getQueueItem(id: string): Promise<SmeQueueItem | null> {
     const client = await this.pool.connect();
     try {

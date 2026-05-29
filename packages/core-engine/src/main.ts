@@ -78,6 +78,9 @@ import { PostgresRowCountVerifier }  from './action/verifiers/PostgresRowCountVe
 import { ComplianceRuleEvaluator }   from './domain/ComplianceRuleEvaluator.js';
 import { ComplianceRulePackRegistry } from './domain/ComplianceRulePackRegistry.js';
 import { PgTenantDomainBindingLookup } from './domain/PgTenantDomainBindingLookup.js';
+import { DomainRegistry }             from './domain/DomainRegistry.js';
+import { TenantDomainBindingService } from './domain/TenantDomainBindingService.js';
+import { PgComplianceEvaluationReader } from './domain/PgComplianceEvaluationReader.js';
 import { CalibrationService }        from './infrastructure/CalibrationService.js';
 import { TtvMetricsService }         from './observability/TtvMetricsService.js';
 import { DomainCurrencyMonitor }     from './domain/DomainCurrencyMonitor.js';
@@ -271,6 +274,13 @@ async function main(): Promise<void> {
       tenantDomainLookup: (t) => tenantDomainLookup.forTenant(t),
     });
     const complianceRuleEvaluator = new ComplianceRuleEvaluator(compliancePackRegistry);
+    // F.4.5: companion services for the /tenants/:tenantId/domains/* admin
+    // surface. Registry is the canonical taxonomy (v1 bundled catalog);
+    // bindingService writes tenant_domain_binding rows; evaluationsReader
+    // surfaces compliance_rule_evaluations rows for the audit page.
+    const domainRegistry            = new DomainRegistry();
+    const tenantDomainBindings      = new TenantDomainBindingService(pgPool);
+    const complianceEvaluations     = new PgComplianceEvaluationReader(pgPool);
 
     // ── F.3.1: CalibrationService + snapshot signer/verifier ───────────────
     //
@@ -343,9 +353,9 @@ async function main(): Promise<void> {
     // Constructed here so the F.4 /domains/sme-review admin routes can
     // take it via runtime composition.
     const smeReviewService         = new SmeReviewService(pgPool);
-    void domainDepthMetrics;        // wired into F.4 admin-web /domains/depth route
-    void smeFeedbackAggregator;     // wired into F.4 admin-web /domains/sme-review route
-    void smeReviewService;          // wired into F.4 admin-web /domains/sme-review route
+    // domainDepthMetrics + smeReviewService now flow into createServer
+    // for the F.4.5 /tenants/:tenantId/domains/* surface.
+    void smeFeedbackAggregator;     // event-driven; no admin-web route consumes it directly
 
     // Daily DomainCurrency tick. node-cron is a CJS module; import via the
     // existing 'node-cron' dep without pulling type machinery into the
@@ -611,6 +621,16 @@ async function main(): Promise<void> {
     // F.4.3: rollback invocation + plan reads — orchestrator is always
     // constructed; without it the routes return 503 rollback_disabled.
     rollbackOrchestrator,
+    // F.4.5: domain admin surface — registry, bindings, sme review,
+    // depth metrics, compliance evaluations. All six are always
+    // constructed; the server mounts the router only when all six are
+    // present, so any future degradation is observable at boot.
+    domainRegistry,
+    tenantDomainBindings,
+    tenantDomainBindingLookup: tenantDomainLookup,
+    smeReviewService,
+    domainDepthMetrics,
+    complianceEvaluations,
   });
 
   // ── Channel Gateway (optional) ────────────────────────────────────────────

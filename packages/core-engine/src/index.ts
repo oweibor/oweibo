@@ -164,6 +164,14 @@ export { LineageRecorder } from './action/LineageRecorder.js';
 export type { PlanDetail } from './action/DryRunRegistry.js';
 export type { RollbackStatus } from './action/RollbackOrchestrator.js';
 
+// ── F.4.5 admin surface — compliance evaluations reader ──────────────────────
+export { PgComplianceEvaluationReader } from './domain/PgComplianceEvaluationReader.js';
+export type {
+  ComplianceEvaluationRow,
+  ComplianceEvaluationVerdict,
+  ComplianceEvaluationPhase,
+} from './domain/PgComplianceEvaluationReader.js';
+
 // ── Periodic domain services (F.3.3) ──────────────────────────────────────────
 export { DomainCurrencyMonitor } from './domain/DomainCurrencyMonitor.js';
 export { DomainDepthMetrics } from './domain/DomainDepthMetrics.js';

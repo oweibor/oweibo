@@ -246,6 +246,49 @@ export class DomainDepthMetrics {
   }
 
   /**
+   * F.4.5: return the most-recent snapshot for each known domain.
+   * Used by the /domains/depth read endpoint. Implemented as a
+   * DISTINCT ON over domain_slug.
+   */
+  async listLatestSnapshots(): Promise<readonly DomainDepthSnapshot[]> {
+    const client = await this.pool.connect();
+    try {
+      await this.setAdminScope(client);
+      const r = await client.query<{
+        domain_slug: string;
+        snapshot_at: Date;
+        composite_score: string | number;
+        recommended_tier: string;
+        ontology_coverage: OntologyCoverage;
+        eval_coverage: EvalCoverage;
+        compliance_coverage: ComplianceCoverage;
+        connector_coverage: ConnectorCoverage;
+        sme_coverage: SmeCoverage;
+      }>(
+        `SELECT DISTINCT ON (domain_slug)
+                domain_slug, snapshot_at, composite_score, recommended_tier,
+                ontology_coverage, eval_coverage, compliance_coverage,
+                connector_coverage, sme_coverage
+           FROM oweibo.domain_depth_snapshots
+          ORDER BY domain_slug, snapshot_at DESC`,
+      );
+      return r.rows.map((row) => ({
+        domainSlug: row.domain_slug,
+        snapshotAt: row.snapshot_at.toISOString(),
+        compositeScore: Number(row.composite_score),
+        recommendedTier: row.recommended_tier as DomainDepthSnapshot['recommendedTier'],
+        ontologyCoverage: row.ontology_coverage,
+        evalCoverage: row.eval_coverage,
+        complianceCoverage: row.compliance_coverage,
+        connectorCoverage: row.connector_coverage,
+        smeCoverage: row.sme_coverage,
+      }));
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
    * Recent composite_score history (newest first) for a domain. Used
    * by the cron caller to supply `recentScores` to `writeSnapshot`.
    */

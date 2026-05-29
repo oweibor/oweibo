@@ -480,7 +480,7 @@ async function main(): Promise<void> {
         await postExecVerifier.supersedeForProposal(tenantId, proposalId);
       },
     });
-    void rollbackOrchestrator;  // wired into /api/v1/tenants/:id/actions/:id/rollback in F.4.3
+    // F.4.3: rollbackOrchestrator now flows into createServer below.
 
     // T.0: outbox relay. Drains oweibo.outbox to Redis lifecycle channels
     // (oweibo.lifecycle.<subject>). Polls every 2s; fail-open on Redis errors.
@@ -608,6 +608,9 @@ async function main(): Promise<void> {
       : {}),
     // F.4.2: lineage read surface — recorder is always constructed.
     lineageRecorder,
+    // F.4.3: rollback invocation + plan reads — orchestrator is always
+    // constructed; without it the routes return 503 rollback_disabled.
+    rollbackOrchestrator,
   });
 
   // ── Channel Gateway (optional) ────────────────────────────────────────────

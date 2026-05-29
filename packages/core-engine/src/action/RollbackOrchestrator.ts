@@ -75,6 +75,19 @@ export interface RollbackInvokeRequest {
   readonly invokedBy: { readonly type: RollbackInvokerType; readonly id: string };
 }
 
+export interface RollbackStatus {
+  readonly executionId: string;
+  readonly adapterName: string;
+  readonly reason: string;
+  readonly invokedBy: { readonly type: string; readonly id: string };
+  readonly resultState: string | null;
+  readonly resultDetails: string | null;
+  readonly sideEffects: readonly string[];
+  readonly costUsdCents: number;
+  readonly startedAt: string;
+  readonly completedAt: string | null;
+}
+
 interface ProposalRow {
   id: string;
   tenant_id: string;
@@ -200,6 +213,56 @@ export class RollbackOrchestrator {
       }
     }
     return result;
+  }
+
+  /**
+   * F.4.3: read the most-recent rollback execution row for an original
+   * action. Returns null when no rollback has been invoked. Used by
+   * `GET /tenants/:tenantId/actions/:id/rollback/status` so an operator
+   * who fired execute can poll its progress until completed_at is set.
+   */
+  async getStatus(
+    tenantId: string,
+    originalActionId: string,
+  ): Promise<RollbackStatus | null> {
+    return withTenantTx(this.pool, tenantId, async (client) => {
+      const r = await client.query<{
+        id: string;
+        adapter_name: string;
+        reason: string;
+        invoked_by_type: string;
+        invoked_by_id: string;
+        result_state: string | null;
+        result_details: string | null;
+        side_effects: string[] | null;
+        cost_usd_cents: number | null;
+        started_at: Date;
+        completed_at: Date | null;
+      }>(
+        `SELECT id, adapter_name, reason, invoked_by_type, invoked_by_id,
+                result_state, result_details, side_effects, cost_usd_cents,
+                started_at, completed_at
+           FROM oweibo.rollback_executions
+          WHERE original_action_id = $1::uuid AND tenant_id = $2::uuid
+          ORDER BY started_at DESC
+          LIMIT 1`,
+        [originalActionId, tenantId],
+      );
+      const row = r.rows[0];
+      if (!row) return null;
+      return {
+        executionId: row.id,
+        adapterName: row.adapter_name,
+        reason: row.reason,
+        invokedBy: { type: row.invoked_by_type, id: row.invoked_by_id },
+        resultState: row.result_state,
+        resultDetails: row.result_details,
+        sideEffects: row.side_effects ?? [],
+        costUsdCents: row.cost_usd_cents ?? 0,
+        startedAt: row.started_at.toISOString(),
+        completedAt: row.completed_at ? row.completed_at.toISOString() : null,
+      };
+    });
   }
 
   // ── Internals ───────────────────────────────────────────────────────────

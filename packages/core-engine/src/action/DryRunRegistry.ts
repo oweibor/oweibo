@@ -118,6 +118,98 @@ export class DryRunRegistry {
     }
   }
 
+  /**
+   * F.4.3: plan-level proposal detail. Returns the plan row + the
+   * count of member action_proposals, or null when the planId is
+   * unknown / belongs to another tenant.
+   */
+  async getPlan(principal: GatePrincipal, planId: string): Promise<PlanDetail | null> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await setScope(client, principal);
+      const planRes = await client.query(
+        `SELECT id, tenant_id, user_id, originating_task_id, title, atomicity,
+                state, worst_reversibility, systems, data_domains,
+                estimated_cost_usd_cents, estimated_reach_user_count,
+                plan_proposal_id, created_at, started_at, completed_at
+           FROM oweibo.action_plans
+          WHERE id = $1::uuid`,
+        [planId],
+      );
+      if (planRes.rowCount === 0) {
+        await client.query('COMMIT');
+        return null;
+      }
+      const countRes = await client.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count
+           FROM oweibo.action_proposals
+          WHERE plan_id = $1::uuid`,
+        [planId],
+      );
+      await client.query('COMMIT');
+      const row = planRes.rows[0];
+      return {
+        id: String(row.id),
+        tenantId: String(row.tenant_id),
+        userId: row.user_id ? String(row.user_id) : null,
+        originatingTaskId: row.originating_task_id ? String(row.originating_task_id) : null,
+        title: String(row.title),
+        atomicity: String(row.atomicity),
+        state: String(row.state),
+        worstReversibility: String(row.worst_reversibility),
+        systems: (row.systems ?? []) as string[],
+        dataDomains: (row.data_domains ?? []) as string[],
+        estimatedCostUsdCents: Number(row.estimated_cost_usd_cents ?? 0),
+        estimatedReachUserCount: Number(row.estimated_reach_user_count ?? 0),
+        planProposalId: row.plan_proposal_id ? String(row.plan_proposal_id) : null,
+        createdAt: toIso(row.created_at) ?? '',
+        startedAt: toIso(row.started_at),
+        completedAt: toIso(row.completed_at),
+        memberCount: Number(countRes.rows[0]?.count ?? 0),
+      };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * F.4.3: list every action_proposal that belongs to `planId`.
+   * Ordered by created_at ASC so the admin UI renders execution order.
+   */
+  async listPlanActions(
+    principal: GatePrincipal,
+    planId: string,
+    filters: { limit?: number } = {},
+  ): Promise<ProposalSummary[]> {
+    const limit = Math.min(Math.max(filters.limit ?? 200, 1), 500);
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await setScope(client, principal);
+      const result = await client.query(
+        `SELECT id, tenant_id, user_id, action_class, action_id, mode, summary,
+                rollback_kind, state, created_at, expires_at, decided_at,
+                decided_by, decision_reason
+           FROM oweibo.action_proposals
+          WHERE plan_id = $1::uuid
+          ORDER BY created_at ASC
+          LIMIT $2`,
+        [planId, limit],
+      );
+      await client.query('COMMIT');
+      return result.rows.map(toSummary);
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   /** Read the per-(tenant, class) trust matrix. Includes only explicit rows. */
   async listTrustMatrix(principal: GatePrincipal): Promise<TrustMatrixRow[]> {
     const client = await this.pool.connect();
@@ -204,6 +296,32 @@ export class DryRunRegistry {
       client.release();
     }
   }
+}
+
+export interface PlanDetail {
+  readonly id: string;
+  readonly tenantId: string;
+  readonly userId: string | null;
+  readonly originatingTaskId: string | null;
+  readonly title: string;
+  readonly atomicity: string;
+  readonly state: string;
+  readonly worstReversibility: string;
+  readonly systems: readonly string[];
+  readonly dataDomains: readonly string[];
+  readonly estimatedCostUsdCents: number;
+  readonly estimatedReachUserCount: number;
+  readonly planProposalId: string | null;
+  readonly createdAt: string;
+  readonly startedAt: string | null;
+  readonly completedAt: string | null;
+  readonly memberCount: number;
+}
+
+function toIso(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  if (v instanceof Date) return v.toISOString();
+  return String(v);
 }
 
 export interface TrustMatrixRow {

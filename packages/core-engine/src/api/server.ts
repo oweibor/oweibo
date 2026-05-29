@@ -17,6 +17,7 @@ import { createActionsRouter } from './routes/actions.routes.js';
 import { createActionsExtendedRouter } from './routes/actionsExtended.routes.js';
 import { createForensicsRouter } from './routes/forensics.routes.js';
 import { createLineageRouter } from './routes/lineage.routes.js';
+import { createTenantActionsRouter } from './routes/tenantActions.routes.js';
 import { createAuthMiddleware } from './middleware/authenticate.js';
 import { openapiSpec } from './openapi.js';
 import type { SecretsManager } from '../secrets/SecretsManager.js';
@@ -107,6 +108,8 @@ export async function createServer(
     actionReplay?: import('../action/ActionReplayService.js').ActionReplayService;
     /** F.4.2: enables /api/v1/tenants/:tenantId/lineage/* routes. */
     lineageRecorder?: import('../action/LineageRecorder.js').LineageRecorder;
+    /** F.4.3: enables rollback + plan-level reads at /tenants/:tenantId/actions. */
+    rollbackOrchestrator?: import('../action/RollbackOrchestrator.js').RollbackOrchestrator;
   },
   config: Partial<ServerConfig> = {},
 ): Promise<{ app: import('express').Application; port: number }> {
@@ -179,6 +182,18 @@ export async function createServer(
     v1.use('/tenants/:tenantId/actions', createActionsExtendedRouter({
       multiPartyApproval: deps.multiPartyApproval,
       quotaService: deps.quotaService,
+    }));
+  }
+
+  // F.4.3: rollback invocation + plan-level proposal reads. Stacks at the
+  // same /tenants/:tenantId/actions mount as actionsExtended — Express
+  // walks routers in registration order, so non-overlapping verb/paths
+  // coexist cleanly. Registry alone enables the plan reads; rollback
+  // endpoints additionally require RollbackOrchestrator (else 503).
+  if (deps.dryRunRegistry) {
+    v1.use('/tenants/:tenantId/actions', createTenantActionsRouter({
+      registry: deps.dryRunRegistry,
+      ...(deps.rollbackOrchestrator ? { rollbackOrchestrator: deps.rollbackOrchestrator } : {}),
     }));
   }
 

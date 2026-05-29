@@ -263,4 +263,40 @@ describe('Factory: loadHmacSnapshotKeys / hmacSnapshotVerifierFromSecrets', () =
     const k2signer = new HmacSnapshotSigner({ primary: k2 });
     expect(v.verify(sign(k2signer))).toBe(true);
   });
+
+  it('honours SNAPSHOT_MAX_AGE_S env when opts.maxAgeSeconds is absent', async () => {
+    const k = randomBytes(32);
+    const v = await hmacSnapshotVerifierFromSecrets(
+      asSecretsManager(new FakeSecrets({ CALIBRATION_SIGNING_KEY: k.toString('base64') })),
+      { env: 'production', now: () => new Date('2026-05-29T12:00:30Z') },
+      { SNAPSHOT_MAX_AGE_S: '10' },  // 10s cap
+    );
+    const base = { ...snapshotBase(), snapshotAt: '2026-05-29T12:00:00Z' };  // 30s old, past 10s cap
+    const signer = new HmacSnapshotSigner({ primary: k });
+    expect(v.verify({ ...base, sourceSig: signer.sign(base) })).toBe(false);
+  });
+
+  it('explicit opts.maxAgeSeconds overrides SNAPSHOT_MAX_AGE_S env', async () => {
+    const k = randomBytes(32);
+    const v = await hmacSnapshotVerifierFromSecrets(
+      asSecretsManager(new FakeSecrets({ CALIBRATION_SIGNING_KEY: k.toString('base64') })),
+      { maxAgeSeconds: 3600, env: 'production', now: () => new Date('2026-05-29T12:00:30Z') },
+      { SNAPSHOT_MAX_AGE_S: '1' },  // env says 1s, opts says 3600s — opts wins
+    );
+    const base = { ...snapshotBase(), snapshotAt: '2026-05-29T12:00:00Z' };
+    const signer = new HmacSnapshotSigner({ primary: k });
+    expect(v.verify({ ...base, sourceSig: signer.sign(base) })).toBe(true);
+  });
+
+  it('falls back to 3600s default when SNAPSHOT_MAX_AGE_S is malformed', async () => {
+    const k = randomBytes(32);
+    // Each call constructs; no throw expected.
+    for (const bad of ['abc', '-5', '0', '']) {
+      await expect(hmacSnapshotVerifierFromSecrets(
+        asSecretsManager(new FakeSecrets({ CALIBRATION_SIGNING_KEY: k.toString('base64') })),
+        {},
+        { SNAPSHOT_MAX_AGE_S: bad },
+      )).resolves.toBeInstanceOf(HmacSnapshotVerifier);
+    }
+  });
 });

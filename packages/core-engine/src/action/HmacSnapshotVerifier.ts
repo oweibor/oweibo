@@ -223,12 +223,30 @@ export async function loadHmacSnapshotKeys(secrets: SecretsManager): Promise<Hma
   return next !== undefined ? { primary, next } : { primary };
 }
 
+/**
+ * F.1.10: when `maxAgeSeconds` is not supplied via opts, the factory
+ * reads `SNAPSHOT_MAX_AGE_S` from env (positive integer; defaults to
+ * DEFAULT_SNAPSHOT_MAX_AGE_S=3600 on absent / malformed / non-positive
+ * input). Explicit `opts.maxAgeSeconds` always wins.
+ */
 export async function hmacSnapshotVerifierFromSecrets(
   secrets: SecretsManager,
   opts: HmacSnapshotVerifierOptions = {},
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<HmacSnapshotVerifier> {
   const keys = await loadHmacSnapshotKeys(secrets);
-  return new HmacSnapshotVerifier(keys, opts);
+  const merged: HmacSnapshotVerifierOptions =
+    opts.maxAgeSeconds !== undefined
+      ? opts
+      : { ...opts, maxAgeSeconds: parseMaxAgeSeconds(env['SNAPSHOT_MAX_AGE_S']) };
+  return new HmacSnapshotVerifier(keys, merged);
+}
+
+function parseMaxAgeSeconds(raw: string | undefined): number {
+  if (raw === undefined || raw === '') return DEFAULT_SNAPSHOT_MAX_AGE_S;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_SNAPSHOT_MAX_AGE_S;
+  return n;
 }
 
 export async function hmacSnapshotSignerFromSecrets(

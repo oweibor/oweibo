@@ -88,6 +88,20 @@ export { HITLGateway } from './governance/HITLGateway.js';
 // ── Observability ─────────────────────────────────────────────────────────────
 export { AnomalyDetector } from './observability/AnomalyDetector.js';
 export { PromptRegistry } from './observability/PromptRegistry.js';
+export { TtvMetricsService } from './observability/TtvMetricsService.js';
+export type {
+  BootstrapStepParams,
+  BootstrapStepStatus,
+  CalibrationScoreParams,
+  FirstRealActionParams,
+  FirstTaskParams,
+  FirstWowParams,
+  ProposalStateParams,
+  ProposalStateTransition,
+  SeedCohort,
+  SeedSuppressedParams,
+  TenantOutcome,
+} from './observability/TtvMetricsService.js';
 
 // ── Infrastructure ────────────────────────────────────────────────────────────
 export type { VaultClient } from './infrastructure/VaultClient.js';

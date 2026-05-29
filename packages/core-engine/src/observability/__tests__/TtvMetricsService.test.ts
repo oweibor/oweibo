@@ -157,3 +157,24 @@ describe('TtvMetricsService — graceful degradation', () => {
     expect(true).toBe(true);
   });
 });
+
+describe('TtvMetricsService — F.3.2 hasMeter diagnostic', () => {
+  it('hasMeter is false when meter=null is passed (explicit NoOp)', () => {
+    const svc = new TtvMetricsService(null);
+    expect(svc.hasMeter).toBe(false);
+  });
+
+  it('hasMeter is true when a meter is supplied', () => {
+    const { meter } = fakeMeter();
+    const svc = new TtvMetricsService(meter);
+    expect(svc.hasMeter).toBe(true);
+  });
+
+  it('hasMeter mirrors the main.ts startup-log decision', () => {
+    // Mirrors main.ts: hasMeter=false → warn; hasMeter=true → info.
+    const off = new TtvMetricsService(null);
+    const { meter } = fakeMeter();
+    const on  = new TtvMetricsService(meter);
+    expect(off.hasMeter).not.toBe(on.hasMeter);
+  });
+});

@@ -78,6 +78,7 @@ import { ComplianceRuleEvaluator }   from './domain/ComplianceRuleEvaluator.js';
 import { ComplianceRulePackRegistry } from './domain/ComplianceRulePackRegistry.js';
 import { PgTenantDomainBindingLookup } from './domain/PgTenantDomainBindingLookup.js';
 import { CalibrationService }        from './infrastructure/CalibrationService.js';
+import { TtvMetricsService }         from './observability/TtvMetricsService.js';
 import {
   HmacSnapshotSigner,
   HmacSnapshotVerifier,
@@ -291,6 +292,31 @@ async function main(): Promise<void> {
     });
     void calibrationService;  // wired into the task-create path in a follow-up;
                               // F.3.1's scope is the construction site.
+
+    // ── F.3.2: TtvMetricsService — time-to-value telemetry ─────────────────
+    //
+    // The service auto-detects @opentelemetry/api at construction. When
+    // present, all 14 metric series are real OTEL histograms/counters;
+    // when absent, every record() call lands on a no-op and the wider
+    // observability path stays silent. Operators wire the OTEL exporter
+    // (Prometheus, OTLP, etc.) via the SDK config outside this code —
+    // standard OTEL SDK env vars apply.
+    //
+    // The service is referenced via void today; threading the instance
+    // into call sites (bootstrap worker, cognitive engine, action gate)
+    // is per-caller work and ships as those callers are refactored.
+    const ttvMetrics = new TtvMetricsService();
+    if (!ttvMetrics.hasMeter) {
+      console.warn(
+        '[oweibo] TtvMetricsService: @opentelemetry/api not present — TTV ' +
+        'metrics will not be emitted (NoOp histograms/counters). ' +
+        'Install @opentelemetry/api + a matching exporter (e.g. ' +
+        '@opentelemetry/exporter-prometheus) to enable.',
+      );
+    } else {
+      console.log('[oweibo] TtvMetricsService: OTEL meter wired (14 metric series).');
+    }
+    void ttvMetrics;
 
     actionTrustLadder = new ActionTrustLadder(pgPool, {
       slaAttacher: slaService,

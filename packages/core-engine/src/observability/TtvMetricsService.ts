@@ -117,6 +117,15 @@ export interface OnboardingThroughputParams {
 // ── Service ──────────────────────────────────────────────────────────────
 
 export class TtvMetricsService {
+  /**
+   * F.3.2: true when a real OTEL meter was discovered at construction
+   * (i.e. @opentelemetry/api was present AND `getMeter` returned a
+   * non-no-op meter). When false, every record() call lands on a no-op
+   * histogram/counter and the wider observability subsystem is dormant.
+   * Operators read this via main.ts at startup to decide whether to
+   * surface a warning.
+   */
+  public readonly hasMeter: boolean;
   // Histograms (time-to-X and distribution metrics)
   private readonly firstTaskSeconds:           OtelHistogram;
   private readonly firstWarmRecallSeconds:     OtelHistogram;
@@ -134,7 +143,16 @@ export class TtvMetricsService {
   private readonly proposalStateTotal:         OtelCounter;
   private readonly onboardingThroughputTotal:  OtelCounter;
 
-  constructor(meter: OtelMeter | undefined = tryGetMeter()) {
+  /**
+   * @param meter When omitted, the constructor auto-detects via
+   *   tryGetMeter(). Pass `null` to force the no-meter path (used by
+   *   tests that need a deterministic NoOp result in environments where
+   *   @opentelemetry/api is transitively present).
+   */
+  constructor(meter: OtelMeter | null | undefined = tryGetMeter()) {
+    const resolved = meter === null ? undefined : meter;
+    this.hasMeter = resolved !== undefined;
+    meter = resolved;
     this.firstTaskSeconds          = meter?.createHistogram('tenant_ttv_first_task_seconds',          { description: 'Time from tenant.created to first completed task',                unit: 's' }) ?? noopHistogram;
     this.firstWarmRecallSeconds    = meter?.createHistogram('tenant_ttv_first_warm_recall_seconds',   { description: 'Time to first non-empty MemoryWarmer result',                     unit: 's' }) ?? noopHistogram;
     this.firstOrganicMemorySeconds = meter?.createHistogram('tenant_ttv_first_organic_memory_seconds',{ description: 'Time to first non-seed memory in the tenant collection',          unit: 's' }) ?? noopHistogram;

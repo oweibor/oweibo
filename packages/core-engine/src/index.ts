@@ -118,6 +118,15 @@ export { DeployHealthCheckVerifier } from './action/verifiers/DeployHealthCheckV
 export { EmailDeliveredVerifier } from './action/verifiers/EmailDeliveredVerifier.js';
 export { PostgresRowCountVerifier } from './action/verifiers/PostgresRowCountVerifier.js';
 
+// ── Notification digest service (F.2.6) ───────────────────────────────────────
+export { NotificationDigestService } from './action/NotificationDigestService.js';
+export type {
+  DigestBundle,
+  DigestChannelKind,
+  DigestEnqueueRequest,
+  PendingDigestRow,
+} from './action/NotificationDigestService.js';
+
 // ── Notification channels ─────────────────────────────────────────────────────
 export { InAppChannel } from './action/notification-channels/InAppChannel.js';
 export { EmailChannel } from './action/notification-channels/EmailChannel.js';

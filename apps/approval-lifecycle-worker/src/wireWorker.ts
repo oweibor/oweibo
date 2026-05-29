@@ -53,6 +53,7 @@ import {
   ApprovalSlaService,
   EscalationEngine,
   NotificationRouter,
+  NotificationDigestService,
   PgOrgGraphReader,
   PgTenantRoleReader,
   PgWebhookConfigResolver,
@@ -64,8 +65,15 @@ import {
   SecretsManager,
   NullVaultClient,
   type IWebhookConfigResolver,
+  type DigestBundle,
 } from '@oweibo/core-engine';
-import type { INotificationChannel, NotificationChannelKind } from '@oweibo/core-contracts';
+import type {
+  ActionClass,
+  ApprovalSlaPolicy,
+  FireEvent,
+  INotificationChannel,
+  NotificationChannelKind,
+} from '@oweibo/core-contracts';
 import { ApprovalLifecycleWorker, type WorkerLogger } from './Worker.js';
 import {
   runDeferredVerificationsTick,
@@ -79,6 +87,14 @@ export interface WireWorkerConfig {
   readonly redisUrl?: string | undefined;
   /** Tick interval in milliseconds. Default 30 000. */
   readonly tickIntervalMs?: number;
+  /**
+   * F.2.6: digest flush interval in ms. Default 60 000 (1 min). The
+   * NotificationDigestService groups non-urgent notifications and flushes
+   * a bundle per (recipient, channel) every digestIntervalSeconds; the
+   * tick polls for due bundles and routes them through the router. Set
+   * to 0 to disable the digest tick entirely.
+   */
+  readonly digestTickIntervalMs?: number;
   /** Optional logger. Defaults to console.log/warn/error. */
   readonly logger?: WorkerLogger;
   /**
@@ -135,6 +151,7 @@ export interface WireEnv {
 }
 
 const DEFAULT_TICK_MS = 30_000;
+const DEFAULT_DIGEST_TICK_MS = 60_000;
 
 /**
  * Wire all production dependencies of the standalone worker.
@@ -176,6 +193,12 @@ export function wireWorker(cfg: WireWorkerConfig, env: WireEnv = process.env): W
 
   const router = new NotificationRouter(pool, { channels });
 
+  // F.2.6: NotificationDigestService — non-urgent notifications can be
+  // batched and flushed every digestIntervalSeconds (default 300s). This
+  // tick lives alongside the SLA tick (light load — typically a few
+  // bundles per minute platform-wide).
+  const digest = new NotificationDigestService(pool);
+
   // Task event bus — optional, only when Redis is wired.
   const taskEventBus = redis
     ? new RedisTaskEventBusPublisher(
@@ -191,7 +214,9 @@ export function wireWorker(cfg: WireWorkerConfig, env: WireEnv = process.env): W
   const worker = new ApprovalLifecycleWorker(pool, sla, escalation, router, workerOpts);
 
   const tickMs = cfg.tickIntervalMs ?? parseTickMs(env.APPROVAL_SLA_TICK_MS) ?? DEFAULT_TICK_MS;
+  const digestTickMs = cfg.digestTickIntervalMs ?? DEFAULT_DIGEST_TICK_MS;
   let timer: NodeJS.Timeout | undefined;
+  let digestTimer: NodeJS.Timeout | undefined;
 
   return {
     worker,
@@ -199,11 +224,19 @@ export function wireWorker(cfg: WireWorkerConfig, env: WireEnv = process.env): W
     startTickLoop(): { stop(): void } {
       timer = setInterval(() => { void runTick(worker, cfg, env); }, tickMs);
       timer.unref?.();
+      if (digestTickMs > 0) {
+        digestTimer = setInterval(() => { void runDigestTick(digest, router, cfg); }, digestTickMs);
+        digestTimer.unref?.();
+      }
       return {
         stop(): void {
           if (timer) {
             clearInterval(timer);
             timer = undefined;
+          }
+          if (digestTimer) {
+            clearInterval(digestTimer);
+            digestTimer = undefined;
           }
         },
       };
@@ -213,9 +246,88 @@ export function wireWorker(cfg: WireWorkerConfig, env: WireEnv = process.env): W
         clearInterval(timer);
         timer = undefined;
       }
+      if (digestTimer) {
+        clearInterval(digestTimer);
+        digestTimer = undefined;
+      }
       if (redis) await redis.quit().catch(() => undefined);
       await pool.end().catch(() => undefined);
     },
+  };
+}
+
+/**
+ * F.2.6: drain the digest queue and dispatch any due bundles via the
+ * NotificationRouter. Each bundle becomes a single multi-line dispatch
+ * to (recipient, channelKind). Never throws — failures are logged.
+ */
+async function runDigestTick(
+  digest: NotificationDigestService,
+  router: NotificationRouter,
+  cfg: WireWorkerConfig,
+): Promise<void> {
+  let bundles: readonly DigestBundle[];
+  try {
+    bundles = await digest.claimDueBundles();
+  } catch (err) {
+    (cfg.logger ?? defaultLogger).warn('digest tick claimDueBundles threw', {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return;
+  }
+  for (const bundle of bundles) {
+    try {
+      await router.route(bundleToRouteRequest(bundle));
+    } catch (err) {
+      (cfg.logger ?? defaultLogger).warn('digest bundle dispatch failed', {
+        err:             err instanceof Error ? err.message : String(err),
+        tenantId:        bundle.tenantId,
+        recipientUserId: bundle.recipientUserId,
+        channelKind:     bundle.channelKind,
+      });
+    }
+  }
+}
+
+function bundleToRouteRequest(bundle: DigestBundle): import('@oweibo/core-engine').NotificationRouter extends never ? never : Parameters<NotificationRouter['route']>[0] {
+  const count = bundle.rows.length;
+  // Use the first row's proposalId / fireEvent as the bundle's identity.
+  // A bundle aggregates rows for one (recipient, channel) pair, which in
+  // practice all share a fire-event when the lifecycle worker enqueues them.
+  const proposalId = bundle.rows[0]?.proposalId ?? `digest:${bundle.tenantId}:${bundle.recipientUserId}`;
+  const fireEvent: FireEvent = (bundle.rows[0]?.fireEvent ?? 'decision') as FireEvent;
+  const title = count === 1
+    ? bundle.rows[0]!.title
+    : `${count} notifications`;
+  const body = count === 1
+    ? (bundle.rows[0]!.body ?? '')
+    : bundle.rows.slice(0, 5).map((r) => `• ${r.title}`).join('\n')
+      + (count > 5 ? `\n…+${count - 5} more` : '');
+
+  const linkPath = bundle.rows[0]?.linkPath ?? undefined;
+  const policy: ApprovalSlaPolicy = {
+    tenantId: bundle.tenantId,
+    actionClass: '*' as ActionClass | '*',
+    initialNotifyAfterSeconds: 0,
+    escalateAfterSeconds: [],
+    hardExpireAfterSeconds: 3600,
+    approverResolution: 'role_based',
+    approverConfig: {},
+    notificationChannels: [{
+      channelKind: bundle.channelKind,
+      config: {},
+      fireOn: ['initial', 'escalation', 'expiry', 'decision'],
+    }],
+  };
+  return {
+    tenantId: bundle.tenantId,
+    proposalId,
+    fireEvent,
+    title,
+    body,
+    ...(linkPath ? { linkPath } : {}),
+    policy,
+    recipients: [{ userId: bundle.recipientUserId }],
   };
 }
 

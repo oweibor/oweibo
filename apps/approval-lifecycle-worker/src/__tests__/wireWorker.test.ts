@@ -179,3 +179,64 @@ describe('wireWorker — lifecycle', () => {
     }
   });
 });
+
+describe('wireWorker — F.2.6 digest tick', () => {
+  it('startTickLoop schedules both the SLA tick and the digest tick by default', () => {
+    jest.useFakeTimers();
+    try {
+      const { pool } = fakePool();
+      const w = wireWorker(
+        { databaseUrl: 'postgres://test', poolFactory: () => pool, tickIntervalMs: 1000 },
+        {},
+      );
+      const before = jest.getTimerCount();
+      const ticker = w.startTickLoop();
+      const after = jest.getTimerCount();
+      // Two new intervals scheduled (SLA + digest).
+      expect(after - before).toBeGreaterThanOrEqual(2);
+      ticker.stop();
+      expect(jest.getTimerCount()).toBe(before);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('skips the digest tick when digestTickIntervalMs=0', () => {
+    jest.useFakeTimers();
+    try {
+      const { pool } = fakePool();
+      const w = wireWorker(
+        { databaseUrl: 'postgres://test', poolFactory: () => pool, tickIntervalMs: 1000, digestTickIntervalMs: 0 },
+        {},
+      );
+      const before = jest.getTimerCount();
+      const ticker = w.startTickLoop();
+      const after = jest.getTimerCount();
+      // Only one new interval scheduled (SLA).
+      expect(after - before).toBe(1);
+      ticker.stop();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('shutdown clears the digest tick alongside the SLA tick', async () => {
+    jest.useFakeTimers();
+    try {
+      const { pool } = fakePool();
+      const w = wireWorker(
+        { databaseUrl: 'postgres://test', poolFactory: () => pool, tickIntervalMs: 1000 },
+        {},
+      );
+      const before = jest.getTimerCount();
+      w.startTickLoop();
+      expect(jest.getTimerCount()).toBeGreaterThan(before);
+      await w.shutdown();
+      // Pool.end is mocked async; jest fake timers should report the
+      // intervals cleared.
+      expect(jest.getTimerCount()).toBe(before);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});

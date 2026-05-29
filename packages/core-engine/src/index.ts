@@ -156,6 +156,7 @@ export { PgTenantDomainBindingLookup } from './domain/PgTenantDomainBindingLooku
 export { DomainCurrencyMonitor } from './domain/DomainCurrencyMonitor.js';
 export { DomainDepthMetrics } from './domain/DomainDepthMetrics.js';
 export { SmeFeedbackAggregator } from './domain/SmeFeedbackAggregator.js';
+export { SmeReviewService } from './domain/SmeReviewService.js';
 export {
   runWithAdvisoryLock,
   deriveLockKey,

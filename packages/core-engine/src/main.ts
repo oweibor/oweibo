@@ -82,6 +82,7 @@ import { TtvMetricsService }         from './observability/TtvMetricsService.js'
 import { DomainCurrencyMonitor }     from './domain/DomainCurrencyMonitor.js';
 import { DomainDepthMetrics }        from './domain/DomainDepthMetrics.js';
 import { SmeFeedbackAggregator }     from './domain/SmeFeedbackAggregator.js';
+import { SmeReviewService }          from './domain/SmeReviewService.js';
 import { runWithAdvisoryLock }       from './infrastructure/runWithAdvisoryLock.js';
 import {
   HmacSnapshotSigner,
@@ -336,8 +337,14 @@ async function main(): Promise<void> {
     const domainCurrencyMonitor    = new DomainCurrencyMonitor(pgPool);
     const domainDepthMetrics       = new DomainDepthMetrics(pgPool);
     const smeFeedbackAggregator    = new SmeFeedbackAggregator(pgPool);
+    // F.3.4: SmeReviewService handles the per-queue-item review lifecycle
+    // (enqueue → reviewers vote → aggregation via SmeFeedbackAggregator).
+    // Constructed here so the F.4 /domains/sme-review admin routes can
+    // take it via runtime composition.
+    const smeReviewService         = new SmeReviewService(pgPool);
     void domainDepthMetrics;        // wired into F.4 admin-web /domains/depth route
     void smeFeedbackAggregator;     // wired into F.4 admin-web /domains/sme-review route
+    void smeReviewService;          // wired into F.4 admin-web /domains/sme-review route
 
     // Daily DomainCurrency tick. node-cron is a CJS module; import via the
     // existing 'node-cron' dep without pulling type machinery into the

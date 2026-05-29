@@ -20,6 +20,7 @@ import { createLineageRouter } from './routes/lineage.routes.js';
 import { createTenantActionsRouter } from './routes/tenantActions.routes.js';
 import { createDomainsRouter } from './routes/domains.routes.js';
 import { createCalibrationRouter } from './routes/calibration.routes.js';
+import { createPoliciesRouter } from './routes/policies.routes.js';
 import { createAuthMiddleware } from './middleware/authenticate.js';
 import { openapiSpec } from './openapi.js';
 import type { SecretsManager } from '../secrets/SecretsManager.js';
@@ -121,6 +122,9 @@ export async function createServer(
     complianceEvaluations?: import('../domain/PgComplianceEvaluationReader.js').PgComplianceEvaluationReader;
     /** F.4.6: enables GET /api/v1/tenants/:tenantId/calibration. */
     calibrationService?: import('../infrastructure/CalibrationService.js').CalibrationService;
+    /** F.4.4: enables /api/v1/tenants/:tenantId/actions/policies/* routes. */
+    approvalSlaService?: import('../action/ApprovalSlaService.js').ApprovalSlaService;
+    rateLimitPolicyResolver?: import('../action/RateLimitPolicy.js').RateLimitPolicyResolver;
   },
   config: Partial<ServerConfig> = {},
 ): Promise<{ app: import('express').Application; port: number }> {
@@ -250,6 +254,22 @@ export async function createServer(
   if (deps.calibrationService) {
     v1.use('/tenants/:tenantId/calibration', createCalibrationRouter({
       calibration: deps.calibrationService,
+    }));
+  }
+
+  // F.4.4: per-tenant policy override surface. All four services are
+  // required because the router dispatches by URL `:domain` segment.
+  // Partial wiring would yield half-working routes that fail on demand;
+  // we mount only when every dependency is present.
+  if (
+    deps.approvalSlaService && deps.multiPartyApproval
+    && deps.rateLimitPolicyResolver && deps.quotaService
+  ) {
+    v1.use('/tenants/:tenantId/actions/policies', createPoliciesRouter({
+      sla:        deps.approvalSlaService,
+      multiparty: deps.multiPartyApproval,
+      ratelimit:  deps.rateLimitPolicyResolver,
+      quota:      deps.quotaService,
     }));
   }
 

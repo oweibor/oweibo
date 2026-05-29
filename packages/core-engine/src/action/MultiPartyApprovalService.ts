@@ -39,6 +39,7 @@ import type {
   QuorumStatus,
   TimeWindowedGrant,
 } from '@oweibo/core-contracts';
+import { PolicyBelowFloorError, type PolicyFloorViolation } from './PolicyFloor.js';
 
 // ── Default policy matrix ────────────────────────────────────────────────
 //
@@ -189,6 +190,93 @@ export class MultiPartyApprovalService implements IMultiPartyApprovalService {
         maxGrantActionCount: row.max_grant_action_count,
         allowDelegation: row.allow_delegation,
       };
+    });
+  }
+
+  // ── F.4.4: tenant policy override CRUD ─────────────────────────────────
+
+  async listPolicies(tenantId: string): Promise<readonly MultiPartyApprovalPolicy[]> {
+    return this.tx(tenantId, async (client) => {
+      const r = await client.query<{
+        action_class: string;
+        quorum: number;
+        dissent_vetoes: boolean;
+        allow_grants: boolean;
+        max_grant_duration_seconds: number;
+        max_grant_action_count: number;
+        allow_delegation: boolean;
+      }>(
+        `SELECT action_class, quorum, dissent_vetoes, allow_grants,
+                max_grant_duration_seconds, max_grant_action_count, allow_delegation
+           FROM oweibo.multi_party_approval_policies
+          WHERE tenant_id = $1::uuid
+          ORDER BY action_class`,
+        [tenantId],
+      );
+      return r.rows.map((row) => ({
+        tenantId,
+        actionClass: row.action_class as ActionClass | '*',
+        quorum: row.quorum,
+        dissentVetoes: row.dissent_vetoes,
+        allowGrants: row.allow_grants,
+        maxGrantDurationSeconds: row.max_grant_duration_seconds,
+        maxGrantActionCount: row.max_grant_action_count,
+        allowDelegation: row.allow_delegation,
+      }));
+    });
+  }
+
+  async upsertPolicy(
+    tenantId: string,
+    actionClass: string,
+    policy: Omit<MultiPartyApprovalPolicy, 'tenantId' | 'actionClass'>,
+  ): Promise<MultiPartyApprovalPolicy> {
+    const violations = checkMultiPartyPolicyAgainstFloor(actionClass, policy);
+    if (violations.length > 0) {
+      throw new PolicyBelowFloorError('multiparty', actionClass, violations);
+    }
+    return this.tx(tenantId, async (client) => {
+      await client.query(
+        `INSERT INTO oweibo.multi_party_approval_policies
+           (tenant_id, action_class, quorum, dissent_vetoes, allow_grants,
+            max_grant_duration_seconds, max_grant_action_count,
+            allow_delegation, updated_at)
+         VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, NOW())
+         ON CONFLICT (tenant_id, action_class) DO UPDATE
+           SET quorum                     = EXCLUDED.quorum,
+               dissent_vetoes             = EXCLUDED.dissent_vetoes,
+               allow_grants               = EXCLUDED.allow_grants,
+               max_grant_duration_seconds = EXCLUDED.max_grant_duration_seconds,
+               max_grant_action_count     = EXCLUDED.max_grant_action_count,
+               allow_delegation           = EXCLUDED.allow_delegation,
+               updated_at                 = NOW()`,
+        [
+          tenantId,
+          actionClass,
+          policy.quorum,
+          policy.dissentVetoes,
+          policy.allowGrants,
+          policy.maxGrantDurationSeconds,
+          policy.maxGrantActionCount,
+          policy.allowDelegation,
+        ],
+      );
+      return {
+        tenantId,
+        actionClass: actionClass as ActionClass | '*',
+        ...policy,
+      };
+    });
+  }
+
+  async deletePolicy(tenantId: string, actionClass: string): Promise<boolean> {
+    return this.tx(tenantId, async (client) => {
+      const r = await client.query(
+        `DELETE FROM oweibo.multi_party_approval_policies
+           WHERE tenant_id = $1::uuid AND action_class = $2`,
+        [tenantId, actionClass],
+      );
+      return (r.rowCount ?? 0) > 0;
     });
   }
 
@@ -664,6 +752,58 @@ export class MultiPartyApprovalService implements IMultiPartyApprovalService {
       client.release();
     }
   }
+}
+
+// ── F.4.4: platform-floor matrix ────────────────────────────────────────
+
+/**
+ * Per-action-class minimums. The plan calls out `irreversible.*` and
+ * `financial.payment` as the floor-class set — those are the actions
+ * where a single approver is unsafe. Tenants may not weaken below
+ * these via the API; documented exception path is support.
+ *
+ * `quorumMin = 2` enforces multi-party review for irreversible /
+ * payment actions. `maxGrantDurationSecondsMax` caps how long a
+ * single grant can hold open a fast-path: 86400s = 24h prevents a
+ * tenant from minting a 30-day fast-path that masks the multi-party
+ * intent.
+ */
+export const MULTI_PARTY_PLATFORM_MIN_MATRIX = {
+  /** Classes whose floors apply. Anything outside this set is unfloored. */
+  flooredClassPrefixes: ['irreversible.', 'financial.payment'] as const,
+  /** Minimum quorum for floored classes. */
+  quorumMin: 2,
+  /** Maximum allowed grant duration for floored classes (seconds). */
+  maxGrantDurationSecondsMax: 24 * 60 * 60,
+} as const;
+
+export function multiPartyFloorsApplyTo(actionClass: string): boolean {
+  return MULTI_PARTY_PLATFORM_MIN_MATRIX.flooredClassPrefixes.some((p) => actionClass.startsWith(p));
+}
+
+export function checkMultiPartyPolicyAgainstFloor(
+  actionClass: string,
+  policy: Pick<MultiPartyApprovalPolicy, 'quorum' | 'maxGrantDurationSeconds'>,
+): PolicyFloorViolation[] {
+  if (!multiPartyFloorsApplyTo(actionClass)) return [];
+  const violations: PolicyFloorViolation[] = [];
+  if (policy.quorum < MULTI_PARTY_PLATFORM_MIN_MATRIX.quorumMin) {
+    violations.push({
+      field: 'quorum',
+      message: `${actionClass} requires quorum >= ${MULTI_PARTY_PLATFORM_MIN_MATRIX.quorumMin}`,
+      floor: MULTI_PARTY_PLATFORM_MIN_MATRIX.quorumMin,
+      supplied: policy.quorum,
+    });
+  }
+  if (policy.maxGrantDurationSeconds > MULTI_PARTY_PLATFORM_MIN_MATRIX.maxGrantDurationSecondsMax) {
+    violations.push({
+      field: 'maxGrantDurationSeconds',
+      message: `${actionClass} grants cannot exceed ${MULTI_PARTY_PLATFORM_MIN_MATRIX.maxGrantDurationSecondsMax}s`,
+      floor: MULTI_PARTY_PLATFORM_MIN_MATRIX.maxGrantDurationSecondsMax,
+      supplied: policy.maxGrantDurationSeconds,
+    });
+  }
+  return violations;
 }
 
 // ── Pure helpers ─────────────────────────────────────────────────────────

@@ -19,6 +19,7 @@ import type {
   ApproverResolutionKind,
   NotificationChannelRef,
 } from '@oweibo/core-contracts';
+import { PolicyBelowFloorError, type PolicyFloorViolation } from './PolicyFloor.js';
 
 // ── Default policy matrix ─────────────────────────────────────────────────
 
@@ -240,6 +241,106 @@ export class ApprovalSlaService {
     });
   }
 
+  // ── F.4.4: tenant policy override CRUD ─────────────────────────────────
+
+  /** List every tenant override row. Defaults are NOT included. */
+  async listPolicies(tenantId: string): Promise<readonly ApprovalSlaPolicy[]> {
+    return this.tx(tenantId, async (client) => {
+      const r = await client.query<{
+        action_class: string;
+        initial_notify_after_seconds: number;
+        escalate_after_seconds: number[];
+        hard_expire_after_seconds: number;
+        approver_resolution: string;
+        approver_config: unknown;
+        notification_channels: unknown;
+        quiet_hours: unknown;
+      }>(
+        `SELECT action_class, initial_notify_after_seconds, escalate_after_seconds,
+                hard_expire_after_seconds, approver_resolution, approver_config,
+                notification_channels, quiet_hours
+           FROM oweibo.approval_sla_policies
+          WHERE tenant_id = $1::uuid
+          ORDER BY action_class`,
+        [tenantId],
+      );
+      return r.rows.map((row) => ({
+        tenantId,
+        actionClass: row.action_class as ActionClass | '*',
+        initialNotifyAfterSeconds: row.initial_notify_after_seconds,
+        escalateAfterSeconds: row.escalate_after_seconds,
+        hardExpireAfterSeconds: row.hard_expire_after_seconds,
+        approverResolution: row.approver_resolution as ApproverResolutionKind,
+        approverConfig: row.approver_config,
+        notificationChannels: (row.notification_channels as readonly NotificationChannelRef[]) ?? [],
+        ...(row.quiet_hours ? { quietHours: row.quiet_hours as ApprovalSlaPolicy['quietHours'] } : {}),
+      }));
+    });
+  }
+
+  /**
+   * Upsert a tenant override row. Validates against PLATFORM_MIN_MATRIX
+   * first — throws PolicyBelowFloorError if the candidate weakens any
+   * floored field below the platform floor.
+   */
+  async upsertPolicy(
+    tenantId: string,
+    actionClass: string,
+    policy: Omit<ApprovalSlaPolicy, 'tenantId' | 'actionClass'>,
+    opts: { createdBy?: string } = {},
+  ): Promise<ApprovalSlaPolicy> {
+    const violations = checkSlaPolicyAgainstFloor(policy);
+    if (violations.length > 0) {
+      throw new PolicyBelowFloorError('sla', actionClass, violations);
+    }
+    return this.tx(tenantId, async (client) => {
+      await client.query(
+        `INSERT INTO oweibo.approval_sla_policies
+           (tenant_id, action_class, initial_notify_after_seconds, escalate_after_seconds,
+            hard_expire_after_seconds, approver_resolution, approver_config,
+            notification_channels, quiet_hours, created_by, created_at, updated_at)
+         VALUES ($1::uuid, $2, $3, $4::int[], $5, $6, $7::jsonb, $8::jsonb, $9::jsonb, $10, NOW(), NOW())
+         ON CONFLICT (tenant_id, action_class) DO UPDATE
+           SET initial_notify_after_seconds = EXCLUDED.initial_notify_after_seconds,
+               escalate_after_seconds       = EXCLUDED.escalate_after_seconds,
+               hard_expire_after_seconds    = EXCLUDED.hard_expire_after_seconds,
+               approver_resolution          = EXCLUDED.approver_resolution,
+               approver_config              = EXCLUDED.approver_config,
+               notification_channels        = EXCLUDED.notification_channels,
+               quiet_hours                  = EXCLUDED.quiet_hours,
+               updated_at                   = NOW()`,
+        [
+          tenantId,
+          actionClass,
+          policy.initialNotifyAfterSeconds,
+          [...policy.escalateAfterSeconds],
+          policy.hardExpireAfterSeconds,
+          policy.approverResolution,
+          JSON.stringify(policy.approverConfig ?? {}),
+          JSON.stringify(policy.notificationChannels ?? []),
+          JSON.stringify(policy.quietHours ?? null),
+          opts.createdBy ?? null,
+        ],
+      );
+      return {
+        tenantId,
+        actionClass: actionClass as ActionClass | '*',
+        ...policy,
+      };
+    });
+  }
+
+  async deletePolicy(tenantId: string, actionClass: string): Promise<boolean> {
+    return this.tx(tenantId, async (client) => {
+      const r = await client.query(
+        `DELETE FROM oweibo.approval_sla_policies
+           WHERE tenant_id = $1::uuid AND action_class = $2`,
+        [tenantId, actionClass],
+      );
+      return (r.rowCount ?? 0) > 0;
+    });
+  }
+
   // ── Internals ───────────────────────────────────────────────────────────
 
   private async tx<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -259,6 +360,52 @@ export class ApprovalSlaService {
       client.release();
     }
   }
+}
+
+// ── F.4.4: platform-floor matrix ────────────────────────────────────────
+
+/**
+ * Minimum allowed values for any tenant SLA override. Floors are
+ * platform-owned — tenants cannot weaken below these via the API. A
+ * support escalation is the documented path for an exception.
+ *
+ * `hardExpireAfterSeconds` floor protects against tenants setting an
+ * SLA so loose that a `require_approval` proposal effectively never
+ * expires (operator forgets, decision rots in the queue indefinitely).
+ *
+ * `initialNotifyAfterSeconds` ceiling (i.e. it must be SMALL enough,
+ * not large enough) protects against tenants setting a quiet window
+ * so long that an irreversible action sits unsignalled for hours
+ * before the first ping fires.
+ */
+export const SLA_PLATFORM_MIN_MATRIX = {
+  /** Minimum hard-expire deadline: at least 1 hour. */
+  hardExpireAfterSecondsMin: 3600,
+  /** Maximum initial-notify silence: at most 60 minutes. */
+  initialNotifyAfterSecondsMax: 60 * 60,
+} as const;
+
+export function checkSlaPolicyAgainstFloor(
+  policy: Pick<ApprovalSlaPolicy, 'hardExpireAfterSeconds' | 'initialNotifyAfterSeconds'>,
+): PolicyFloorViolation[] {
+  const violations: PolicyFloorViolation[] = [];
+  if (policy.hardExpireAfterSeconds < SLA_PLATFORM_MIN_MATRIX.hardExpireAfterSecondsMin) {
+    violations.push({
+      field: 'hardExpireAfterSeconds',
+      message: 'hardExpireAfterSeconds is below the platform floor',
+      floor: SLA_PLATFORM_MIN_MATRIX.hardExpireAfterSecondsMin,
+      supplied: policy.hardExpireAfterSeconds,
+    });
+  }
+  if (policy.initialNotifyAfterSeconds > SLA_PLATFORM_MIN_MATRIX.initialNotifyAfterSecondsMax) {
+    violations.push({
+      field: 'initialNotifyAfterSeconds',
+      message: 'initialNotifyAfterSeconds exceeds the platform-allowed silence window',
+      floor: SLA_PLATFORM_MIN_MATRIX.initialNotifyAfterSecondsMax,
+      supplied: policy.initialNotifyAfterSeconds,
+    });
+  }
+  return violations;
 }
 
 function defaultEnabled(): boolean {

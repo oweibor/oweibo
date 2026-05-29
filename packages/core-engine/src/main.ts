@@ -50,6 +50,7 @@ import { MultiPartyApprovalService } from './action/MultiPartyApprovalService.js
 import { QuotaService }             from './action/QuotaService.js';
 import { BudgetEstimator }          from './action/BudgetEstimator.js';
 import { RateLimiter }              from './action/RateLimiter.js';
+import { RateLimitPolicyResolver }  from './action/RateLimitPolicy.js';
 import { InMemoryTokenBucketStore } from './action/TokenBucketStore.js';
 import { ContentInspectorRegistry } from './action/ContentInspectorRegistry.js';
 import { GenericPiiInspector }      from './action/inspectors/GenericPiiInspector.js';
@@ -254,6 +255,10 @@ async function main(): Promise<void> {
     }
     const tokenBucket = new InMemoryTokenBucketStore();
     const rateLimiter = new RateLimiter(pgPool, tokenBucket);
+    // F.4.4: RateLimitPolicyResolver backs both the gate-side hot path
+    // (via RateLimiter, which can resolve internally) and the admin
+    // /actions/policies/ratelimit surface introduced here.
+    const rateLimitPolicyResolver = new RateLimitPolicyResolver(pgPool);
     const contentInspectors = new ContentInspectorRegistry();
     contentInspectors.register(new GenericPiiInspector());
     contentInspectors.register(new EmailContentInspector());
@@ -634,6 +639,12 @@ async function main(): Promise<void> {
     complianceEvaluations,
     // F.4.6: calibration readiness snapshot — admin badge + onboarding.
     calibrationService,
+    // F.4.4: tenant policy override surface. SLA, multiparty, ratelimit,
+    // and quota services flow in. multiPartyApproval + quotaService are
+    // already threaded above for the F.4.0 grants/quotas surface; the
+    // SLA and rate-limit-policy resolvers are new here.
+    approvalSlaService: slaService,
+    rateLimitPolicyResolver,
   });
 
   // ── Channel Gateway (optional) ────────────────────────────────────────────

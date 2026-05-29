@@ -49,6 +49,7 @@ import type {
   QuotaPreflightResult,
   QuotaWindow,
 } from '@oweibo/core-contracts';
+import { PolicyBelowFloorError, type PolicyFloorViolation } from './PolicyFloor.js';
 
 interface PolicyRow {
   tenant_id: string;
@@ -272,6 +273,87 @@ export class QuotaService implements IQuotaService {
     });
   }
 
+  // ── F.4.4: tenant policy override CRUD ─────────────────────────────────
+
+  /**
+   * List every tenant override row. Quotas are keyed by (kind, scope,
+   * window) so a tenant may have multiple rows per actionClass scope.
+   */
+  async listPolicies(tenantId: string): Promise<readonly QuotaPolicy[]> {
+    return this.tx(tenantId, async (client) => {
+      const r = await client.query<PolicyRow>(
+        `SELECT tenant_id, quota_kind, scope, window, limit_value,
+                cold_start_limit, cold_start_duration_days, enforcement_mode
+           FROM oweibo.quota_policies
+          WHERE tenant_id = $1::uuid
+          ORDER BY scope, window, quota_kind`,
+        [tenantId],
+      );
+      return r.rows.map<QuotaPolicy>((row) => ({
+        tenantId: row.tenant_id,
+        quotaKind: row.quota_kind as QuotaKind,
+        scope: row.scope as ActionClass | '*',
+        window: row.window as QuotaWindow,
+        limitValue: Number(row.limit_value),
+        ...(row.cold_start_limit !== null ? { coldStartLimit: Number(row.cold_start_limit) } : {}),
+        coldStartDurationDays: row.cold_start_duration_days,
+        enforcementMode: row.enforcement_mode as QuotaEnforcementMode,
+      }));
+    });
+  }
+
+  async upsertPolicy(
+    tenantId: string,
+    policy: Omit<QuotaPolicy, 'tenantId'>,
+  ): Promise<QuotaPolicy> {
+    const violations = checkQuotaPolicyAgainstFloor(policy);
+    if (violations.length > 0) {
+      throw new PolicyBelowFloorError('quota', policy.scope, violations);
+    }
+    return this.tx(tenantId, async (client) => {
+      await client.query(
+        `INSERT INTO oweibo.quota_policies
+           (tenant_id, quota_kind, scope, window, limit_value,
+            cold_start_limit, cold_start_duration_days, enforcement_mode, updated_at)
+         VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, NOW())
+         ON CONFLICT (tenant_id, quota_kind, scope, window) DO UPDATE
+           SET limit_value              = EXCLUDED.limit_value,
+               cold_start_limit         = EXCLUDED.cold_start_limit,
+               cold_start_duration_days = EXCLUDED.cold_start_duration_days,
+               enforcement_mode         = EXCLUDED.enforcement_mode,
+               updated_at               = NOW()`,
+        [
+          tenantId,
+          policy.quotaKind,
+          policy.scope,
+          policy.window,
+          policy.limitValue,
+          policy.coldStartLimit ?? null,
+          policy.coldStartDurationDays,
+          policy.enforcementMode,
+        ],
+      );
+      return { tenantId, ...policy };
+    });
+  }
+
+  async deletePolicy(
+    tenantId: string,
+    key: { quotaKind: QuotaKind; scope: string; window: QuotaWindow },
+  ): Promise<boolean> {
+    return this.tx(tenantId, async (client) => {
+      const r = await client.query(
+        `DELETE FROM oweibo.quota_policies
+           WHERE tenant_id = $1::uuid
+             AND quota_kind = $2
+             AND scope = $3
+             AND window = $4`,
+        [tenantId, key.quotaKind, key.scope, key.window],
+      );
+      return (r.rowCount ?? 0) > 0;
+    });
+  }
+
   // ── Internals ───────────────────────────────────────────────────────────
 
   private async loadMatchingPolicies(tenantId: string, actionClass: ActionClass): Promise<QuotaPolicy[]> {
@@ -354,6 +436,62 @@ export class QuotaService implements IQuotaService {
 }
 
 // ── Pure helpers ─────────────────────────────────────────────────────────
+
+// ── F.4.4: platform-floor matrix ────────────────────────────────────────
+
+/**
+ * Quotas are keyed by (kind, scope, window). The platform floors are
+ * stated per-quota-row:
+ *
+ *   - `limitValue >= 1`           — a quota of zero would silently
+ *                                   block every action of that
+ *                                   class/window combination, which
+ *                                   is indistinguishable from a bug.
+ *   - `coldStartLimit >= 1`       — same reasoning when cold-start
+ *                                   is configured. NULL coldStartLimit
+ *                                   is allowed (means "no separate
+ *                                   cold-start cap").
+ *   - `coldStartDurationDays >= 0` — already enforced by the DB
+ *                                   CHECK, mirrored here for early
+ *                                   rejection.
+ */
+export const QUOTA_PLATFORM_MIN_MATRIX = {
+  limitValueMin: 1,
+  coldStartLimitMin: 1,
+  coldStartDurationDaysMin: 0,
+} as const;
+
+export function checkQuotaPolicyAgainstFloor(
+  policy: Pick<QuotaPolicy, 'limitValue' | 'coldStartLimit' | 'coldStartDurationDays'>,
+): PolicyFloorViolation[] {
+  const violations: PolicyFloorViolation[] = [];
+  if (policy.limitValue < QUOTA_PLATFORM_MIN_MATRIX.limitValueMin) {
+    violations.push({
+      field: 'limitValue',
+      message: `limitValue below the platform floor (${QUOTA_PLATFORM_MIN_MATRIX.limitValueMin})`,
+      floor: QUOTA_PLATFORM_MIN_MATRIX.limitValueMin,
+      supplied: policy.limitValue,
+    });
+  }
+  if (policy.coldStartLimit !== undefined && policy.coldStartLimit !== null
+    && policy.coldStartLimit < QUOTA_PLATFORM_MIN_MATRIX.coldStartLimitMin) {
+    violations.push({
+      field: 'coldStartLimit',
+      message: `coldStartLimit below the platform floor (${QUOTA_PLATFORM_MIN_MATRIX.coldStartLimitMin})`,
+      floor: QUOTA_PLATFORM_MIN_MATRIX.coldStartLimitMin,
+      supplied: policy.coldStartLimit,
+    });
+  }
+  if (policy.coldStartDurationDays < QUOTA_PLATFORM_MIN_MATRIX.coldStartDurationDaysMin) {
+    violations.push({
+      field: 'coldStartDurationDays',
+      message: 'coldStartDurationDays cannot be negative',
+      floor: QUOTA_PLATFORM_MIN_MATRIX.coldStartDurationDaysMin,
+      supplied: policy.coldStartDurationDays,
+    });
+  }
+  return violations;
+}
 
 function defaultEnabled(): boolean {
   return process.env.ACTION_QUOTAS_ENABLED === 'true';

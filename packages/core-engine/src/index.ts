@@ -172,6 +172,30 @@ export type {
   ComplianceEvaluationPhase,
 } from './domain/PgComplianceEvaluationReader.js';
 
+// ── F.4.4 platform floors + tenant policy CRUD ───────────────────────────────
+export {
+  PolicyBelowFloorError,
+} from './action/PolicyFloor.js';
+export type { PolicyFloorViolation } from './action/PolicyFloor.js';
+export {
+  SLA_PLATFORM_MIN_MATRIX,
+  checkSlaPolicyAgainstFloor,
+} from './action/ApprovalSlaService.js';
+export {
+  MULTI_PARTY_PLATFORM_MIN_MATRIX,
+  multiPartyFloorsApplyTo,
+  checkMultiPartyPolicyAgainstFloor,
+} from './action/MultiPartyApprovalService.js';
+export {
+  RATE_LIMIT_PLATFORM_MIN_MATRIX,
+  checkRateLimitPolicyAgainstFloor,
+  RateLimitPolicyResolver,
+} from './action/RateLimitPolicy.js';
+export {
+  QUOTA_PLATFORM_MIN_MATRIX,
+  checkQuotaPolicyAgainstFloor,
+} from './action/QuotaService.js';
+
 // ── Periodic domain services (F.3.3) ──────────────────────────────────────────
 export { DomainCurrencyMonitor } from './domain/DomainCurrencyMonitor.js';
 export { DomainDepthMetrics } from './domain/DomainDepthMetrics.js';

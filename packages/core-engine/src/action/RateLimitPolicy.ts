@@ -18,6 +18,7 @@ import type {
   RateLimitPolicy,
   RateLimitEnforcementMode,
 } from '@oweibo/core-contracts';
+import { PolicyBelowFloorError, type PolicyFloorViolation } from './PolicyFloor.js';
 
 // ── Default matrix ────────────────────────────────────────────────────────
 
@@ -146,17 +147,7 @@ export class RateLimitPolicyResolver {
       await client.query('COMMIT');
       const row = r.rows[0];
       if (!row) return platformDefaultRateLimit(tenantId, actionClass);
-      return {
-        tenantId,
-        actionClass: row.action_class as ActionClass | '*',
-        perMinute: row.per_minute,
-        perHour: row.per_hour,
-        perDay: row.per_day,
-        burstAllowance: row.burst_allowance,
-        coldStartMultiplier: Number(row.cold_start_multiplier),
-        coldStartDurationDays: row.cold_start_duration_days,
-        enforcementMode: row.enforcement_mode as RateLimitEnforcementMode,
-      };
+      return rowToRateLimitPolicy(tenantId, row);
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
       throw err;
@@ -164,6 +155,166 @@ export class RateLimitPolicyResolver {
       client.release();
     }
   }
+
+  // ── F.4.4: tenant policy override CRUD ─────────────────────────────────
+
+  async listPolicies(tenantId: string): Promise<readonly RateLimitPolicy[]> {
+    return this.tx(tenantId, async (client) => {
+      const r = await client.query<{
+        action_class: string;
+        per_minute: number;
+        per_hour: number;
+        per_day: number;
+        burst_allowance: number;
+        cold_start_multiplier: string;
+        cold_start_duration_days: number;
+        enforcement_mode: string;
+      }>(
+        `SELECT action_class, per_minute, per_hour, per_day, burst_allowance,
+                cold_start_multiplier, cold_start_duration_days, enforcement_mode
+           FROM oweibo.rate_limit_policies
+          WHERE tenant_id = $1::uuid
+          ORDER BY action_class`,
+        [tenantId],
+      );
+      return r.rows.map((row) => rowToRateLimitPolicy(tenantId, row));
+    });
+  }
+
+  async upsertPolicy(
+    tenantId: string,
+    actionClass: string,
+    policy: Omit<RateLimitPolicy, 'tenantId' | 'actionClass'>,
+  ): Promise<RateLimitPolicy> {
+    const violations = checkRateLimitPolicyAgainstFloor(policy);
+    if (violations.length > 0) {
+      throw new PolicyBelowFloorError('ratelimit', actionClass, violations);
+    }
+    return this.tx(tenantId, async (client) => {
+      await client.query(
+        `INSERT INTO oweibo.rate_limit_policies
+           (tenant_id, action_class, per_minute, per_hour, per_day,
+            burst_allowance, cold_start_multiplier, cold_start_duration_days,
+            enforcement_mode, updated_at)
+         VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+         ON CONFLICT (tenant_id, action_class) DO UPDATE
+           SET per_minute               = EXCLUDED.per_minute,
+               per_hour                 = EXCLUDED.per_hour,
+               per_day                  = EXCLUDED.per_day,
+               burst_allowance          = EXCLUDED.burst_allowance,
+               cold_start_multiplier    = EXCLUDED.cold_start_multiplier,
+               cold_start_duration_days = EXCLUDED.cold_start_duration_days,
+               enforcement_mode         = EXCLUDED.enforcement_mode,
+               updated_at               = NOW()`,
+        [
+          tenantId,
+          actionClass,
+          policy.perMinute,
+          policy.perHour,
+          policy.perDay,
+          policy.burstAllowance,
+          policy.coldStartMultiplier,
+          policy.coldStartDurationDays,
+          policy.enforcementMode,
+        ],
+      );
+      return {
+        tenantId,
+        actionClass: actionClass as ActionClass | '*',
+        ...policy,
+      };
+    });
+  }
+
+  async deletePolicy(tenantId: string, actionClass: string): Promise<boolean> {
+    return this.tx(tenantId, async (client) => {
+      const r = await client.query(
+        `DELETE FROM oweibo.rate_limit_policies
+           WHERE tenant_id = $1::uuid AND action_class = $2`,
+        [tenantId, actionClass],
+      );
+      return (r.rowCount ?? 0) > 0;
+    });
+  }
+
+  private async tx<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      if (/^[0-9a-f-]{36}$/i.test(tenantId)) {
+        await client.query(`SET LOCAL app.tenant_id = '${tenantId}'`);
+      }
+      const out = await fn(client);
+      await client.query('COMMIT');
+      return out;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+}
+
+function rowToRateLimitPolicy(tenantId: string, row: {
+  action_class: string;
+  per_minute: number;
+  per_hour: number;
+  per_day: number;
+  burst_allowance: number;
+  cold_start_multiplier: string;
+  cold_start_duration_days: number;
+  enforcement_mode: string;
+}): RateLimitPolicy {
+  return {
+    tenantId,
+    actionClass: row.action_class as ActionClass | '*',
+    perMinute: row.per_minute,
+    perHour: row.per_hour,
+    perDay: row.per_day,
+    burstAllowance: row.burst_allowance,
+    coldStartMultiplier: Number(row.cold_start_multiplier),
+    coldStartDurationDays: row.cold_start_duration_days,
+    enforcementMode: row.enforcement_mode as RateLimitEnforcementMode,
+  };
+}
+
+// ── F.4.4: platform-floor matrix ────────────────────────────────────────
+
+/**
+ * Floors for tenant rate-limit overrides. `perMinute >= 1` prevents
+ * a tenant from setting a per-minute cap of zero (which would silently
+ * block every call). `enforcementMode` must remain in {'soft','hard'}
+ * — values outside the set are already rejected by the DB CHECK
+ * constraint, but the platform floor surfaces the error before the
+ * DB round-trip.
+ */
+export const RATE_LIMIT_PLATFORM_MIN_MATRIX = {
+  perMinuteMin: 1,
+  allowedEnforcementModes: ['soft', 'hard'] as const,
+} as const;
+
+export function checkRateLimitPolicyAgainstFloor(
+  policy: Pick<RateLimitPolicy, 'perMinute' | 'enforcementMode'>,
+): PolicyFloorViolation[] {
+  const violations: PolicyFloorViolation[] = [];
+  if (policy.perMinute < RATE_LIMIT_PLATFORM_MIN_MATRIX.perMinuteMin) {
+    violations.push({
+      field: 'perMinute',
+      message: `perMinute below the platform floor (${RATE_LIMIT_PLATFORM_MIN_MATRIX.perMinuteMin})`,
+      floor: RATE_LIMIT_PLATFORM_MIN_MATRIX.perMinuteMin,
+      supplied: policy.perMinute,
+    });
+  }
+  if (!RATE_LIMIT_PLATFORM_MIN_MATRIX.allowedEnforcementModes.includes(policy.enforcementMode as 'soft' | 'hard')) {
+    violations.push({
+      field: 'enforcementMode',
+      message: `enforcementMode must be one of ${RATE_LIMIT_PLATFORM_MIN_MATRIX.allowedEnforcementModes.join(', ')}`,
+      floor: RATE_LIMIT_PLATFORM_MIN_MATRIX.allowedEnforcementModes,
+      supplied: policy.enforcementMode,
+    });
+  }
+  return violations;
 }
 
 export type { PoolClient };

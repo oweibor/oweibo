@@ -71,6 +71,9 @@ import { SlackRollbackAdapter }      from './action/rollback-adapters/SlackRollb
 import { DeployRollbackAdapter }     from './action/rollback-adapters/DeployRollbackAdapter.js';
 import { GenericWebhookRollbackAdapter } from './action/rollback-adapters/GenericWebhookRollbackAdapter.js';
 import { PostExecutionVerifierService, InMemoryVerifierRegistry } from './action/PostExecutionVerifierService.js';
+import { DeployHealthCheckVerifier } from './action/verifiers/DeployHealthCheckVerifier.js';
+import { EmailDeliveredVerifier }    from './action/verifiers/EmailDeliveredVerifier.js';
+import { PostgresRowCountVerifier }  from './action/verifiers/PostgresRowCountVerifier.js';
 import { PromptRegistry }          from '@oweibo/prompt-registry';
 import { PromptAssembler }         from '@oweibo/prompt-registry';
 import { createServer }            from './api/server.js';
@@ -281,15 +284,36 @@ async function main(): Promise<void> {
     void forensicBuilder;
     void hitlHandoff;
 
-    // ── F.2.4 stub: PostExecutionVerifierService ──────────────────────────
+    // ── F.2.4: PostExecutionVerifierService + 3 production verifiers ──────
     //
-    // Empty registry today (real verifiers — DeployHealthCheck,
-    // EmailDelivered, PostgresRowCount — land in F.2.4). Construction
-    // here ensures the supersedeForProposal hook is available for the
-    // rollback orchestrator below and the deferredRunner seam is ready
-    // when the lifecycle worker calls cfg.deferredRunner.runDueDeferred().
+    // Registry is populated with the three verifier impls. Each verifier
+    // takes per-action config via deferred_verifications.verifier_config,
+    // so adding a verifier here doesn't fire it for every action — only
+    // for actions whose adapter populated the matching config.
+    //
+    // autoHitlHandoff routes severity-3 outcomes on AUTO_HITL_TRIGGER_CLASSES
+    // (financial.*, irreversible.*, deploy.prod*) to hitlHandoff.prepare.
+    // The hook is undefined when the forensic pipeline is dormant
+    // (storage / signer not wired) — the verifier service no-ops in that case.
     const verifierRegistry = new InMemoryVerifierRegistry();
-    const postExecVerifier = new PostExecutionVerifierService(pgPool, verifierRegistry);
+    verifierRegistry.register(new DeployHealthCheckVerifier());
+    verifierRegistry.register(new EmailDeliveredVerifier());
+    verifierRegistry.register(new PostgresRowCountVerifier(pgPool));
+    const postExecVerifier = new PostExecutionVerifierService(pgPool, verifierRegistry, {
+      ...(hitlHandoff ? {
+        autoHitlHandoff: async (args) => {
+          const planId = args.proposalId; // single-action proposals: planId == proposalId fallback
+          await hitlHandoff!.prepare({
+            tenantId: args.tenantId,
+            planId,
+            triggerKind: 'auto_drift',
+            triggeredBy: 'post_execution_verifier',
+            ...(args.reason ? { summary: args.reason } : {}),
+          });
+          return { ok: true };
+        },
+      } : {}),
+    });
     void postExecVerifier;  // wired into the lifecycle worker via runtime composition
 
     // ── F.2.2: rollback orchestrator + full adapter registry ──────────────

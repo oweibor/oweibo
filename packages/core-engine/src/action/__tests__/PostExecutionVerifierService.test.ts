@@ -205,6 +205,133 @@ describe('PostExecutionVerifierService.runImmediate', () => {
       ctx: makeCtx('deploy.prod'), proposalId: PROPOSAL, adapterOutcome: null,
     })).resolves.toBeDefined();
   });
+
+  // ── F.2.4: autoHitlHandoff hook ─────────────────────────────────────────
+
+  it('F.2.4: sev 3 on a trigger-class action fires autoHitlHandoff', async () => {
+    const { pool } = makePool([]);
+    const reg = new InMemoryVerifierRegistry();
+    reg.register(makeVerifier({
+      name: 'drift',
+      immediate: async (): Promise<VerificationOutcome> => ({ severity: 3, expected: 'A', observed: 'B' }),
+    }));
+    const autoHitlHandoff = jest.fn().mockResolvedValue({ ok: true });
+    const svc = new PostExecutionVerifierService(pool, reg, {
+      isEnabled: () => true,
+      autoHitlHandoff,
+      log: () => undefined,
+    });
+    await svc.runImmediate({
+      ctx: makeCtx('deploy.prod'), proposalId: PROPOSAL, adapterOutcome: null,
+    });
+    expect(autoHitlHandoff).toHaveBeenCalledTimes(1);
+    expect(autoHitlHandoff).toHaveBeenCalledWith(expect.objectContaining({
+      tenantId: TENANT,
+      proposalId: PROPOSAL,
+      actionClass: 'deploy.prod',
+      triggeredBy: 'auto_drift_detection',
+    }));
+  });
+
+  it('F.2.4: sev 3 on a non-trigger class does NOT fire autoHitlHandoff', async () => {
+    const { pool } = makePool([]);
+    const reg = new InMemoryVerifierRegistry();
+    reg.register(makeVerifier({
+      name: 'drift',
+      immediate: async (): Promise<VerificationOutcome> => ({ severity: 3, expected: 'A', observed: 'B' }),
+    }));
+    const autoHitlHandoff = jest.fn().mockResolvedValue({ ok: true });
+    const svc = new PostExecutionVerifierService(pool, reg, {
+      isEnabled: () => true,
+      autoHitlHandoff,
+      log: () => undefined,
+    });
+    await svc.runImmediate({
+      ctx: makeCtx('write.tenant_db.users'), proposalId: PROPOSAL, adapterOutcome: null,
+    });
+    expect(autoHitlHandoff).not.toHaveBeenCalled();
+  });
+
+  it('F.2.4: sev <3 never fires autoHitlHandoff', async () => {
+    const { pool } = makePool([]);
+    const reg = new InMemoryVerifierRegistry();
+    reg.register(makeVerifier({
+      name: 'drift',
+      immediate: async (): Promise<VerificationOutcome> => ({ severity: 2, expected: 'A', observed: 'B' }),
+    }));
+    const autoHitlHandoff = jest.fn().mockResolvedValue({ ok: true });
+    const svc = new PostExecutionVerifierService(pool, reg, {
+      isEnabled: () => true,
+      autoHitlHandoff,
+      log: () => undefined,
+    });
+    await svc.runImmediate({
+      ctx: makeCtx('deploy.prod'), proposalId: PROPOSAL, adapterOutcome: null,
+    });
+    expect(autoHitlHandoff).not.toHaveBeenCalled();
+  });
+
+  it('F.2.4: autoHitlHandoff hook throwing does NOT break runImmediate', async () => {
+    const { pool } = makePool([]);
+    const reg = new InMemoryVerifierRegistry();
+    reg.register(makeVerifier({
+      name: 'drift',
+      immediate: async (): Promise<VerificationOutcome> => ({ severity: 3, expected: 'A', observed: 'B' }),
+    }));
+    const autoHitlHandoff = jest.fn().mockRejectedValue(new Error('vault down'));
+    const svc = new PostExecutionVerifierService(pool, reg, {
+      isEnabled: () => true,
+      autoHitlHandoff,
+      log: () => undefined,
+    });
+    await expect(svc.runImmediate({
+      ctx: makeCtx('deploy.prod'), proposalId: PROPOSAL, adapterOutcome: null,
+    })).resolves.toBeDefined();
+  });
+
+  it('F.2.4: autoHitlTriggerClasses overrides the default allowlist', async () => {
+    const { pool } = makePool([]);
+    const reg = new InMemoryVerifierRegistry();
+    reg.register(makeVerifier({
+      name: 'drift',
+      immediate: async (): Promise<VerificationOutcome> => ({ severity: 3, expected: 'A', observed: 'B' }),
+    }));
+    const autoHitlHandoff = jest.fn().mockResolvedValue({ ok: true });
+    const svc = new PostExecutionVerifierService(pool, reg, {
+      isEnabled: () => true,
+      autoHitlHandoff,
+      autoHitlTriggerClasses: ['only.this.class'],
+      log: () => undefined,
+    });
+    await svc.runImmediate({
+      ctx: makeCtx('deploy.prod'), proposalId: PROPOSAL, adapterOutcome: null,
+    });
+    expect(autoHitlHandoff).not.toHaveBeenCalled();
+
+    await svc.runImmediate({
+      ctx: makeCtx('only.this.class'), proposalId: PROPOSAL, adapterOutcome: null,
+    });
+    expect(autoHitlHandoff).toHaveBeenCalledTimes(1);
+  });
+
+  it('F.2.4: financial.* prefix matches financial.payment', async () => {
+    const { pool } = makePool([]);
+    const reg = new InMemoryVerifierRegistry();
+    reg.register(makeVerifier({
+      name: 'drift',
+      immediate: async (): Promise<VerificationOutcome> => ({ severity: 3, expected: 'A', observed: 'B' }),
+    }));
+    const autoHitlHandoff = jest.fn().mockResolvedValue({ ok: true });
+    const svc = new PostExecutionVerifierService(pool, reg, {
+      isEnabled: () => true,
+      autoHitlHandoff,
+      log: () => undefined,
+    });
+    await svc.runImmediate({
+      ctx: makeCtx('financial.payment'), proposalId: PROPOSAL, adapterOutcome: null,
+    });
+    expect(autoHitlHandoff).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ── runDueDeferred ──────────────────────────────────────────────────────

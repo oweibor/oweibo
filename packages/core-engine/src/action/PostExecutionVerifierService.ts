@@ -70,13 +70,37 @@ export interface PostExecutionVerifierServiceOptions {
     proposalId: string;
     reason: string;
   }) => Promise<{ ok: boolean; details?: string }>;
+  /**
+   * F.2.4: hook the HitlHandoffService passes so the service can prepare
+   * a forensic packet + HITL handoff when a verifier returns severity 3
+   * AND the action class is in the auto-trigger allowlist (financial.*,
+   * irreversible.*, deploy.prod.*). Independent of auto-rollback — both
+   * can fire on the same severity-3 outcome.
+   */
+  autoHitlHandoff?: (args: {
+    tenantId: string;
+    proposalId: string;
+    actionClass: string;
+    triggeredBy: string;
+    reason: string;
+  }) => Promise<{ ok: boolean; details?: string }>;
+  /**
+   * F.2.4: action-class allowlist for autoHitlHandoff. Matched by prefix
+   * — entries that end in `.` match by prefix; entries without a trailing
+   * dot match exactly. Default: ['financial.', 'irreversible.', 'deploy.prod'].
+   */
+  autoHitlTriggerClasses?: readonly string[];
   log?: (level: 'info' | 'warn' | 'error', line: string, ctx?: unknown) => void;
 }
+
+const DEFAULT_AUTO_HITL_TRIGGER_CLASSES = ['financial.', 'irreversible.', 'deploy.prod'] as const;
 
 export class PostExecutionVerifierService {
   private readonly isEnabled: () => boolean;
   private readonly now: () => Date;
   private readonly autoRollback?: PostExecutionVerifierServiceOptions['autoRollback'];
+  private readonly autoHitlHandoff?: PostExecutionVerifierServiceOptions['autoHitlHandoff'];
+  private readonly autoHitlTriggerClasses: readonly string[];
   private readonly log: NonNullable<PostExecutionVerifierServiceOptions['log']>;
 
   constructor(
@@ -87,6 +111,8 @@ export class PostExecutionVerifierService {
     this.isEnabled = opts.isEnabled ?? defaultEnabled;
     this.now = opts.now ?? (() => new Date());
     this.autoRollback = opts.autoRollback;
+    this.autoHitlHandoff = opts.autoHitlHandoff;
+    this.autoHitlTriggerClasses = opts.autoHitlTriggerClasses ?? DEFAULT_AUTO_HITL_TRIGGER_CLASSES;
     this.log = opts.log ?? defaultLog;
   }
 
@@ -142,6 +168,12 @@ export class PostExecutionVerifierService {
     const worst = worstSeverity(immediateResults.map((r) => r.outcome.severity));
     if (worst >= 3) {
       await this.maybeAutoRollback(input.ctx.tenantId, input.proposalId, immediateResults);
+      await this.maybeAutoHitl(
+        input.ctx.tenantId,
+        input.proposalId,
+        input.ctx.actionClass,
+        immediateResults,
+      );
     }
     return { worstSeverity: worst, perVerifier: immediateResults };
   }
@@ -183,9 +215,11 @@ export class PostExecutionVerifierService {
         await this.recordDeferred(row.tenant_id, row.proposal_id, row.verifier_name, outcome);
         await this.markDone(row.id, 'done', null);
         if (outcome.severity >= 3) {
-          await this.maybeAutoRollback(row.tenant_id, row.proposal_id, [
-            { verifierName: row.verifier_name, outcome },
-          ]);
+          const results = [{ verifierName: row.verifier_name, outcome }];
+          await this.maybeAutoRollback(row.tenant_id, row.proposal_id, results);
+          if (row.action_class) {
+            await this.maybeAutoHitl(row.tenant_id, row.proposal_id, row.action_class, results);
+          }
         }
       } else {
         await this.scheduleRetryOrFail(row.id, row.attempts, lastError);
@@ -286,6 +320,10 @@ export class PostExecutionVerifierService {
     verifier_config: unknown;
     expected: unknown;
     attempts: number;
+    /** F.2.4: joined from action_proposals so the autoHitl path can match
+     *  by class without an extra round-trip. Nullable in case the
+     *  proposal row was deleted between queue and claim. */
+    action_class: string | null;
   }>> {
     const client = await this.pool.connect();
     try {
@@ -300,6 +338,7 @@ export class PostExecutionVerifierService {
         verifier_config: unknown;
         expected: unknown;
         attempts: number;
+        action_class: string | null;
       }>(
         `WITH claimed AS (
            SELECT id FROM oweibo.deferred_verifications
@@ -311,9 +350,13 @@ export class PostExecutionVerifierService {
          UPDATE oweibo.deferred_verifications AS d
             SET state = 'running', attempts = d.attempts + 1
            FROM claimed
+           LEFT JOIN oweibo.action_proposals p ON p.id = (
+             SELECT proposal_id FROM oweibo.deferred_verifications WHERE id = claimed.id
+           )
           WHERE d.id = claimed.id
           RETURNING d.id, d.tenant_id, d.proposal_id, d.verifier_name,
-                    d.verifier_config, d.expected, d.attempts`,
+                    d.verifier_config, d.expected, d.attempts,
+                    p.action_class AS action_class`,
         [limit],
       );
       await client.query('COMMIT');
@@ -376,6 +419,34 @@ export class PostExecutionVerifierService {
       `auto-rollback for ${proposalId}: ${result.ok ? 'ok' : 'failed'} (${result.details ?? ''})`);
   }
 
+  /**
+   * F.2.4: auto-prepare a HITL handoff packet when severity 3 fires on an
+   * action class in the trigger allowlist. Independent of auto-rollback —
+   * one may succeed while the other fails. Both swallow per-call errors
+   * via the hook; the verifier loop continues either way.
+   */
+  private async maybeAutoHitl(
+    tenantId: string, proposalId: string, actionClass: string,
+    results: ReadonlyArray<{ verifierName: string; outcome: VerificationOutcome }>,
+  ): Promise<void> {
+    if (!this.autoHitlHandoff) return;
+    if (!matchesTriggerClass(actionClass, this.autoHitlTriggerClasses)) return;
+    const reason = `verifier_drift:sev3:${results.map((r) => r.verifierName).join(',')}`;
+    try {
+      const result = await this.autoHitlHandoff({
+        tenantId, proposalId, actionClass,
+        triggeredBy: 'auto_drift_detection',
+        reason,
+      });
+      this.log(result.ok ? 'info' : 'warn',
+        `auto-HITL for ${proposalId} (${actionClass}): ${result.ok ? 'ok' : 'failed'} (${result.details ?? ''})`);
+    } catch (err) {
+      this.log('warn', `auto-HITL hook threw for ${proposalId}`, {
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   private async tx<T>(tenantId: string, fn: (client: PoolClient) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
     try {
@@ -399,6 +470,22 @@ export class PostExecutionVerifierService {
 
 function defaultEnabled(): boolean {
   return process.env.POST_EXECUTION_VERIFICATION_ENABLED === 'true';
+}
+
+/**
+ * F.2.4: match an action class against the trigger allowlist. An entry
+ * ending in `.` (or matching the class via `startsWith(entry + '.')`)
+ * is a prefix match; exact-string entries match exactly.
+ */
+function matchesTriggerClass(actionClass: string, allowlist: readonly string[]): boolean {
+  for (const entry of allowlist) {
+    if (entry.endsWith('.')) {
+      if (actionClass.startsWith(entry)) return true;
+    } else if (actionClass === entry || actionClass.startsWith(`${entry}.`)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function defaultLog(level: 'info' | 'warn' | 'error', line: string, _ctx?: unknown): void {

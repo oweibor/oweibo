@@ -113,6 +113,11 @@ export type { RedisPublishFn, ITaskEventBusPublisher } from './action/RedisTaskE
 export { PostExecutionVerifierService, InMemoryVerifierRegistry } from './action/PostExecutionVerifierService.js';
 export type { VerifierRegistry } from './action/PostExecutionVerifierService.js';
 
+// ── Post-execution verifiers (F.2.4) ──────────────────────────────────────────
+export { DeployHealthCheckVerifier } from './action/verifiers/DeployHealthCheckVerifier.js';
+export { EmailDeliveredVerifier } from './action/verifiers/EmailDeliveredVerifier.js';
+export { PostgresRowCountVerifier } from './action/verifiers/PostgresRowCountVerifier.js';
+
 // ── Notification channels ─────────────────────────────────────────────────────
 export { InAppChannel } from './action/notification-channels/InAppChannel.js';
 export { EmailChannel } from './action/notification-channels/EmailChannel.js';

@@ -20,6 +20,8 @@ interface NavItem {
 const TENANT_NAV: NavItem[] = [
   { label: 'Dashboard',  href: id => `/t/${id}` },
   { label: 'Onboarding', href: id => `/t/${id}/onboarding` },
+  { label: 'Calibration', href: id => `/t/${id}/calibration` },     // F.4.8 / F.4.6
+  { label: 'Templates',   href: id => `/t/${id}/templates` },        // F.4.8 / F.4.7
   { label: 'Members',    href: id => `/t/${id}/members` },
   { label: 'API Keys',   href: id => `/t/${id}/keys` },
   { label: 'Settings',   href: id => `/t/${id}/settings` },

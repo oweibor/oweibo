@@ -1,15 +1,19 @@
 /**
  * T.5.c: server-component badge that surfaces the tenant's calibration
  * score in the top bar of every /t/[tenantId]/* page. Reads
- * GET /api/v1/tenants/:tenantId/calibration and renders a small colored
- * chip plus a tooltip-style description.
+ * GET /api/v1/tenants/:tenantId/calibration on the pipeline service
+ * (F.4.6) and renders a small colored chip plus a tooltip-style
+ * description.
  *
- * Degrades gracefully: if the endpoint errors (identity unreachable,
+ * F.4.8: links to the calibration detail page when one is available,
+ * onboarding otherwise.
+ *
+ * Degrades gracefully: if the endpoint errors (pipeline unreachable,
  * pre-T.0 tenant, etc.) the badge renders a muted '—' chip instead of
  * crashing the layout.
  */
 import Link from 'next/link';
-import { identityApi } from '@/lib/api';
+import { pipelineApi } from '@/lib/api';
 
 interface CalibrationResponse {
   tenantId: string;
@@ -36,7 +40,7 @@ function chipColor(score: number): { bg: string; fg: string } {
 export async function CalibrationBadge({ tenantId }: CalibrationBadgeProps) {
   let calibration: CalibrationResponse | null = null;
   try {
-    calibration = await identityApi.get<CalibrationResponse>(`/api/v1/tenants/${tenantId}/calibration`);
+    calibration = await pipelineApi.get<CalibrationResponse>(`/tenants/${tenantId}/calibration`);
   } catch {
     calibration = null;
   }
@@ -44,7 +48,7 @@ export async function CalibrationBadge({ tenantId }: CalibrationBadgeProps) {
   if (!calibration) {
     return (
       <Link
-        href={`/t/${tenantId}/onboarding`}
+        href={`/t/${tenantId}/calibration`}
         style={{
           display: 'inline-flex', alignItems: 'center', gap: '0.4rem',
           padding: '2px 8px', background: '#374151', color: '#fff',
@@ -63,7 +67,7 @@ export async function CalibrationBadge({ tenantId }: CalibrationBadgeProps) {
 
   return (
     <Link
-      href={`/t/${tenantId}/onboarding`}
+      href={`/t/${tenantId}/calibration`}
       style={{
         display: 'inline-flex', alignItems: 'center', gap: '0.4rem',
         padding: '2px 8px', background: bg, color: fg,

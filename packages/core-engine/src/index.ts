@@ -152,6 +152,16 @@ export { PgWebhookConfigResolver } from './action/PgWebhookConfigResolver.js';
 export type { IWebhookConfigResolver, ResolvedWebhookConfig, WebhookKind } from './action/PgWebhookConfigResolver.js';
 export { PgTenantDomainBindingLookup } from './domain/PgTenantDomainBindingLookup.js';
 
+// ── Periodic domain services (F.3.3) ──────────────────────────────────────────
+export { DomainCurrencyMonitor } from './domain/DomainCurrencyMonitor.js';
+export { DomainDepthMetrics } from './domain/DomainDepthMetrics.js';
+export { SmeFeedbackAggregator } from './domain/SmeFeedbackAggregator.js';
+export {
+  runWithAdvisoryLock,
+  deriveLockKey,
+} from './infrastructure/runWithAdvisoryLock.js';
+export type { RunWithAdvisoryLockResult, RunWithAdvisoryLockOptions } from './infrastructure/runWithAdvisoryLock.js';
+
 // ── Rollback adapters (S.3 + F.2.2) ───────────────────────────────────────────
 export { NoOpRollbackAdapter } from './action/rollback-adapters/NoOpRollbackAdapter.js';
 export { GenericWebhookRollbackAdapter } from './action/rollback-adapters/GenericWebhookRollbackAdapter.js';

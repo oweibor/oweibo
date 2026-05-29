@@ -79,6 +79,10 @@ import { ComplianceRulePackRegistry } from './domain/ComplianceRulePackRegistry.
 import { PgTenantDomainBindingLookup } from './domain/PgTenantDomainBindingLookup.js';
 import { CalibrationService }        from './infrastructure/CalibrationService.js';
 import { TtvMetricsService }         from './observability/TtvMetricsService.js';
+import { DomainCurrencyMonitor }     from './domain/DomainCurrencyMonitor.js';
+import { DomainDepthMetrics }        from './domain/DomainDepthMetrics.js';
+import { SmeFeedbackAggregator }     from './domain/SmeFeedbackAggregator.js';
+import { runWithAdvisoryLock }       from './infrastructure/runWithAdvisoryLock.js';
 import {
   HmacSnapshotSigner,
   HmacSnapshotVerifier,
@@ -317,6 +321,49 @@ async function main(): Promise<void> {
       console.log('[oweibo] TtvMetricsService: OTEL meter wired (14 metric series).');
     }
     void ttvMetrics;
+
+    // ── F.3.3: periodic domain services ────────────────────────────────────
+    //
+    // DomainCurrencyMonitor.tick() walks the domain_artifact_currency table
+    // daily and emits transitions. The cron is gated by a Postgres advisory
+    // lock so concurrent triggers on multi-replica deployments are no-ops.
+    //
+    // DomainDepthMetrics and SmeFeedbackAggregator are per-event services
+    // (writeSnapshot / aggregateForQueueItem) rather than tick-driven —
+    // they're constructed here so the admin-web routes (F.4) and the SME
+    // review flow can take them via runtime composition, but no periodic
+    // tick is wired for them.
+    const domainCurrencyMonitor    = new DomainCurrencyMonitor(pgPool);
+    const domainDepthMetrics       = new DomainDepthMetrics(pgPool);
+    const smeFeedbackAggregator    = new SmeFeedbackAggregator(pgPool);
+    void domainDepthMetrics;        // wired into F.4 admin-web /domains/depth route
+    void smeFeedbackAggregator;     // wired into F.4 admin-web /domains/sme-review route
+
+    // Daily DomainCurrency tick. node-cron is a CJS module; import via the
+    // existing 'node-cron' dep without pulling type machinery into the
+    // composition root.
+    const cronExpr = process.env['DOMAIN_CURRENCY_CRON'] ?? '0 2 * * *';  // daily 02:00 UTC
+    if (cronExpr.toLowerCase() === 'off' || cronExpr === '') {
+      console.log('[oweibo] DomainCurrencyMonitor cron disabled (DOMAIN_CURRENCY_CRON=off)');
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const cron = require('node-cron') as { schedule(expr: string, fn: () => void): unknown };
+      cron.schedule(cronExpr, () => {
+        void runWithAdvisoryLock(pgPool!, 'domain_currency_tick', async () => {
+          const r = await domainCurrencyMonitor.tick();
+          console.log('[oweibo] DomainCurrencyMonitor.tick():', {
+            artifactsScanned: r.artifactsScanned,
+            feedsAttempted:   r.feedsAttempted,
+            transitions:      r.transitions.length,
+            feedFailures:     r.feedFailures.length,
+          });
+        }).catch((err: unknown) => {
+          console.error('[oweibo] DomainCurrencyMonitor.tick() failed:',
+            err instanceof Error ? err.message : String(err));
+        });
+      });
+      console.log(`[oweibo] DomainCurrencyMonitor cron scheduled: ${cronExpr}`);
+    }
 
     actionTrustLadder = new ActionTrustLadder(pgPool, {
       slaAttacher: slaService,

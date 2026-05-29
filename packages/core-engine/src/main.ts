@@ -59,6 +59,18 @@ import { GitContentInspector }      from './action/inspectors/GitContentInspecto
 import { DeploymentContentInspector } from './action/inspectors/DeploymentContentInspector.js';
 import { FinancialContentInspector } from './action/inspectors/FinancialContentInspector.js';
 import { OutboxRelay }              from './infrastructure/OutboxRelay.js';
+import { ForensicPacketBuilder }     from './action/ForensicPacketBuilder.js';
+import { HitlHandoffService }        from './action/HitlHandoffService.js';
+import { resolveForensicStorageFromEnv } from './action/storage/ForensicPacketStorage.js';
+import { hmacPacketSignerFromSecrets } from './action/storage/PacketSigner.js';
+import { RollbackOrchestrator, RollbackAdapterRegistry } from './action/RollbackOrchestrator.js';
+import { NoOpRollbackAdapter }       from './action/rollback-adapters/NoOpRollbackAdapter.js';
+import { PostgresRollbackAdapter }   from './action/rollback-adapters/PostgresRollbackAdapter.js';
+import { GitRollbackAdapter }        from './action/rollback-adapters/GitRollbackAdapter.js';
+import { SlackRollbackAdapter }      from './action/rollback-adapters/SlackRollbackAdapter.js';
+import { DeployRollbackAdapter }     from './action/rollback-adapters/DeployRollbackAdapter.js';
+import { GenericWebhookRollbackAdapter } from './action/rollback-adapters/GenericWebhookRollbackAdapter.js';
+import { PostExecutionVerifierService, InMemoryVerifierRegistry } from './action/PostExecutionVerifierService.js';
 import { PromptRegistry }          from '@oweibo/prompt-registry';
 import { PromptAssembler }         from '@oweibo/prompt-registry';
 import { createServer }            from './api/server.js';
@@ -241,6 +253,76 @@ async function main(): Promise<void> {
     });
     dryRunRegistry = new DryRunRegistry(pgPool);
     shadowExecutor = new ShadowExecutor(pgPool);
+
+    // ── F.2.3: forensic packet pipeline + HITL handoff ────────────────────
+    //
+    // Storage backend is selected via OWEIBO_FORENSIC_STORAGE_KIND
+    // (filesystem|s3|none). When the kind resolves to none/undefined the
+    // forensic features stay dormant — the HITL routes will surface
+    // 'forensic_features_disabled' to operators. Signer requires
+    // infra/forensic-signer in Vault (CALIBRATION_SIGNING_KEY equivalent
+    // for packets); without it we skip construction with a startup warning.
+    let forensicBuilder: ForensicPacketBuilder | undefined;
+    let hitlHandoff:     HitlHandoffService     | undefined;
+    try {
+      const storage = resolveForensicStorageFromEnv();
+      if (storage) {
+        const signer = await hmacPacketSignerFromSecrets(secrets);
+        forensicBuilder = new ForensicPacketBuilder(pgPool, storage, signer);
+        hitlHandoff     = new HitlHandoffService(pgPool, forensicBuilder);
+      }
+    } catch (err) {
+      console.warn('[oweibo] forensic packet pipeline disabled:',
+        err instanceof Error ? err.message : String(err));
+    }
+    // Suppress unused-var warning when the wiring is dormant; both refs
+    // pass to admin-web routes (F.4) and the auto-trigger path (deferred
+    // verification severity 3) in a follow-up commit.
+    void forensicBuilder;
+    void hitlHandoff;
+
+    // ── F.2.4 stub: PostExecutionVerifierService ──────────────────────────
+    //
+    // Empty registry today (real verifiers — DeployHealthCheck,
+    // EmailDelivered, PostgresRowCount — land in F.2.4). Construction
+    // here ensures the supersedeForProposal hook is available for the
+    // rollback orchestrator below and the deferredRunner seam is ready
+    // when the lifecycle worker calls cfg.deferredRunner.runDueDeferred().
+    const verifierRegistry = new InMemoryVerifierRegistry();
+    const postExecVerifier = new PostExecutionVerifierService(pgPool, verifierRegistry);
+    void postExecVerifier;  // wired into the lifecycle worker via runtime composition
+
+    // ── F.2.2: rollback orchestrator + full adapter registry ──────────────
+    //
+    // Adapters that need per-tenant external config (slack token,
+    // deploy service URL, webhook destination) take resolver shims that
+    // return null until F.1.6 resolvers + F.4 admin routes are wired
+    // end-to-end. Until then the adapters preflight-fail with operator-
+    // readable messages — the orchestrator itself short-circuits the
+    // rollback execution and reports the configuration gap.
+    //
+    // onRollbackSuccess marks any deferred verification for the rolled-back
+    // proposal as `superseded` (PostExecutionVerifierService.supersedeForProposal)
+    // so the lifecycle worker skips re-checking a system the operator
+    // has already moved on from.
+    const rollbackRegistry = new RollbackAdapterRegistry();
+    rollbackRegistry.register(new NoOpRollbackAdapter());
+    rollbackRegistry.register(new PostgresRollbackAdapter(pgPool));
+    rollbackRegistry.register(new GitRollbackAdapter());
+    rollbackRegistry.register(new SlackRollbackAdapter({
+      resolve: async () => null,
+    }));
+    rollbackRegistry.register(new DeployRollbackAdapter({
+      resolve: async () => null,
+    }));
+    rollbackRegistry.register(new GenericWebhookRollbackAdapter());
+
+    const rollbackOrchestrator = new RollbackOrchestrator(pgPool, rollbackRegistry, {
+      onRollbackSuccess: async ({ tenantId, proposalId }) => {
+        await postExecVerifier.supersedeForProposal(tenantId, proposalId);
+      },
+    });
+    void rollbackOrchestrator;  // wired into /api/v1/tenants/:id/actions/:id/rollback in F.4
 
     // T.0: outbox relay. Drains oweibo.outbox to Redis lifecycle channels
     // (oweibo.lifecycle.<subject>). Polls every 2s; fail-open on Redis errors.

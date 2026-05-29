@@ -34,7 +34,10 @@ watchtower/
 # Build artifacts (Prisma generates at install time; not a publishable dist)
 packages/db/dist/
 
-# Next.js build artifacts (admin-web)
+# TS-compiled dist + tsbuildinfo for every workspace package.
+# Deploy pipelines build fresh; nobody commits these.
+**/dist/
+
 apps/admin-web/.next/
 apps/admin-web/next-env.d.ts
 

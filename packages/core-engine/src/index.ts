@@ -97,6 +97,33 @@ export { ModelRouter } from './infrastructure/ModelRouter.js';
 // ── Secrets ───────────────────────────────────────────────────────────────────
 export { SecretsManager } from './secrets/SecretsManager.js';
 
+// ── Action safety (S.1–S.7 + F.1) ─────────────────────────────────────────────
+export { ApprovalSlaService } from './action/ApprovalSlaService.js';
+export { EscalationEngine } from './action/EscalationEngine.js';
+export type { IOrgGraphReader, ITenantRoleReader, IEscalationLogger } from './action/EscalationEngine.js';
+export { NotificationRouter } from './action/NotificationRouter.js';
+export { PgOrgGraphReader } from './action/PgOrgGraphReader.js';
+export { PgTenantRoleReader } from './action/PgTenantRoleReader.js';
+export {
+  RedisTaskEventBusPublisher,
+  TASK_EVENT_BUS_CHANNEL,
+  TASK_APPROVAL_DECIDED_V1_SUBJECT,
+} from './action/RedisTaskEventBusPublisher.js';
+export type { RedisPublishFn, ITaskEventBusPublisher } from './action/RedisTaskEventBusPublisher.js';
+export { PostExecutionVerifierService, InMemoryVerifierRegistry } from './action/PostExecutionVerifierService.js';
+export type { VerifierRegistry } from './action/PostExecutionVerifierService.js';
+
+// ── Notification channels ─────────────────────────────────────────────────────
+export { InAppChannel } from './action/notification-channels/InAppChannel.js';
+export { EmailChannel } from './action/notification-channels/EmailChannel.js';
+export { SlackChannel } from './action/notification-channels/SlackChannel.js';
+export { WebhookChannel } from './action/notification-channels/WebhookChannel.js';
+
+// ── Webhook + binding resolvers (F.1.6, F.1.8) ────────────────────────────────
+export { PgWebhookConfigResolver } from './action/PgWebhookConfigResolver.js';
+export type { IWebhookConfigResolver, ResolvedWebhookConfig, WebhookKind } from './action/PgWebhookConfigResolver.js';
+export { PgTenantDomainBindingLookup } from './domain/PgTenantDomainBindingLookup.js';
+
 // ── Type re-exports ───────────────────────────────────────────────────────────
 export type { GeneralCodingResult } from './general-coding/GeneralCodingOrchestrator.js';
 export type { EditPlan } from './general-coding/ConversationalLoop.js';

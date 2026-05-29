@@ -1,69 +1,95 @@
 /**
- * S.1: approval-lifecycle-worker entrypoint.
+ * F.2.1: approval-lifecycle-worker entry point.
  *
- * Architecture: this worker process intentionally has NO dependency on
- * @oweibo/core-engine — it consumes the SLA service, escalation engine,
- * and notification router via the three contract-only interfaces on
- * ApprovalLifecycleWorker's constructor. A production runtime imports
- * { ApprovalLifecycleWorker } from this package, constructs concrete
- * implementations of those interfaces from core-engine, and drives the
- * tick.
+ * Pre-F.2.1 this entrypoint refused to start unless
+ * APPROVAL_LIFECYCLE_STANDALONE_NOOP_ACK=true was set, because the worker
+ * had no way to construct ApprovalSlaService / EscalationEngine /
+ * NotificationRouter from inside its own package. F.2.1 adds the
+ * @oweibo/core-engine workspace dep and replaces the refuse-to-start with
+ * real wiring through wireWorker() (see ./wireWorker.ts for design notes).
  *
- * **This standalone entrypoint does NOT wire the services**, so running
- * `node dist/index.js` without runtime composition would silently
- * accomplish nothing — every approval would sit forever.
+ * Env (all optional except DATABASE_URL):
+ *   DATABASE_URL                          — Postgres connection string. REQUIRED.
+ *   REDIS_URL                             — wires RedisTaskEventBusPublisher.
+ *   APPROVAL_SLA_TICK_MS                  — tick interval (default 30 000).
+ *   SMTP_CONFIGURED='true'                — enable EmailChannel.
+ *   SLACK_CONFIGURED='true'               — enable SlackChannel.
+ *   WEBHOOK_CONFIGURED='true'             — enable WebhookChannel.
+ *   POST_EXECUTION_VERIFICATION_ENABLED   — enable deferred-verification tick.
  *
- * Audit-fix: refuse to start in standalone mode unless the operator
- * explicitly acknowledges the no-op via env override. This makes the
- * unwired state loud instead of silent and prevents an accidental
- * "deployed but inert" production state.
+ * Backwards-compat:
+ *   APPROVAL_LIFECYCLE_STANDALONE_NOOP_ACK is honoured if set. With it,
+ *   the worker stays idle (k8s readiness probe parity) without doing any
+ *   real work. The pre-F.2.1 refuse-to-start behaviour is gone — without
+ *   the ack flag and without DATABASE_URL the process exits with an
+ *   operator-readable error.
  */
-import { Pool } from 'pg';
-import { ApprovalLifecycleWorker } from './Worker.js';
-
-const TICK_INTERVAL_MS = Number(process.env.APPROVAL_SLA_TICK_MS ?? 30_000);
+import { wireWorker } from './wireWorker.js';
 
 async function main(): Promise<void> {
-  const acknowledged = process.env['APPROVAL_LIFECYCLE_STANDALONE_NOOP_ACK'] === 'true';
+  const ack = process.env['APPROVAL_LIFECYCLE_STANDALONE_NOOP_ACK'] === 'true';
+  if (ack) {
+    runIdleStandalone();
+    return;
+  }
 
-  if (!acknowledged) {
+  const databaseUrl = process.env['DATABASE_URL'];
+  if (!databaseUrl) {
     console.error([
-      '[approval-lifecycle] FATAL: standalone entrypoint cannot wire services.',
+      '[approval-lifecycle] FATAL: DATABASE_URL is required.',
       '',
-      '  This worker requires concrete implementations of:',
-      '    - IApprovalSlaService (ApprovalSlaService from @oweibo/core-engine)',
-      '    - IEscalationEngine    (EscalationEngine from @oweibo/core-engine)',
-      '    - INotificationRouter  (NotificationRouter from @oweibo/core-engine)',
-      '',
-      '  Without them, every require_approval proposal sits in `pending`',
-      '  forever — never notified, never escalated, never auto-expired.',
-      '',
-      '  Production deployments MUST run this worker via a runtime layer',
-      '  that imports { ApprovalLifecycleWorker } from this package and',
-      '  injects the dependencies (see Worker.test.ts for the wiring shape).',
-      '',
-      '  To explicitly start the no-op standalone process (e.g. so a k8s',
-      '  deployment slot doesn\'t crash-loop while you finish wiring it up),',
-      '  set APPROVAL_LIFECYCLE_STANDALONE_NOOP_ACK=true.',
+      '  This worker drives the approval-SLA FSM; without a DB connection',
+      '  there is nothing to do. Provide DATABASE_URL or set',
+      '  APPROVAL_LIFECYCLE_STANDALONE_NOOP_ACK=true for an idle process.',
     ].join('\n'));
     process.exit(2);
   }
 
-  // Acknowledged no-op mode — sit idle, keep the process alive for
-  // orchestration parity (k8s readinessProbe, pm2 restart loop, etc.).
-  // The pool + Worker references are kept so static analysis still
-  // counts this as a "real" entrypoint and the import graph stays sound.
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-  console.warn('[approval-lifecycle] APPROVAL_LIFECYCLE_STANDALONE_NOOP_ACK=true; running as no-op.');
-  console.warn('[approval-lifecycle] Approvals will NOT be escalated or expired by this process.');
-  setInterval(() => undefined, TICK_INTERVAL_MS);
-  const shutdown = async (): Promise<void> => {
-    await pool.end().catch(() => undefined);
+  const wired = wireWorker({
+    databaseUrl,
+    redisUrl: process.env['REDIS_URL'],
+  });
+  const channelsConfigured = describeChannels();
+  console.log(
+    `[approval-lifecycle] starting tick loop; channels=${channelsConfigured}; ` +
+    `redis=${process.env['REDIS_URL'] ? 'wired' : 'absent'}`,
+  );
+
+  const ticker = wired.startTickLoop();
+
+  const shutdown = async (signal: string): Promise<void> => {
+    console.log(`[approval-lifecycle] received ${signal}; shutting down`);
+    ticker.stop();
+    await wired.shutdown();
     process.exit(0);
   };
-  process.on('SIGTERM', () => void shutdown());
-  process.on('SIGINT', () => void shutdown());
-  void ApprovalLifecycleWorker;
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT',  () => void shutdown('SIGINT'));
+}
+
+/**
+ * Idle process for orchestrator parity (k8s readinessProbe, pm2 restart
+ * loop) when the operator has explicitly acknowledged no-op mode.
+ */
+function runIdleStandalone(): void {
+  console.warn([
+    '[approval-lifecycle] APPROVAL_LIFECYCLE_STANDALONE_NOOP_ACK=true',
+    '  Running as an idle no-op process. Approvals will NOT be escalated',
+    '  or expired. Unset the ack flag and supply DATABASE_URL to enable',
+    '  real processing.',
+  ].join('\n'));
+  // Keep the event loop alive without doing work.
+  setInterval(() => undefined, 60_000);
+  process.on('SIGTERM', () => process.exit(0));
+  process.on('SIGINT',  () => process.exit(0));
+}
+
+function describeChannels(): string {
+  const on: string[] = ['in_app'];
+  if (process.env['SMTP_CONFIGURED']    === 'true') on.push('email');
+  if (process.env['SLACK_CONFIGURED']   === 'true') on.push('slack');
+  if (process.env['WEBHOOK_CONFIGURED'] === 'true') on.push('webhook');
+  return on.join(',');
 }
 
 main().catch((err) => {

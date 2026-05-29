@@ -229,9 +229,7 @@ export interface ActionTrustLadderOptions {
    *
    * When omitted, no verification runs — byte-identical to today.
    */
-  snapshotVerifier?: {
-    verify(snapshot: import('@oweibo/core-contracts').TenantReadinessSnapshot): boolean;
-  };
+  snapshotVerifier?: import('@oweibo/core-contracts').ISnapshotVerifier;
   /**
    * D.3: optional per-domain compliance rule evaluator. Consulted AFTER
    * content inspection (S.5.a) but BEFORE quota preflight (S.6). Domain

@@ -55,6 +55,27 @@ export interface TenantReadinessSnapshot {
   readonly sourceSig: string;
 }
 
+/**
+ * F.1.9: snapshot verifier seam. Production implementation is HMAC-SHA256
+ * over the canonical JSON of TenantReadinessSnapshot (excluding sourceSig).
+ * The gate downgrades to cold-start defaults when verify() returns false,
+ * so a bug in the verifier never blocks legitimate work — but a successful
+ * forgery still gets the most-conservative treatment.
+ */
+export interface ISnapshotVerifier {
+  verify(snapshot: TenantReadinessSnapshot): boolean;
+}
+
+/**
+ * F.1.9: matching signer seam used by CalibrationService to mint the
+ * `sourceSig` consumed by the gate's verifier. Sign/verify use the same
+ * canonical form; key rotation is symmetric — the signer always signs
+ * with primary, the verifier accepts primary OR next.
+ */
+export interface ISnapshotSigner {
+  sign(snapshot: Omit<TenantReadinessSnapshot, 'sourceSig'>): string;
+}
+
 export interface RollbackEnvelope {
   readonly kind: 'trivial' | 'reversible_with_cost' | 'irreversible';
   readonly details: string;

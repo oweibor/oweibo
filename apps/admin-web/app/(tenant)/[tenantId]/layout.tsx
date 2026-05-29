@@ -10,7 +10,14 @@ interface TenantLayoutProps {
   params:    Promise<{ tenantId: string }>;
 }
 
-const TENANT_NAV: { label: string; href: (id: string) => string }[] = [
+interface NavItem {
+  label: string;
+  href: (id: string) => string;
+  /** Optional sub-items rendered indented under the parent link. */
+  children?: { label: string; href: (id: string) => string }[];
+}
+
+const TENANT_NAV: NavItem[] = [
   { label: 'Dashboard',  href: id => `/t/${id}` },
   { label: 'Onboarding', href: id => `/t/${id}/onboarding` },
   { label: 'Members',    href: id => `/t/${id}/members` },
@@ -23,6 +30,15 @@ const TENANT_NAV: { label: string; href: (id: string) => string }[] = [
   { label: 'Connectors', href: id => `/t/${id}/connectors` },
   { label: 'Org',        href: id => `/t/${id}/org` },
   { label: 'Lineage',    href: id => `/t/${id}/lineage` }, // T.9
+  {
+    // F.4.8: domain admin surface — backs F.4.5 routes.
+    label: 'Domains',    href: id => `/t/${id}/domains`,
+    children: [
+      { label: 'SME review', href: id => `/t/${id}/domains/sme-review` },
+      { label: 'Depth',      href: id => `/t/${id}/domains/depth` },
+      { label: 'Compliance', href: id => `/t/${id}/domains/compliance` },
+    ],
+  },
 ];
 
 export default async function TenantLayout({ children, params }: TenantLayoutProps) {
@@ -71,19 +87,35 @@ export default async function TenantLayout({ children, params }: TenantLayoutPro
 
           <nav style={{ marginTop: '0.5rem' }}>
             {TENANT_NAV.map(item => (
-              <Link
-                key={item.label}
-                href={item.href(tenantId)}
-                style={{
-                  display: 'block',
-                  padding: '0.45rem 1rem',
-                  fontSize: 14,
-                  color:   '#333',
-                  textDecoration: 'none',
-                }}
-              >
-                {item.label}
-              </Link>
+              <div key={item.label}>
+                <Link
+                  href={item.href(tenantId)}
+                  style={{
+                    display: 'block',
+                    padding: '0.45rem 1rem',
+                    fontSize: 14,
+                    color:   '#333',
+                    textDecoration: 'none',
+                  }}
+                >
+                  {item.label}
+                </Link>
+                {item.children?.map(child => (
+                  <Link
+                    key={child.label}
+                    href={child.href(tenantId)}
+                    style={{
+                      display: 'block',
+                      padding: '0.3rem 1rem 0.3rem 2rem',
+                      fontSize: 12,
+                      color:   '#666',
+                      textDecoration: 'none',
+                    }}
+                  >
+                    {child.label}
+                  </Link>
+                ))}
+              </div>
             ))}
           </nav>
         </aside>

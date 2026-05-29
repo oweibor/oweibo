@@ -187,8 +187,12 @@ router.post('/api/v1/platform/tenants', audit('platform.tenant.create', { resour
         id: uuidv4(),
         name,
         slug,
-        quotas: quotas ?? {},
-        features: features ?? {},
+        // Cast through unknown: Zod's z.record(z.unknown()) returns
+        // Record<string, unknown>; Prisma's InputJsonValue is narrower
+        // (no `unknown` for nested values). The runtime shapes are
+        // compatible; the cast is structural at the boundary.
+        quotas:   (quotas   ?? {}) as unknown as object,
+        features: (features ?? {}) as unknown as object,
         createdBy: principal.sub.startsWith('agent:')
           ? (principal.actAs?.sub ?? null)
           : principal.sub.startsWith('apikey:') ? null : principal.sub,
@@ -290,8 +294,13 @@ router.patch('/api/v1/platform/tenants/:id', audit('platform.tenant.update', { r
     return;
   }
   const principal = req.principal as Principal;
+  // Cast: Zod returns Record<string, unknown> on Json fields; Prisma's
+  // narrower TenantUpdateInput requires InputJsonValue. Boundary cast.
   const tenant = await withTenantContext(principal, tx =>
-    tx.tenant.update({ where: { id: req.params['id'] }, data: parsed.data })
+    tx.tenant.update({
+      where: { id: req.params['id'] },
+      data:  parsed.data as unknown as Parameters<typeof tx.tenant.update>[0]['data'],
+    })
   );
   res.json({ tenant });
 });

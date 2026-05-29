@@ -7,7 +7,7 @@
  */
 import { betterAuth } from 'better-auth';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
-import { multiOrganization } from 'better-auth/plugins';
+import { organization } from 'better-auth/plugins';
 import { prisma } from '@oweibo/db';
 import { config } from '../config.js';
 
@@ -28,7 +28,7 @@ export const auth = betterAuth({
   },
 
   plugins: [
-    multiOrganization(),
+    organization(),
   ],
 
   trustedOrigins: (process.env['TRUSTED_ORIGINS'] ?? 'http://localhost:3000').split(','),

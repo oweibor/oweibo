@@ -18,6 +18,9 @@ const schema = z.object({
   BETTER_AUTH_BASE_URL: z.string().default('http://localhost:3110'),
   // Shared secret for machine-to-machine internal calls (e.g. agent-token mint)
   INTERNAL_SERVICE_KEY: z.string().min(32).optional(),
+  // Qdrant base URL for GDPR purge fan-out. QDRANT_URL takes precedence at the
+  // call site; QDRANT_HOST is the fallback for callers using the legacy name.
+  QDRANT_HOST:          z.string().optional(),
 });
 
 function parseConfig() {

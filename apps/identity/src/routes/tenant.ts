@@ -561,7 +561,9 @@ router.patch('/:tenantId/settings',
     const tenant = await withTenantContext(principal, tx =>
       tx.tenant.update({
         where: { id: principal.ctx.tenantId },
-        data:  parsed.data,
+        // Cast: Zod returns Record<string, unknown> on Json fields; Prisma's
+        // narrower TenantUpdateInput requires InputJsonValue. Boundary cast.
+        data:  parsed.data as unknown as Parameters<typeof tx.tenant.update>[0]['data'],
       })
     );
     res.json({ settings: { trustModeDefault: tenant.trustModeDefault, features: tenant.features } });

@@ -9,7 +9,7 @@ describe('module-scaffolding contract', () => {
     const mod = await import('../index.js');
     const GeneratorClass = mod.default ?? Object.values(mod)[0];
     expect(typeof GeneratorClass).toBe('function');
-    const instance = new (GeneratorClass as new () => { manifest: unknown; generate: unknown; validate: unknown })();
+    const instance = new (GeneratorClass as unknown as new () => { manifest: unknown; generate: unknown; validate: unknown })();
     expect(typeof instance.manifest).toBe('object');
     expect(typeof instance.generate).toBe('function');
     expect(typeof instance.validate).toBe('function');
@@ -18,7 +18,7 @@ describe('module-scaffolding contract', () => {
   it('manifest declares required fields', async () => {
     const mod = await import('../index.js');
     const GeneratorClass = mod.default ?? Object.values(mod)[0];
-    const instance = new (GeneratorClass as new () => { manifest: Record<string, unknown> })();
+    const instance = new (GeneratorClass as unknown as new () => { manifest: Record<string, unknown> })();
     const { manifest } = instance;
     expect(typeof manifest.name).toBe('string');
     expect(typeof manifest.version).toBe('string');

@@ -77,6 +77,12 @@ import { PostgresRowCountVerifier }  from './action/verifiers/PostgresRowCountVe
 import { ComplianceRuleEvaluator }   from './domain/ComplianceRuleEvaluator.js';
 import { ComplianceRulePackRegistry } from './domain/ComplianceRulePackRegistry.js';
 import { PgTenantDomainBindingLookup } from './domain/PgTenantDomainBindingLookup.js';
+import { CalibrationService }        from './infrastructure/CalibrationService.js';
+import {
+  HmacSnapshotSigner,
+  HmacSnapshotVerifier,
+  loadHmacSnapshotKeys,
+}                                    from './action/HmacSnapshotVerifier.js';
 import { PromptRegistry }          from '@oweibo/prompt-registry';
 import { PromptAssembler }         from '@oweibo/prompt-registry';
 import { createServer }            from './api/server.js';
@@ -259,6 +265,33 @@ async function main(): Promise<void> {
     });
     const complianceRuleEvaluator = new ComplianceRuleEvaluator(compliancePackRegistry);
 
+    // ── F.3.1: CalibrationService + snapshot signer/verifier ───────────────
+    //
+    // The signer/verifier pair share key material from
+    // infra/calibration-signer in Vault. When the key is unavailable
+    // (NullVaultClient in dev, secret missing in prod) the wiring
+    // gracefully degrades:
+    //   - CalibrationService falls back to its legacy sourceKey HMAC,
+    //     producing snapshots the gate's verifier will REJECT.
+    //   - ActionTrustLadder.snapshotVerifier stays undefined.
+    // The gate's existing fallback (cold-start defaults on verify
+    // failure) absorbs both branches without blocking legitimate work.
+    let snapshotSigner: HmacSnapshotSigner | undefined;
+    let snapshotVerifier: HmacSnapshotVerifier | undefined;
+    try {
+      const keys = await loadHmacSnapshotKeys(secrets);
+      snapshotSigner   = new HmacSnapshotSigner(keys);
+      snapshotVerifier = new HmacSnapshotVerifier(keys);
+    } catch (err) {
+      console.warn('[oweibo] snapshot signer/verifier dormant:',
+        err instanceof Error ? err.message : String(err));
+    }
+    const calibrationService = new CalibrationService(pgPool, {
+      ...(snapshotSigner ? { snapshotSigner } : {}),
+    });
+    void calibrationService;  // wired into the task-create path in a follow-up;
+                              // F.3.1's scope is the construction site.
+
     actionTrustLadder = new ActionTrustLadder(pgPool, {
       slaAttacher: slaService,
       rateLimiter: { tryConsume: (t, c) => rateLimiter.tryConsume(t, c) },
@@ -267,10 +300,7 @@ async function main(): Promise<void> {
       quotaService: { preflight: (args) => quotaService.preflight(args) },
       budgetEstimator: { estimate: (args) => budgetEstimator.estimate(args) },
       complianceRuleEvaluator,
-      // snapshotVerifier is intentionally left undefined here — wiring
-      // it requires the calibration-signing key in Vault. F.3.1 will
-      // add the construction once CalibrationService is wired into the
-      // task-create path.
+      ...(snapshotVerifier ? { snapshotVerifier } : {}),
     });
     dryRunRegistry = new DryRunRegistry(pgPool);
     shadowExecutor = new ShadowExecutor(pgPool);

@@ -58,6 +58,15 @@ export interface CalibrationServiceOptions {
   sourceKey?: string;
   /** Override clock; tests pin time. */
   now?: () => Date;
+  /**
+   * F.3.1: when supplied, snapshot()/refresh() sign via this signer
+   * instead of the legacy HMAC over `sourceKey`. Pair with
+   * HmacSnapshotVerifier (F.1.9) at ActionTrustLadder.snapshotVerifier
+   * so the gate can verify the signature with the same key material.
+   * When omitted, the legacy sourceKey-HMAC path is preserved (existing
+   * tests + behaviour unchanged).
+   */
+  snapshotSigner?: import('@oweibo/core-contracts').ISnapshotSigner;
 }
 
 const DEFAULT_SOURCE_KEY = 'oweibo-calibration-source-v1';
@@ -66,11 +75,13 @@ export class CalibrationService {
   private readonly countOrganic: OrganicMemoryCounter;
   private readonly sourceKey: string;
   private readonly now: () => Date;
+  private readonly snapshotSigner?: import('@oweibo/core-contracts').ISnapshotSigner;
 
   constructor(private readonly pool: Pool, opts: CalibrationServiceOptions = {}) {
     this.countOrganic = opts.countOrganicMemories ?? (async () => 0);
     this.sourceKey = opts.sourceKey ?? process.env['CALIBRATION_SOURCE_KEY'] ?? DEFAULT_SOURCE_KEY;
     this.now = opts.now ?? (() => new Date());
+    this.snapshotSigner = opts.snapshotSigner;
   }
 
   /** Compute a full readiness report for one tenant. */
@@ -102,13 +113,40 @@ export class CalibrationService {
     const r = await this.compute(tenantId);
     const snapshotAt = r.snapshotAt;
     const actionClassScores = r.actionClassScores;
-    return {
+    const base = {
       tenantId,
       accountAgeDays: r.signals.accountAgeDays,
       actionClassScores,
       snapshotAt,
-      sourceSig: this.sign(tenantId, snapshotAt, NaN, actionClassScores),
     };
+    const sourceSig = this.snapshotSigner
+      ? this.snapshotSigner.sign(base)
+      : this.sign(tenantId, snapshotAt, NaN, actionClassScores);
+    return { ...base, sourceSig };
+  }
+
+  /**
+   * F.3.1: re-sign an existing snapshot with the current clock without
+   * re-querying the DB. Use for long-running tasks whose snapshot has
+   * exceeded HmacSnapshotVerifier.SNAPSHOT_MAX_AGE_S (default 1 h).
+   *
+   * Callers are responsible for ensuring the tenant has not crossed an
+   * accountAgeDays tier threshold since the snapshot was minted — if it
+   * has, call snapshot() instead to recompute. This method is a light-
+   * touch refresh, not a recompute.
+   */
+  refresh(prior: TenantReadinessSnapshot): TenantReadinessSnapshot {
+    const snapshotAt = this.now().toISOString();
+    const base = {
+      tenantId: prior.tenantId,
+      accountAgeDays: prior.accountAgeDays,
+      actionClassScores: prior.actionClassScores,
+      snapshotAt,
+    };
+    const sourceSig = this.snapshotSigner
+      ? this.snapshotSigner.sign(base)
+      : this.sign(prior.tenantId, snapshotAt, NaN, prior.actionClassScores);
+    return { ...base, sourceSig };
   }
 
   /** Verify that a snapshot was issued by this service. */

@@ -309,3 +309,82 @@ describe('CalibrationService.snapshot + verify', () => {
     })).toBe(false);
   });
 });
+
+// ── F.3.1: ISnapshotSigner integration + refresh() ───────────────────────────
+
+describe('CalibrationService — F.3.1 ISnapshotSigner integration', () => {
+  function basicPool(observations: number, successes: number) {
+    const created = new Date('2026-05-15T00:00:00Z');
+    return makePool([
+      { match: 'SELECT created_at FROM oweibo.tenants', rows: [{ created_at: created }] },
+      { match: 'COUNT(DISTINCT bae.slot_id)', rows: [{ count: '0' }] },
+      { match: 'FROM oweibo.tasks', rows: [{ count: '0' }] },
+      { match: 'FROM oweibo.tenant_bootstrap WHERE', rows: [{ state: 'ready' }] },
+      {
+        match: 'FROM oweibo.tenant_action_class_state',
+        rows: [{ action_class: 'write.local.scratch', observations, successes }],
+      },
+    ]);
+  }
+
+  it('snapshot() uses the injected signer instead of the legacy HMAC', async () => {
+    const { pool } = basicPool(5, 5);
+    const sign = jest.fn().mockReturnValue('signer-output-deadbeef');
+    const svc = new CalibrationService(pool, {
+      now: () => FIXED_NOW,
+      snapshotSigner: { sign },
+    });
+    const snap = await svc.snapshot(TENANT_ID);
+    expect(sign).toHaveBeenCalledTimes(1);
+    expect(snap.sourceSig).toBe('signer-output-deadbeef');
+    // Signer receives the snapshot without sourceSig.
+    const arg = sign.mock.calls[0]![0] as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(arg, 'sourceSig')).toBe(false);
+    expect(arg).toEqual(expect.objectContaining({
+      tenantId: TENANT_ID,
+      accountAgeDays: 7,
+      snapshotAt: FIXED_NOW.toISOString(),
+    }));
+  });
+
+  it('refresh() re-signs without re-querying the DB', async () => {
+    const prior = {
+      tenantId: TENANT_ID,
+      accountAgeDays: 30,
+      actionClassScores: { 'deploy.prod.kube': 0.85 },
+      snapshotAt: '2026-05-29T10:00:00Z',
+      sourceSig: 'stale-sig',
+    };
+    const { pool, calls } = makePool([]);
+    const sign = jest.fn().mockReturnValue('fresh-sig');
+    const svc = new CalibrationService(pool, {
+      now: () => new Date('2026-05-29T11:00:00Z'),
+      snapshotSigner: { sign },
+    });
+    const refreshed = svc.refresh(prior);
+    expect(refreshed.tenantId).toBe(TENANT_ID);
+    expect(refreshed.accountAgeDays).toBe(30);  // preserved verbatim
+    expect(refreshed.actionClassScores).toEqual(prior.actionClassScores);
+    expect(refreshed.snapshotAt).toBe('2026-05-29T11:00:00.000Z');
+    expect(refreshed.sourceSig).toBe('fresh-sig');
+    expect(calls.length).toBe(0);  // no DB round-trip
+  });
+
+  it('refresh() falls back to legacy sourceKey HMAC when no signer is injected', async () => {
+    const prior = {
+      tenantId: TENANT_ID,
+      accountAgeDays: 30,
+      actionClassScores: { 'deploy.prod.kube': 0.85 },
+      snapshotAt: '2026-05-29T10:00:00Z',
+      sourceSig: 'stale',
+    };
+    const { pool } = makePool([]);
+    const svc = new CalibrationService(pool, {
+      now: () => new Date('2026-05-29T11:00:00Z'),
+      sourceKey: 'legacy-key',
+    });
+    const refreshed = svc.refresh(prior);
+    expect(refreshed.sourceSig).toMatch(/^[0-9a-f]{64}$/);
+    expect(refreshed.snapshotAt).toBe('2026-05-29T11:00:00.000Z');
+  });
+});

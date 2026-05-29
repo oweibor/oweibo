@@ -18,7 +18,7 @@ export async function streamEvents(
   taskId: string,
   onEvent: (event: TaskEvent) => void,
 ): Promise<void> {
-  const cfg = loadConfig();
+  const cfg = loadConfig('OWEIBO_API_URL', 'http://localhost:3100/api/v1');
   const url = `${cfg.baseUrl}/tasks/${taskId}/events`;
 
   return new Promise((resolve, reject) => {

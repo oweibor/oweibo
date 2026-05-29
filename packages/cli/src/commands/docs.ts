@@ -83,7 +83,6 @@ export function makeDocsCommand(): Command {
         result = await api.post<GenerateResponse>(
           '/docs/generate',
           { rootPath, tenantId, options },
-          {},
         );
       } catch (err) {
         console.error('Failed to start doc generation:', (err as Error).message);

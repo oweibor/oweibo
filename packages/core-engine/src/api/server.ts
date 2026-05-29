@@ -16,6 +16,7 @@ import { createPlatformRouter } from './routes/platform.routes.js';
 import { createActionsRouter } from './routes/actions.routes.js';
 import { createActionsExtendedRouter } from './routes/actionsExtended.routes.js';
 import { createForensicsRouter } from './routes/forensics.routes.js';
+import { createLineageRouter } from './routes/lineage.routes.js';
 import { createAuthMiddleware } from './middleware/authenticate.js';
 import { openapiSpec } from './openapi.js';
 import type { SecretsManager } from '../secrets/SecretsManager.js';
@@ -104,6 +105,8 @@ export async function createServer(
     hitlHandoff?: import('../action/HitlHandoffService.js').HitlHandoffService;
     forensicStorage?: import('@oweibo/core-contracts').IForensicPacketStorage;
     actionReplay?: import('../action/ActionReplayService.js').ActionReplayService;
+    /** F.4.2: enables /api/v1/tenants/:tenantId/lineage/* routes. */
+    lineageRecorder?: import('../action/LineageRecorder.js').LineageRecorder;
   },
   config: Partial<ServerConfig> = {},
 ): Promise<{ app: import('express').Application; port: number }> {
@@ -189,6 +192,13 @@ export async function createServer(
       hitlHandoff:    deps.hitlHandoff,
       storage:        deps.forensicStorage,
       ...(deps.actionReplay ? { actionReplay: deps.actionReplay } : {}),
+    }));
+  }
+
+  // F.4.2: lineage routes (read-side admin surface).
+  if (deps.lineageRecorder) {
+    v1.use('/tenants/:tenantId/lineage', createLineageRouter({
+      lineage: deps.lineageRecorder,
     }));
   }
 

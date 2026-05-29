@@ -159,6 +159,9 @@ export type {
 } from './action/HitlHandoffService.js';
 export type { ReplayRunSummary } from './action/ActionReplayService.js';
 
+// ── F.4.2 admin surface — lineage reads ──────────────────────────────────────
+export { LineageRecorder } from './action/LineageRecorder.js';
+
 // ── Periodic domain services (F.3.3) ──────────────────────────────────────────
 export { DomainCurrencyMonitor } from './domain/DomainCurrencyMonitor.js';
 export { DomainDepthMetrics } from './domain/DomainDepthMetrics.js';

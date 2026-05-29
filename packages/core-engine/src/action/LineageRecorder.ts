@@ -95,6 +95,112 @@ export class LineageRecorder implements ILineageRecorder {
     }
   }
 
+  /**
+   * F.4.2: alias for the existing readPlanLineage. Kept under the name
+   * the plan referenced (`read(planId)`) for caller-readability.
+   */
+  async read(tenantId: string, planId: string): Promise<readonly ActionLineageNode[]> {
+    return this.readPlanLineage(tenantId, planId);
+  }
+
+  /**
+   * F.4.2: lineage nodes tied to a specific action proposal. Matches
+   * three discriminators: producer_id equals the action id, or the
+   * detail JSONB embeds the action id under either `actionId` or
+   * `proposalId`. Cross-plan within the tenant — RLS confines the
+   * result to `tenantId`.
+   */
+  async readActionLineage(
+    tenantId: string,
+    actionId: string,
+  ): Promise<readonly ActionLineageNode[]> {
+    const client = await this.pool.connect();
+    try {
+      await setTenantScope(client, tenantId);
+      const r = await client.query<{
+        id: string;
+        plan_id: string;
+        parent_node_id: string | null;
+        kind: string;
+        producer_type: string;
+        producer_id: string;
+        summary: string;
+        detail: unknown;
+        trace_id: string | null;
+        recorded_at: Date;
+      }>(
+        `SELECT id, plan_id, parent_node_id, kind, producer_type, producer_id,
+                summary, detail, trace_id, recorded_at
+           FROM oweibo.action_lineage
+          WHERE producer_id = $1
+             OR detail->>'actionId'   = $1
+             OR detail->>'proposalId' = $1
+          ORDER BY recorded_at`,
+        [actionId],
+      );
+      return r.rows.map(toNode);
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * F.4.2: a starting decision node + every descendant in the lineage
+   * tree (children, grandchildren, …). Returns null `decision` when the
+   * node id is unknown / belongs to another tenant; in that case
+   * `descendants` is also empty.
+   */
+  async readDecisionHistory(
+    tenantId: string,
+    decisionId: string,
+  ): Promise<{
+    decision: ActionLineageNode | null;
+    descendants: readonly ActionLineageNode[];
+  }> {
+    const client = await this.pool.connect();
+    try {
+      await setTenantScope(client, tenantId);
+      const r = await client.query<{
+        id: string;
+        plan_id: string;
+        parent_node_id: string | null;
+        kind: string;
+        producer_type: string;
+        producer_id: string;
+        summary: string;
+        detail: unknown;
+        trace_id: string | null;
+        recorded_at: Date;
+        is_root: boolean;
+      }>(
+        `WITH RECURSIVE chain AS (
+           SELECT *, true AS is_root
+             FROM oweibo.action_lineage
+            WHERE id = $1::uuid
+           UNION ALL
+           SELECT child.*, false AS is_root
+             FROM oweibo.action_lineage child
+             JOIN chain ON child.parent_node_id = chain.id
+         )
+         SELECT id, plan_id, parent_node_id, kind, producer_type, producer_id,
+                summary, detail, trace_id, recorded_at, is_root
+           FROM chain
+          ORDER BY recorded_at`,
+        [decisionId],
+      );
+      let decision: ActionLineageNode | null = null;
+      const descendants: ActionLineageNode[] = [];
+      for (const row of r.rows) {
+        const node = toNode(row);
+        if (row.is_root) decision = node;
+        else descendants.push(node);
+      }
+      return { decision, descendants };
+    } finally {
+      client.release();
+    }
+  }
+
   /** Read the full lineage tree for a plan. Used by S.7 forensic replay. */
   async readPlanLineage(tenantId: string, planId: string): Promise<readonly ActionLineageNode[]> {
     const client = await this.pool.connect();
@@ -119,21 +225,36 @@ export class LineageRecorder implements ILineageRecorder {
           ORDER BY recorded_at`,
         [planId],
       );
-      return r.rows.map((row) => ({
-        nodeId: row.id,
-        planId: row.plan_id,
-        parentNodeId: row.parent_node_id,
-        kind: row.kind as LineageNodeKind,
-        producer: { type: row.producer_type as LineageProducerType, id: row.producer_id },
-        summary: row.summary,
-        detail: row.detail,
-        recordedAt: row.recorded_at.toISOString(),
-        ...(row.trace_id ? { traceId: row.trace_id } : {}),
-      }));
+      return r.rows.map(toNode);
     } finally {
       client.release();
     }
   }
+}
+
+function toNode(row: {
+  id: string;
+  plan_id: string;
+  parent_node_id: string | null;
+  kind: string;
+  producer_type: string;
+  producer_id: string;
+  summary: string;
+  detail: unknown;
+  trace_id: string | null;
+  recorded_at: Date;
+}): ActionLineageNode {
+  return {
+    nodeId: row.id,
+    planId: row.plan_id,
+    parentNodeId: row.parent_node_id,
+    kind: row.kind as LineageNodeKind,
+    producer: { type: row.producer_type as LineageProducerType, id: row.producer_id },
+    summary: row.summary,
+    detail: row.detail,
+    recordedAt: row.recorded_at.toISOString(),
+    ...(row.trace_id ? { traceId: row.trace_id } : {}),
+  };
 }
 
 async function setTenantScope(client: PoolClient, tenantId: string): Promise<void> {

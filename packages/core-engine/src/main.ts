@@ -61,6 +61,7 @@ import { FinancialContentInspector } from './action/inspectors/FinancialContentI
 import { OutboxRelay }              from './infrastructure/OutboxRelay.js';
 import { ForensicPacketBuilder }     from './action/ForensicPacketBuilder.js';
 import { HitlHandoffService }        from './action/HitlHandoffService.js';
+import { LineageRecorder }           from './action/LineageRecorder.js';
 import { resolveForensicStorageFromEnv } from './action/storage/ForensicPacketStorage.js';
 import { hmacPacketSignerFromSecrets } from './action/storage/PacketSigner.js';
 import { RollbackOrchestrator, RollbackAdapterRegistry } from './action/RollbackOrchestrator.js';
@@ -385,6 +386,12 @@ async function main(): Promise<void> {
     dryRunRegistry = new DryRunRegistry(pgPool);
     shadowExecutor = new ShadowExecutor(pgPool);
 
+    // ── F.4.2: lineage recorder (read-side surfacing only at this point) ──
+    // Write-side wiring is the responsibility of ActionTrustLadder + the
+    // execution path; this construction supplies the read API the admin
+    // surface needs in /tenants/:tenantId/lineage/*.
+    const lineageRecorder = new LineageRecorder(pgPool);
+
     // ── F.2.3: forensic packet pipeline + HITL handoff ────────────────────
     //
     // Storage backend is selected via OWEIBO_FORENSIC_STORAGE_KIND
@@ -473,7 +480,7 @@ async function main(): Promise<void> {
         await postExecVerifier.supersedeForProposal(tenantId, proposalId);
       },
     });
-    void rollbackOrchestrator;  // wired into /api/v1/tenants/:id/actions/:id/rollback in F.4
+    void rollbackOrchestrator;  // wired into /api/v1/tenants/:id/actions/:id/rollback in F.4.3
 
     // T.0: outbox relay. Drains oweibo.outbox to Redis lifecycle channels
     // (oweibo.lifecycle.<subject>). Polls every 2s; fail-open on Redis errors.
@@ -599,6 +606,8 @@ async function main(): Promise<void> {
     ...(hitlHandoff && forensicStorage
       ? { hitlHandoff, forensicStorage }
       : {}),
+    // F.4.2: lineage read surface — recorder is always constructed.
+    lineageRecorder,
   });
 
   // ── Channel Gateway (optional) ────────────────────────────────────────────

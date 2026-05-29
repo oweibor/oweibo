@@ -306,8 +306,9 @@ async function main(): Promise<void> {
     const calibrationService = new CalibrationService(pgPool, {
       ...(snapshotSigner ? { snapshotSigner } : {}),
     });
-    void calibrationService;  // wired into the task-create path in a follow-up;
-                              // F.3.1's scope is the construction site.
+    // F.4.6: calibrationService now flows into createServer below for
+    // /tenants/:tenantId/calibration. Task-create-path wiring is the
+    // follow-up that F.3.1's scope deferred.
 
     // ── F.3.2: TtvMetricsService — time-to-value telemetry ─────────────────
     //
@@ -631,6 +632,8 @@ async function main(): Promise<void> {
     smeReviewService,
     domainDepthMetrics,
     complianceEvaluations,
+    // F.4.6: calibration readiness snapshot — admin badge + onboarding.
+    calibrationService,
   });
 
   // ── Channel Gateway (optional) ────────────────────────────────────────────

@@ -19,6 +19,7 @@ import { createForensicsRouter } from './routes/forensics.routes.js';
 import { createLineageRouter } from './routes/lineage.routes.js';
 import { createTenantActionsRouter } from './routes/tenantActions.routes.js';
 import { createDomainsRouter } from './routes/domains.routes.js';
+import { createCalibrationRouter } from './routes/calibration.routes.js';
 import { createAuthMiddleware } from './middleware/authenticate.js';
 import { openapiSpec } from './openapi.js';
 import type { SecretsManager } from '../secrets/SecretsManager.js';
@@ -118,6 +119,8 @@ export async function createServer(
     smeReviewService?: import('../domain/SmeReviewService.js').SmeReviewService;
     domainDepthMetrics?: import('../domain/DomainDepthMetrics.js').DomainDepthMetrics;
     complianceEvaluations?: import('../domain/PgComplianceEvaluationReader.js').PgComplianceEvaluationReader;
+    /** F.4.6: enables GET /api/v1/tenants/:tenantId/calibration. */
+    calibrationService?: import('../infrastructure/CalibrationService.js').CalibrationService;
   },
   config: Partial<ServerConfig> = {},
 ): Promise<{ app: import('express').Application; port: number }> {
@@ -243,6 +246,12 @@ export async function createServer(
     }));
   }
 
+  // F.4.6: calibration snapshot — admin badge consumer.
+  if (deps.calibrationService) {
+    v1.use('/tenants/:tenantId/calibration', createCalibrationRouter({
+      calibration: deps.calibrationService,
+    }));
+  }
 
   if (deps.pool && deps.operationalMode) {
     v1.use('/platform', createPlatformRouter({

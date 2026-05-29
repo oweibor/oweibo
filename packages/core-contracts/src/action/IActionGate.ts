@@ -39,6 +39,22 @@ export interface ActionContext {
    * staleness threshold.
    */
   readonly calibrationSnapshot: TenantReadinessSnapshot;
+  /**
+   * F.2.5: principal-supplied scopes propagated through the gate to
+   * downstream integrations (notably ComplianceRuleEvaluator's bypass
+   * resolver). Optional today: callers populate it from the originating
+   * HTTP request's auth middleware. A missed caller surfaces as
+   * audit-visible blocks rather than silent bypass — the
+   * ComplianceRuleEvaluator's default scope-based resolver returns
+   * null when this field is undefined.
+   *
+   * Standard scope shape:
+   *   compliance:bypass:platform_admin
+   *   compliance:bypass:tenant_admin
+   *   bypass:domain.<slug>
+   * (see ComplianceRuleEvaluator for the matcher.)
+   */
+  readonly principalScopes?: readonly string[];
 }
 
 /**

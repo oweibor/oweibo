@@ -368,6 +368,11 @@ export class ActionTrustLadder implements IActionGate {
         actionClass: ctx.actionClass,
         payload: ctx.payload,
         summary: ctx.summary,
+        // F.2.5: propagate principal-supplied scopes so the evaluator's
+        // bypass resolver can match against rule.bypassPolicy. Undefined
+        // when the caller hasn't been refactored yet — default-deny
+        // applies (evaluator returns null bypass → rule fires normally).
+        ...(ctx.principalScopes ? { principalScopes: ctx.principalScopes } : {}),
       });
       void this.recordComplianceRuleEvaluations(ctx, compliance.perRule).catch(() => undefined);
       if (compliance.worstVerdict === 'block') {

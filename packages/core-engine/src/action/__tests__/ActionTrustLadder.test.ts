@@ -482,6 +482,37 @@ describe('ActionTrustLadder.gate — D.3 compliance rule evaluator hook', () => 
     expect(r.mode).toBe('execute');
   });
 
+  it('F.2.5: threads ctx.principalScopes into the evaluator call', async () => {
+    const { pool } = makePool([]);
+    const evaluateActionTime = jest.fn().mockResolvedValue({
+      worstVerdict: 'pass',
+      perRule: [],
+    });
+    const ladder = new ActionTrustLadder(pool, {
+      isEnabled: () => true,
+      complianceRuleEvaluator: { evaluateActionTime },
+    });
+    await ladder.gate({ ...cleanCtx(), principalScopes: ['compliance:bypass:platform_admin'] });
+    expect(evaluateActionTime).toHaveBeenCalledWith(
+      expect.objectContaining({ principalScopes: ['compliance:bypass:platform_admin'] }),
+    );
+  });
+
+  it('F.2.5: omits principalScopes from the evaluator call when caller did not supply it', async () => {
+    const { pool } = makePool([]);
+    const evaluateActionTime = jest.fn().mockResolvedValue({
+      worstVerdict: 'pass',
+      perRule: [],
+    });
+    const ladder = new ActionTrustLadder(pool, {
+      isEnabled: () => true,
+      complianceRuleEvaluator: { evaluateActionTime },
+    });
+    await ladder.gate(cleanCtx());
+    const [arg] = evaluateActionTime.mock.calls[0] as [Record<string, unknown>];
+    expect(Object.prototype.hasOwnProperty.call(arg, 'principalScopes')).toBe(false);
+  });
+
   it('returns forbidden with `compliance:<ruleId>` reason when evaluator blocks', async () => {
     const { pool } = makePool([]);
     const ladder = new ActionTrustLadder(pool, {

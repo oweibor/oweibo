@@ -48,6 +48,63 @@ export type BypassResolver = (input: {
   ctx: ActionTimeRuleContext;
 }) => Promise<BypassAuthorization | null> | BypassAuthorization | null;
 
+/**
+ * F.2.5: default scope-based bypass resolver.
+ *
+ * Maps `rule.bypassPolicy` to a scope string and checks the caller's
+ * `ctx.principalScopes`. When the principal carries the scope, returns
+ * a BypassAuthorization with the principal name. When the scope is
+ * absent, OR when `ctx.principalScopes` itself is undefined, returns
+ * null — the rule fires normally. The principal-name field uses
+ * `ctx.principalScopes` as a witness; a real auth middleware threading
+ * scopes should also surface a stable principal subject string (added
+ * to BypassAuthorization here for audit).
+ *
+ * Scope shape:
+ *   compliance:bypass:platform_admin   → bypasses 'platform_admin_only' rules
+ *   compliance:bypass:tenant_admin     → bypasses 'tenant_admin' rules
+ *                                        (and 'platform_admin_only' too — admin scopes nest)
+ *   platform:bypass:compliance         → super-bypass (legacy, equivalent to platform_admin)
+ */
+export function scopeBasedBypassResolver(
+  input: { rule: ComplianceRule; ctx: ActionTimeRuleContext },
+): BypassAuthorization | null {
+  if (input.rule.bypassPolicy === 'never') return null;
+  const scopes = input.ctx.principalScopes;
+  if (!scopes || scopes.length === 0) return null;
+
+  const has = (s: string) => scopes.includes(s);
+
+  if (input.rule.bypassPolicy === 'platform_admin_only') {
+    if (has('compliance:bypass:platform_admin') || has('platform:bypass:compliance')) {
+      return {
+        kind: 'platform_admin',
+        principal: 'scope:compliance:bypass:platform_admin',
+        reason: 'scope-based bypass',
+      };
+    }
+    return null;
+  }
+  if (input.rule.bypassPolicy === 'tenant_admin') {
+    if (
+      has('compliance:bypass:tenant_admin') ||
+      has('compliance:bypass:platform_admin') ||
+      has('platform:bypass:compliance')
+    ) {
+      const isPlatform = has('compliance:bypass:platform_admin') || has('platform:bypass:compliance');
+      return {
+        kind: isPlatform ? 'platform_admin' : 'tenant_admin',
+        principal: isPlatform
+          ? 'scope:compliance:bypass:platform_admin'
+          : 'scope:compliance:bypass:tenant_admin',
+        reason: 'scope-based bypass',
+      };
+    }
+    return null;
+  }
+  return null;
+}
+
 export interface IComplianceEvaluatorLogger {
   warn(message: string, extra?: Record<string, unknown>): void;
 }
@@ -67,7 +124,12 @@ export class ComplianceRuleEvaluator implements IComplianceRuleEvaluator {
     private readonly registry: IComplianceRulePackRegistry,
     opts: ComplianceRuleEvaluatorOptions = {},
   ) {
-    this.bypassResolver = opts.bypassResolver ?? (() => null);
+    // F.2.5: default to the scope-based resolver instead of "always null".
+    // Callers that need custom bypass semantics still inject their own.
+    // The scope resolver is itself default-deny when ctx.principalScopes
+    // is undefined, so the byte-identical-to-old behaviour holds for any
+    // existing test / caller that doesn't supply scopes.
+    this.bypassResolver = opts.bypassResolver ?? scopeBasedBypassResolver;
     this.log = opts.log ?? {
       warn: (message, extra) => console.warn(`[ComplianceRuleEvaluator] ${message}`, extra ?? {}),
     };

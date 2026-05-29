@@ -74,6 +74,9 @@ import { PostExecutionVerifierService, InMemoryVerifierRegistry } from './action
 import { DeployHealthCheckVerifier } from './action/verifiers/DeployHealthCheckVerifier.js';
 import { EmailDeliveredVerifier }    from './action/verifiers/EmailDeliveredVerifier.js';
 import { PostgresRowCountVerifier }  from './action/verifiers/PostgresRowCountVerifier.js';
+import { ComplianceRuleEvaluator }   from './domain/ComplianceRuleEvaluator.js';
+import { ComplianceRulePackRegistry } from './domain/ComplianceRulePackRegistry.js';
+import { PgTenantDomainBindingLookup } from './domain/PgTenantDomainBindingLookup.js';
 import { PromptRegistry }          from '@oweibo/prompt-registry';
 import { PromptAssembler }         from '@oweibo/prompt-registry';
 import { createServer }            from './api/server.js';
@@ -242,6 +245,20 @@ async function main(): Promise<void> {
     contentInspectors.register(new GitContentInspector());
     contentInspectors.register(new DeploymentContentInspector());
     contentInspectors.register(new FinancialContentInspector());
+    // ── F.2.5: ComplianceRuleEvaluator + tenant-domain binding lookup ─────
+    //
+    // ComplianceRulePackRegistry loads the v1 in-memory packs (fintech,
+    // healthcare, legal — see D.3). PgTenantDomainBindingLookup (F.1.8)
+    // resolves per-tenant bound domain slugs from oweibo.tenant_domain_binding.
+    // The evaluator's default bypass resolver is scopeBasedBypassResolver
+    // (declared in ComplianceRuleEvaluator.ts) — it reads
+    // ctx.principalScopes and matches against rule.bypassPolicy.
+    const tenantDomainLookup = new PgTenantDomainBindingLookup(pgPool);
+    const compliancePackRegistry = new ComplianceRulePackRegistry(undefined, {
+      tenantDomainLookup: (t) => tenantDomainLookup.forTenant(t),
+    });
+    const complianceRuleEvaluator = new ComplianceRuleEvaluator(compliancePackRegistry);
+
     actionTrustLadder = new ActionTrustLadder(pgPool, {
       slaAttacher: slaService,
       rateLimiter: { tryConsume: (t, c) => rateLimiter.tryConsume(t, c) },
@@ -249,10 +266,11 @@ async function main(): Promise<void> {
       contentInspectors: { run: (ctx) => contentInspectors.run(ctx) },
       quotaService: { preflight: (args) => quotaService.preflight(args) },
       budgetEstimator: { estimate: (args) => budgetEstimator.estimate(args) },
-      // complianceRuleEvaluator + snapshotVerifier are intentionally
-      // left undefined until the per-domain rule-pack registry and the
-      // calibration-snapshot HMAC key resolver are wired (separate
-      // composition concerns).
+      complianceRuleEvaluator,
+      // snapshotVerifier is intentionally left undefined here — wiring
+      // it requires the calibration-signing key in Vault. F.3.1 will
+      // add the construction once CalibrationService is wired into the
+      // task-create path.
     });
     dryRunRegistry = new DryRunRegistry(pgPool);
     shadowExecutor = new ShadowExecutor(pgPool);

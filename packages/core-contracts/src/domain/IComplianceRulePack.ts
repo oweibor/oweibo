@@ -153,6 +153,13 @@ export interface ActionTimeRuleContext {
   readonly actionClass: ActionClass;
   readonly payload: unknown;
   readonly summary?: string;
+  /**
+   * F.2.5: principal scopes propagated from ActionContext. Consumed by
+   * the evaluator's bypass resolver. Optional — when undefined the
+   * default scope-based resolver returns null (no bypass), making the
+   * absent-field case default-deny.
+   */
+  readonly principalScopes?: readonly string[];
 }
 
 export interface IComplianceRuleEvaluator {

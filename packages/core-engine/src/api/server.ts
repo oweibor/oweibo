@@ -161,10 +161,14 @@ export async function createServer(
     }));
   }
 
-  // S.4 / S.6: extended action routes (grants, approvals/votes, quotas).
-  // Mounted at the same /actions prefix so admin-web hits a single base.
+  // F.4.0 (was S.4 / S.6): extended action routes (grants, approvals/votes,
+  // quotas). Mounted under `/tenants/:tenantId/actions/*` — the URL param
+  // is the source of truth, cross-checked against the JWT tenant claim by
+  // the router's own `requireTenantParamMatchesJwt` guard. Previous mount
+  // was `/actions/*` (round-5 audit) — moved here so the admin-web pages
+  // hit a single tenant-scoped base.
   if (deps.multiPartyApproval && deps.quotaService) {
-    v1.use('/actions', createActionsExtendedRouter({
+    v1.use('/tenants/:tenantId/actions', createActionsExtendedRouter({
       multiPartyApproval: deps.multiPartyApproval,
       quotaService: deps.quotaService,
     }));

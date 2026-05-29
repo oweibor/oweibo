@@ -2,17 +2,22 @@
  * actionsExtended.routes.ts — skeleton HTTP surface for the S.4 / S.6
  * services that admin-web pages depend on.
  *
- * Endpoints (all tenant-scoped via the JWT's tenantId claim — same
- * pattern as actions.routes.ts):
+ * F.4.0: mounted under `/api/v1/tenants/:tenantId/actions/*`. Tenant
+ * scoping comes from the URL param (`req.params.tenantId`), cross-checked
+ * against the JWT's tenantId claim. Mismatch → 403. This convention
+ * matches the rest of the tenant-scoped surface and lets a single auth
+ * principal address only its own tenant.
  *
- *   GET    /actions/quotas/usage                  — current quota usage
- *   POST   /actions/quotas/preflight              — dry-run preflight check
- *   GET    /actions/grants                        — list active grants
- *   POST   /actions/grants                        — create a grant
- *   DELETE /actions/grants/:id                    — revoke a grant
- *   GET    /actions/approvals/:proposalId/quorum  — read-only quorum status
- *   POST   /actions/approvals/:proposalId/votes   — cast a vote
- *   POST   /actions/approvals/delegations         — create a delegation
+ * Endpoints:
+ *
+ *   GET    /tenants/:tenantId/actions/quotas/usage                  — current quota usage
+ *   POST   /tenants/:tenantId/actions/quotas/preflight              — dry-run preflight check
+ *   GET    /tenants/:tenantId/actions/grants                        — list active grants
+ *   POST   /tenants/:tenantId/actions/grants                        — create a grant
+ *   DELETE /tenants/:tenantId/actions/grants/:id                    — revoke a grant
+ *   GET    /tenants/:tenantId/actions/approvals/:proposalId/quorum  — read-only quorum status
+ *   POST   /tenants/:tenantId/actions/approvals/:proposalId/votes   — cast a vote
+ *   POST   /tenants/:tenantId/actions/approvals/delegations         — create a delegation
  *
  * Each handler validates input with Zod and surfaces structured errors.
  * Service-layer exceptions translate to 4xx (validation) or 5xx
@@ -22,6 +27,7 @@
 import { Router, type Response } from 'express';
 import { z } from 'zod';
 import type { AuthenticatedRequest } from '../middleware/authenticate.js';
+import { requireTenantParamMatchesJwt } from '../middleware/tenantParam.js';
 import type { MultiPartyApprovalService } from '../../action/MultiPartyApprovalService.js';
 import type { QuotaService } from '../../action/QuotaService.js';
 import type {
@@ -77,7 +83,12 @@ export interface ActionsExtendedRouterDeps {
 }
 
 export function createActionsExtendedRouter(deps: ActionsExtendedRouterDeps): Router {
-  const router = Router();
+  // mergeParams flows :tenantId from the parent mount into req.params here.
+  const router = Router({ mergeParams: true });
+
+  // F.4.0: every handler below reads tenantId from req.tenantId, which the
+  // guard rewrites to the URL param. Mismatched JWT → 403.
+  router.use(requireTenantParamMatchesJwt as unknown as import('express').RequestHandler);
 
   // ── Quotas ────────────────────────────────────────────────────────────
 

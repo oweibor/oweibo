@@ -124,6 +124,21 @@ export { PgWebhookConfigResolver } from './action/PgWebhookConfigResolver.js';
 export type { IWebhookConfigResolver, ResolvedWebhookConfig, WebhookKind } from './action/PgWebhookConfigResolver.js';
 export { PgTenantDomainBindingLookup } from './domain/PgTenantDomainBindingLookup.js';
 
+// ── Rollback adapters (S.3 + F.2.2) ───────────────────────────────────────────
+export { NoOpRollbackAdapter } from './action/rollback-adapters/NoOpRollbackAdapter.js';
+export { GenericWebhookRollbackAdapter } from './action/rollback-adapters/GenericWebhookRollbackAdapter.js';
+export type {
+  WebhookConfig as RollbackWebhookConfig,
+  WebhookConfigResolver as RollbackWebhookConfigResolver,
+} from './action/rollback-adapters/GenericWebhookRollbackAdapter.js';
+export { PostgresRollbackAdapter } from './action/rollback-adapters/PostgresRollbackAdapter.js';
+export { GitRollbackAdapter } from './action/rollback-adapters/GitRollbackAdapter.js';
+export { SlackRollbackAdapter } from './action/rollback-adapters/SlackRollbackAdapter.js';
+export type { SlackTokenResolver } from './action/rollback-adapters/SlackRollbackAdapter.js';
+export { DeployRollbackAdapter } from './action/rollback-adapters/DeployRollbackAdapter.js';
+export type { DeployConfig, DeployConfigResolver } from './action/rollback-adapters/DeployRollbackAdapter.js';
+export { RollbackOrchestrator, RollbackAdapterRegistry } from './action/RollbackOrchestrator.js';
+
 // ── Type re-exports ───────────────────────────────────────────────────────────
 export type { GeneralCodingResult } from './general-coding/GeneralCodingOrchestrator.js';
 export type { EditPlan } from './general-coding/ConversationalLoop.js';

@@ -16,7 +16,6 @@
  * `tenant_memberships` reader are passed in so the engine can be unit-
  * tested without a live DB.
  */
-import type { Pool, PoolClient } from 'pg';
 import type {
   ApprovalSlaPolicy,
   ApproverResolutionKind,
@@ -226,95 +225,14 @@ export class EscalationEngine {
   }
 }
 
-// ── DB-backed adapters (default for production wiring) ────────────────────
-
-export class PgOrgGraphReader implements IOrgGraphReader {
-  constructor(
-    private readonly pool: Pool,
-    /** Optional injection of the engine-side resolveApprovers; tests pass a stub. */
-    private readonly orgResolve: (tenantId: string, actionClass: string) => Promise<{
-      readonly nodes: readonly string[];
-      readonly users: readonly string[];
-      readonly fromGraph: boolean;
-    }>,
-  ) {}
-
-  async resolveApprovers(tenantId: string, actionClass: string): Promise<{
-    readonly nodes: readonly string[];
-    readonly users: readonly string[];
-    readonly fromGraph: boolean;
-  }> {
-    return this.orgResolve(tenantId, actionClass);
-  }
-
-  async reportsTo(tenantId: string, nodeIds: readonly string[]): Promise<{
-    readonly nodes: readonly string[];
-    readonly users: readonly string[];
-  }> {
-    return withTenantClient(this.pool, tenantId, async (client) => {
-      const r = await client.query<{ id: string; user_id: string | null }>(
-        `SELECT n.id, n.user_id
-           FROM oweibo.org_nodes n
-           JOIN oweibo.org_edges e
-             ON e.tenant_id = n.tenant_id
-            AND e.to_node = n.id
-            AND e.edge_type = 'reports_to'
-          WHERE n.tenant_id = $1::uuid
-            AND e.from_node = ANY($2::uuid[])`,
-        [tenantId, nodeIds],
-      );
-      const nodes: string[] = [];
-      const users: string[] = [];
-      for (const row of r.rows) {
-        nodes.push(row.id);
-        if (row.user_id) users.push(row.user_id);
-      }
-      return { nodes: dedupe(nodes), users: dedupe(users) };
-    });
-  }
-}
-
-export class PgTenantRoleReader implements ITenantRoleReader {
-  constructor(private readonly pool: Pool) {}
-
-  async usersWithRoles(tenantId: string, roles: readonly string[]): Promise<readonly string[]> {
-    return withTenantClient(this.pool, tenantId, async (client) => {
-      const r = await client.query<{ user_id: string }>(
-        `SELECT DISTINCT user_id
-           FROM oweibo.tenant_memberships
-          WHERE tenant_id = $1::uuid
-            AND roles && $2::text[]`,
-        [tenantId, roles],
-      );
-      return r.rows.map((row) => row.user_id);
-    });
-  }
-}
-
-async function withTenantClient<T>(
-  pool: Pool,
-  tenantId: string,
-  fn: (client: PoolClient) => Promise<T>,
-): Promise<T> {
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    if (/^[0-9a-f-]{36}$/i.test(tenantId)) {
-      await client.query(`SET LOCAL app.tenant_id = '${tenantId}'`);
-    }
-    const out = await fn(client);
-    await client.query('COMMIT');
-    return out;
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => undefined);
-    throw err;
-  } finally {
-    client.release();
-  }
-}
-
 function dedupe(xs: readonly string[]): readonly string[] {
   return Array.from(new Set(xs));
 }
 
 export type { ApproverResolutionKind };
+
+// Production DB-backed adapters live in their own files:
+//   ./PgOrgGraphReader.ts   — IOrgGraphReader
+//   ./PgTenantRoleReader.ts — ITenantRoleReader
+// They were moved here for the F.1.5 wiring; the engine itself is pure
+// (test-able with in-memory fakes).

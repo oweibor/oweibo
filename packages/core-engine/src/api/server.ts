@@ -15,6 +15,7 @@ import { createSkillsRouter } from './routes/skills.routes.js';
 import { createPlatformRouter } from './routes/platform.routes.js';
 import { createActionsRouter } from './routes/actions.routes.js';
 import { createActionsExtendedRouter } from './routes/actionsExtended.routes.js';
+import { createForensicsRouter } from './routes/forensics.routes.js';
 import { createAuthMiddleware } from './middleware/authenticate.js';
 import { openapiSpec } from './openapi.js';
 import type { SecretsManager } from '../secrets/SecretsManager.js';
@@ -99,6 +100,10 @@ export async function createServer(
     /** S.4 / S.6: enables /api/v1/actions/{grants,approvals,quotas}/* routes. */
     multiPartyApproval?: import('../action/MultiPartyApprovalService.js').MultiPartyApprovalService;
     quotaService?: import('../action/QuotaService.js').QuotaService;
+    /** F.4.1: enables /api/v1/tenants/:tenantId/forensics/* routes. */
+    hitlHandoff?: import('../action/HitlHandoffService.js').HitlHandoffService;
+    forensicStorage?: import('@oweibo/core-contracts').IForensicPacketStorage;
+    actionReplay?: import('../action/ActionReplayService.js').ActionReplayService;
   },
   config: Partial<ServerConfig> = {},
 ): Promise<{ app: import('express').Application; port: number }> {
@@ -171,6 +176,19 @@ export async function createServer(
     v1.use('/tenants/:tenantId/actions', createActionsExtendedRouter({
       multiPartyApproval: deps.multiPartyApproval,
       quotaService: deps.quotaService,
+    }));
+  }
+
+  // F.4.1: forensic packet + replay routes. Requires the HITL service and
+  // a storage adapter; replay endpoints additionally require ActionReplayService
+  // (otherwise they return 503 replay_disabled). When forensics are dormant
+  // (FORENSIC_REPLAY_ENABLED=false or no storage configured) the routes do
+  // not mount at all — the admin pages surface a load error.
+  if (deps.hitlHandoff && deps.forensicStorage) {
+    v1.use('/tenants/:tenantId/forensics', createForensicsRouter({
+      hitlHandoff:    deps.hitlHandoff,
+      storage:        deps.forensicStorage,
+      ...(deps.actionReplay ? { actionReplay: deps.actionReplay } : {}),
     }));
   }
 

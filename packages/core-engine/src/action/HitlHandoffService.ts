@@ -200,7 +200,7 @@ export class HitlHandoffService {
     }
   }
 
-  // ── Reads (used by admin-web detail page) ──────────────────────────────
+  // ── Reads (used by admin-web pages, F.4.1) ─────────────────────────────
 
   async list(tenantId: string, limit = 50): Promise<
     Array<{ id: string; planId: string; state: string; triggerKind: string; createdAt: string; summary: string | null }>
@@ -229,6 +229,127 @@ export class HitlHandoffService {
         createdAt: row.created_at.toISOString(),
         summary: row.summary,
       }));
+    });
+  }
+
+  /**
+   * Cursor-paginated list. Cursor is the ISO created_at of the last row
+   * the caller received (older rows). Caller passes the cursor back to
+   * fetch the next page; absence means start from the newest row.
+   */
+  async listPaginated(
+    tenantId: string,
+    opts: { cursor?: string; limit?: number } = {},
+  ): Promise<{
+    rows: Array<ForensicPacketRowSummary>;
+    nextCursor: string | null;
+  }> {
+    const limit = Math.max(1, Math.min(opts.limit ?? 50, 200));
+    return this.tx(tenantId, async (client) => {
+      const r = await client.query<{
+        id: string;
+        plan_id: string;
+        state: string;
+        trigger_kind: string;
+        created_at: Date;
+        summary: string | null;
+      }>(
+        `SELECT id, plan_id, state, trigger_kind, created_at, summary
+           FROM oweibo.forensic_packets
+          WHERE tenant_id = $1::uuid
+            AND ($2::timestamptz IS NULL OR created_at < $2::timestamptz)
+          ORDER BY created_at DESC
+          LIMIT $3`,
+        [tenantId, opts.cursor ?? null, limit + 1],
+      );
+      const rows = r.rows.slice(0, limit).map((row) => ({
+        id: row.id,
+        planId: row.plan_id,
+        state: row.state,
+        triggerKind: row.trigger_kind,
+        createdAt: row.created_at.toISOString(),
+        summary: row.summary,
+      }));
+      const nextCursor = r.rows.length > limit
+        ? rows[rows.length - 1]?.createdAt ?? null
+        : null;
+      return { rows, nextCursor };
+    });
+  }
+
+  /**
+   * Single-packet metadata + storage + signature. Returns null when the
+   * packet row doesn't exist or belongs to another tenant.
+   */
+  async getById(tenantId: string, packetId: string): Promise<ForensicPacketRow | null> {
+    return this.tx(tenantId, async (client) => {
+      const r = await client.query<{
+        id: string;
+        plan_id: string;
+        trigger_kind: string;
+        triggered_by: string;
+        summary: string | null;
+        packet_storage_ref: string;
+        packet_signature: string;
+        packet_byte_size: number;
+        state: string;
+        resolution: string | null;
+        resolution_notes: string | null;
+        resolved_by: string | null;
+        resolved_at: Date | null;
+        expires_at: Date;
+        created_at: Date;
+      }>(
+        `SELECT id, plan_id, trigger_kind, triggered_by, summary,
+                packet_storage_ref, packet_signature, packet_byte_size,
+                state, resolution, resolution_notes, resolved_by, resolved_at,
+                expires_at, created_at
+           FROM oweibo.forensic_packets
+          WHERE id = $1::uuid AND tenant_id = $2::uuid`,
+        [packetId, tenantId],
+      );
+      const row = r.rows[0];
+      if (!row) return null;
+      return rowToForensicPacketRow(row);
+    });
+  }
+
+  /**
+   * Most-recent packet for a plan, used by the admin detail page which
+   * navigates by planId rather than packetId.
+   */
+  async getByPlanId(tenantId: string, planId: string): Promise<ForensicPacketRow | null> {
+    return this.tx(tenantId, async (client) => {
+      const r = await client.query<{
+        id: string;
+        plan_id: string;
+        trigger_kind: string;
+        triggered_by: string;
+        summary: string | null;
+        packet_storage_ref: string;
+        packet_signature: string;
+        packet_byte_size: number;
+        state: string;
+        resolution: string | null;
+        resolution_notes: string | null;
+        resolved_by: string | null;
+        resolved_at: Date | null;
+        expires_at: Date;
+        created_at: Date;
+      }>(
+        `SELECT id, plan_id, trigger_kind, triggered_by, summary,
+                packet_storage_ref, packet_signature, packet_byte_size,
+                state, resolution, resolution_notes, resolved_by, resolved_at,
+                expires_at, created_at
+           FROM oweibo.forensic_packets
+          WHERE plan_id = $1::uuid AND tenant_id = $2::uuid
+          ORDER BY created_at DESC
+          LIMIT 1`,
+        [planId, tenantId],
+      );
+      const row = r.rows[0];
+      if (!row) return null;
+      return rowToForensicPacketRow(row);
     });
   }
 
@@ -263,6 +384,69 @@ function defaultLog(level: 'info' | 'warn' | 'error', line: string, _ctx?: unkno
   if (level === 'error') console.error(`[HitlHandoff] ${line}`);
   else if (level === 'warn') console.warn(`[HitlHandoff] ${line}`);
   else console.log(`[HitlHandoff] ${line}`);
+}
+
+export interface ForensicPacketRowSummary {
+  readonly id: string;
+  readonly planId: string;
+  readonly state: string;
+  readonly triggerKind: string;
+  readonly createdAt: string;
+  readonly summary: string | null;
+}
+
+export interface ForensicPacketRow {
+  readonly id: string;
+  readonly planId: string;
+  readonly triggerKind: string;
+  readonly triggeredBy: string;
+  readonly summary: string | null;
+  readonly storageRef: string;
+  readonly signature: string;
+  readonly byteSize: number;
+  readonly state: string;
+  readonly resolution: string | null;
+  readonly resolutionNotes: string | null;
+  readonly resolvedBy: string | null;
+  readonly resolvedAt: string | null;
+  readonly expiresAt: string;
+  readonly createdAt: string;
+}
+
+function rowToForensicPacketRow(row: {
+  id: string;
+  plan_id: string;
+  trigger_kind: string;
+  triggered_by: string;
+  summary: string | null;
+  packet_storage_ref: string;
+  packet_signature: string;
+  packet_byte_size: number;
+  state: string;
+  resolution: string | null;
+  resolution_notes: string | null;
+  resolved_by: string | null;
+  resolved_at: Date | null;
+  expires_at: Date;
+  created_at: Date;
+}): ForensicPacketRow {
+  return {
+    id: row.id,
+    planId: row.plan_id,
+    triggerKind: row.trigger_kind,
+    triggeredBy: row.triggered_by,
+    summary: row.summary,
+    storageRef: row.packet_storage_ref,
+    signature: row.packet_signature,
+    byteSize: row.packet_byte_size,
+    state: row.state,
+    resolution: row.resolution,
+    resolutionNotes: row.resolution_notes,
+    resolvedBy: row.resolved_by,
+    resolvedAt: row.resolved_at ? row.resolved_at.toISOString() : null,
+    expiresAt: row.expires_at.toISOString(),
+    createdAt: row.created_at.toISOString(),
+  };
 }
 
 export function mapResolutionToPlanState(res: ForensicResolution): string {

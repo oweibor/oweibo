@@ -137,6 +137,53 @@ export class ActionReplayService {
     }
   }
 
+  // ── Reads (F.4.1: replay-run status endpoint) ──────────────────────────
+
+  /**
+   * Returns the row + summarized result for a replay run, or null when
+   * the run id is unknown / belongs to another tenant. Used by
+   * `GET /forensics/:id/replay/:runId`.
+   */
+  async getRun(tenantId: string, runId: string): Promise<ReplayRunSummary | null> {
+    return this.tx(tenantId, async (client) => {
+      const r = await client.query<{
+        id: string;
+        plan_id: string;
+        requested_by: string;
+        replay_kind: string;
+        mutation: unknown;
+        result_summary: unknown;
+        status: string;
+        failure_reason: string | null;
+        started_at: Date | null;
+        completed_at: Date | null;
+        created_at: Date;
+      }>(
+        `SELECT id, plan_id, requested_by, replay_kind, mutation,
+                result_summary, status, failure_reason,
+                started_at, completed_at, created_at
+           FROM oweibo.action_replay_runs
+          WHERE id = $1::uuid AND tenant_id = $2::uuid`,
+        [runId, tenantId],
+      );
+      const row = r.rows[0];
+      if (!row) return null;
+      return {
+        runId: row.id,
+        planId: row.plan_id,
+        requestedBy: row.requested_by,
+        kind: row.replay_kind as ReplayKind,
+        mutation: row.mutation as ReplayMutation | null,
+        status: row.status as 'queued' | 'running' | 'complete' | 'failed',
+        failureReason: row.failure_reason,
+        resultSummary: row.result_summary as Record<string, unknown> | null,
+        startedAt: row.started_at ? row.started_at.toISOString() : null,
+        completedAt: row.completed_at ? row.completed_at.toISOString() : null,
+        createdAt: row.created_at.toISOString(),
+      };
+    });
+  }
+
   // ── Internals ──────────────────────────────────────────────────────────
 
   private async openRun(req: ReplayRequest): Promise<string> {
@@ -266,6 +313,20 @@ function defaultLog(level: 'info' | 'warn' | 'error', line: string, _ctx?: unkno
   if (level === 'error') console.error(`[ActionReplay] ${line}`);
   else if (level === 'warn') console.warn(`[ActionReplay] ${line}`);
   else console.log(`[ActionReplay] ${line}`);
+}
+
+export interface ReplayRunSummary {
+  readonly runId: string;
+  readonly planId: string;
+  readonly requestedBy: string;
+  readonly kind: ReplayKind;
+  readonly mutation: ReplayMutation | null;
+  readonly status: 'queued' | 'running' | 'complete' | 'failed';
+  readonly failureReason: string | null;
+  readonly resultSummary: Record<string, unknown> | null;
+  readonly startedAt: string | null;
+  readonly completedAt: string | null;
+  readonly createdAt: string;
 }
 
 /**

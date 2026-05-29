@@ -152,6 +152,13 @@ export { PgWebhookConfigResolver } from './action/PgWebhookConfigResolver.js';
 export type { IWebhookConfigResolver, ResolvedWebhookConfig, WebhookKind } from './action/PgWebhookConfigResolver.js';
 export { PgTenantDomainBindingLookup } from './domain/PgTenantDomainBindingLookup.js';
 
+// ── Forensic + replay reads (F.4.1) ───────────────────────────────────────────
+export type {
+  ForensicPacketRow,
+  ForensicPacketRowSummary,
+} from './action/HitlHandoffService.js';
+export type { ReplayRunSummary } from './action/ActionReplayService.js';
+
 // ── Periodic domain services (F.3.3) ──────────────────────────────────────────
 export { DomainCurrencyMonitor } from './domain/DomainCurrencyMonitor.js';
 export { DomainDepthMetrics } from './domain/DomainDepthMetrics.js';

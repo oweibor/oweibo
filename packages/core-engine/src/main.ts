@@ -395,22 +395,21 @@ async function main(): Promise<void> {
     // for packets); without it we skip construction with a startup warning.
     let forensicBuilder: ForensicPacketBuilder | undefined;
     let hitlHandoff:     HitlHandoffService     | undefined;
+    let forensicStorage: import('@oweibo/core-contracts').IForensicPacketStorage | undefined;
     try {
-      const storage = resolveForensicStorageFromEnv();
-      if (storage) {
+      forensicStorage = resolveForensicStorageFromEnv();
+      if (forensicStorage) {
         const signer = await hmacPacketSignerFromSecrets(secrets);
-        forensicBuilder = new ForensicPacketBuilder(pgPool, storage, signer);
+        forensicBuilder = new ForensicPacketBuilder(pgPool, forensicStorage, signer);
         hitlHandoff     = new HitlHandoffService(pgPool, forensicBuilder);
       }
     } catch (err) {
       console.warn('[oweibo] forensic packet pipeline disabled:',
         err instanceof Error ? err.message : String(err));
     }
-    // Suppress unused-var warning when the wiring is dormant; both refs
-    // pass to admin-web routes (F.4) and the auto-trigger path (deferred
-    // verification severity 3) in a follow-up commit.
+    // forensicBuilder is consumed by hitlHandoff; suppress unused-var
+    // when the wiring is dormant.
     void forensicBuilder;
-    void hitlHandoff;
 
     // ── F.2.4: PostExecutionVerifierService + 3 production verifiers ──────
     //
@@ -594,6 +593,11 @@ async function main(): Promise<void> {
       : {}),
     ...(multiPartyApproval && quotaService
       ? { multiPartyApproval, quotaService }
+      : {}),
+    // F.4.1: forensic + replay surface. Mounts iff the forensic pipeline
+    // is wired (storage adapter + HMAC signer + HitlHandoffService).
+    ...(hitlHandoff && forensicStorage
+      ? { hitlHandoff, forensicStorage }
       : {}),
   });
 

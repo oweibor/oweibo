@@ -1,21 +1,34 @@
 /**
- * T.1: tenant-bootstrap-worker entry point.
+ * T.1 + F.6: tenant-bootstrap-worker entry point.
  *
- * Subscribes to oweibo.lifecycle.tenant.created.v1 and drives the bootstrap
- * pipeline for each event. On startup, also runs a one-shot reconciliation
- * pass over any tenant_bootstrap rows still in state 'pending' or 'failed'
- * (e.g. if the worker crashed mid-pipeline) so they get re-attempted.
+ * Consumes oweibo.lifecycle.tenant.created.v1 events and drives the
+ * bootstrap pipeline for each. Default transport is Redis pub/sub
+ * (legacy). When OUTBOX_STREAMS_ENABLED=true, switches to Redis Streams
+ * XREADGROUP via OutboxStreamConsumer with PG-backed dedup (F.6 deploy 2+).
+ *
+ * On startup, also runs a one-shot reconciliation pass over any
+ * tenant_bootstrap rows still in state 'pending' or 'failed' so they
+ * get re-attempted after a worker crash.
  *
  * Env:
  *   DATABASE_URL — required
  *   REDIS_URL    — defaults to redis://localhost:6379
  *   BOOTSTRAP_RECONCILE_INTERVAL_MS — default 6h, periodic sweep
+ *   OUTBOX_STREAMS_ENABLED — when true, use XREADGROUP; defaults to false (legacy SUBSCRIBE)
  */
+import * as os from 'node:os';
 import { Pool } from 'pg';
 import { default as IORedis } from 'ioredis';
 import { TENANT_CREATED_V1_SUBJECT, type TenantCreatedV1Payload } from '@oweibo/core-contracts';
+import {
+  OutboxStreamConsumer,
+  PgProcessedOutboxDedupStore,
+  type IRedisStreamClient,
+} from '@oweibo/core-engine';
 import { BootstrapWorker, defaultFeaturesLoader } from './BootstrapWorker.js';
 import { buildBootstrapPipeline } from './wiring.js';
+
+const CONSUMER_GROUP = 'bootstrap-workers';
 
 interface LifecycleEnvelope {
   subject: string;
@@ -84,13 +97,38 @@ async function main(): Promise<void> {
   }
 
   const channel = `oweibo.lifecycle.${TENANT_CREATED_V1_SUBJECT}`;
-  await sub.subscribe(channel);
-  console.log(`[tenant-bootstrap-worker] subscribed to ${channel}`);
+  const streamsEnabled = process.env['OUTBOX_STREAMS_ENABLED'] === 'true';
+  let streamConsumer: OutboxStreamConsumer | null = null;
 
-  sub.on('message', (ch: string, raw: string) => {
-    if (ch !== channel) return;
-    void handleMessage(raw, worker);
-  });
+  if (streamsEnabled) {
+    // F.6 deploy 2+: consume via XREADGROUP with PG-backed dedup.
+    // Separate ioredis instance so the SUBSCRIBE/XREADGROUP modes don't
+    // share connection state (sub is reused only for legacy mode).
+    const streamClient = new IORedis(REDIS_URL, { maxRetriesPerRequest: null, lazyConnect: true });
+    await streamClient.connect();
+    const dedupStore = new PgProcessedOutboxDedupStore(pool);
+    streamConsumer = new OutboxStreamConsumer(
+      streamClient as unknown as IRedisStreamClient,
+      {
+        streamKey:    channel,
+        consumerGroup: CONSUMER_GROUP,
+        consumerName: `${os.hostname()}-${process.pid}`,
+        dedupStore,
+      },
+      async ({ payload }) => handleMessage(payload, worker),
+    );
+    await streamConsumer.ensureGroup();
+    streamConsumer.start();
+    console.log(`[tenant-bootstrap-worker] F.6 stream consumer started on ${channel} group=${CONSUMER_GROUP}`);
+  } else {
+    // Legacy pub/sub (F.6 deploy 0 / 1).
+    await sub.subscribe(channel);
+    console.log(`[tenant-bootstrap-worker] subscribed to ${channel}`);
+    sub.on('message', (ch: string, raw: string) => {
+      if (ch !== channel) return;
+      void handleMessage(raw, worker);
+    });
+  }
 
   // Initial reconcile + periodic sweep.
   void reconcile(pool, worker);
@@ -100,6 +138,7 @@ async function main(): Promise<void> {
   const shutdown = async (): Promise<void> => {
     console.log('[tenant-bootstrap-worker] shutting down');
     clearInterval(timer);
+    streamConsumer?.stop();
     await sub.quit().catch(() => undefined);
     await pool.end().catch(() => undefined);
     process.exit(0);

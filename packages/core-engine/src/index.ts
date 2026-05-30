@@ -234,6 +234,18 @@ export { DeployRollbackAdapter } from './action/rollback-adapters/DeployRollback
 export type { DeployConfig, DeployConfigResolver } from './action/rollback-adapters/DeployRollbackAdapter.js';
 export { RollbackOrchestrator, RollbackAdapterRegistry } from './action/RollbackOrchestrator.js';
 
+// ── F.6 outbox streams (ttv-finals) ───────────────────────────────────────────
+export {
+  OutboxStreamConsumer,
+  parseXReadResult,
+  type IDedupStore,
+  type IRedisStreamClient,
+  type OutboxStreamHandler,
+  type OutboxStreamMessage,
+  type OutboxStreamConsumerOptions,
+} from './infrastructure/OutboxStreamConsumer.js';
+export { PgProcessedOutboxDedupStore } from './infrastructure/PgProcessedOutboxDedupStore.js';
+
 // ── F.5 bootstrap adapters (ttv-finals) ───────────────────────────────────────
 export { PgConnectorRecommender } from './seed/bootstrap/PgConnectorRecommender.js';
 export { PgGoalTemplateAcknowledger } from './seed/bootstrap/PgGoalTemplateAcknowledger.js';

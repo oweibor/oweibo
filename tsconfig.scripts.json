@@ -18,6 +18,7 @@
     "node_modules", "**/dist",
     "scripts/seed-langfuse-prompts.ts",
     "scripts/backfill-tenant-bootstrap.ts",
-    "scripts/check-bootstrap-tables.ts"
+    "scripts/check-bootstrap-tables.ts",
+    "scripts/verify-no-dropped-events.ts"
   ]
 }

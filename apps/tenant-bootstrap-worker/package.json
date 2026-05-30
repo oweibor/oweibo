@@ -14,6 +14,7 @@
   "dependencies": {
     "@oweibo/core-contracts": "workspace:*",
     "@oweibo/core-engine": "workspace:*",
+    "@oweibo/observability": "workspace:*",
     "ioredis": "^5.4.1",
     "pg": "^8.13.3"
   },

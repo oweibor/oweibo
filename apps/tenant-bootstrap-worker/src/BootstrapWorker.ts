@@ -17,6 +17,7 @@
  * sweep. A step that throws is treated as 'failed'.
  */
 import type { Pool, PoolClient } from 'pg';
+import { withServiceSpan } from '@oweibo/observability';
 import type {
   IBootstrapStep,
   IBootstrapStepContext,
@@ -143,6 +144,18 @@ export class BootstrapWorker {
    * double-incremented attempts and no duplicate pipeline iteration.
    */
   async handleTenantCreated(tenantId: string): Promise<'ready' | 'failed' | 'noop'> {
+    // F.7.1: per-tenant bootstrap span with final-state outcome attribute.
+    return withServiceSpan({
+      name: 'bootstrap.handle_tenant_created',
+      attributes: { 'oweibo.tenant_id': tenantId },
+    }, async (recordAttr) => {
+      const result = await this.handleTenantCreatedInner(tenantId);
+      recordAttr('oweibo.bootstrap.outcome', result);
+      return result;
+    });
+  }
+
+  private async handleTenantCreatedInner(tenantId: string): Promise<'ready' | 'failed' | 'noop'> {
     const bootstrap = await this.claimBootstrap(tenantId);
     if (!bootstrap) {
       // Either the row doesn't exist OR another worker already claimed it.

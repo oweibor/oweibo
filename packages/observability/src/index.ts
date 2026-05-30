@@ -11,3 +11,5 @@ export { withLLMSpan }                      from './llm-span.js';
 export type { LLMSpanOptions, LLMSpanResult } from './llm-span.js';
 export { withToolSpan }                     from './tool-span.js';
 export type { ToolSpanOptions }             from './tool-span.js';
+export { withServiceSpan }                  from './service-span.js';
+export type { ServiceSpanOptions }          from './service-span.js';

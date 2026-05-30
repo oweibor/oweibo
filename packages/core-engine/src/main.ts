@@ -109,6 +109,16 @@ import { AuditLogger }             from './doc-generator/observability/AuditLogg
 import { createDocsRouter }        from './doc-generator/http/docsRouter.js';
 
 async function main(): Promise<void> {
+  // F.7.1: bootstrap OpenTelemetry SDK BEFORE any other module work so
+  // every subsequent service operates inside the tracer's context. Opt-in
+  // via OWEIBO_TRACING_ENABLED=true so dev/test runs aren't forced to
+  // bind to the OTLP exporter port.
+  if (process.env['OWEIBO_TRACING_ENABLED'] === 'true') {
+    const { initOtel } = await import('@oweibo/observability');
+    initOtel(process.env['OTEL_SERVICE_NAME'] ?? 'oweibo-api');
+    console.log('[main] OpenTelemetry SDK initialised');
+  }
+
   // ── Infrastructure ────────────────────────────────────────────────────────
   const vault   = new NullVaultClient();
   const secrets = new SecretsManager(vault);

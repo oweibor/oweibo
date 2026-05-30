@@ -24,6 +24,8 @@
  * supplied handler with the parsed JSON.
  */
 
+import { withServiceSpan } from '@oweibo/observability';
+
 export interface OutboxStreamMessage {
   readonly streamId: string;
   readonly eventId: string;
@@ -183,14 +185,26 @@ export class OutboxStreamConsumer {
 
   private async processOne(m: OutboxStreamMessage): Promise<void> {
     try {
-      const seen = await this.opts.dedupStore.hasBeenProcessed(this.opts.consumerGroup, m.eventId);
-      if (seen) {
+      // F.7.1: per-event span with eventId + dedup outcome attributes.
+      await withServiceSpan({
+        name: 'outbox.consume',
+        attributes: {
+          'oweibo.event_id': m.eventId,
+          'oweibo.stream': this.opts.streamKey,
+          'oweibo.consumer_group': this.opts.consumerGroup,
+        },
+      }, async (recordAttr) => {
+        const seen = await this.opts.dedupStore.hasBeenProcessed(this.opts.consumerGroup, m.eventId);
+        if (seen) {
+          recordAttr('oweibo.outbox.dedup_hit', true);
+          await this.ack(m.streamId);
+          return;
+        }
+        recordAttr('oweibo.outbox.dedup_hit', false);
+        await this.handler(m);
+        await this.opts.dedupStore.markProcessed(this.opts.consumerGroup, m.eventId);
         await this.ack(m.streamId);
-        return;
-      }
-      await this.handler(m);
-      await this.opts.dedupStore.markProcessed(this.opts.consumerGroup, m.eventId);
-      await this.ack(m.streamId);
+      });
     } catch (err) {
       // Don't XACK — leave the message in PEL so XCLAIM can re-deliver
       // it after the idle threshold OR a sibling consumer can pick it up.

@@ -34,6 +34,7 @@ import type {
   IActionGate,
 } from '@oweibo/core-contracts';
 import { isCoreActionClass, type CoreActionClass } from '@oweibo/core-contracts';
+import { withServiceSpan } from '@oweibo/observability';
 
 // ── Trust modes ────────────────────────────────────────────────────────────
 
@@ -285,6 +286,23 @@ export class ActionTrustLadder implements IActionGate {
   }
 
   async gate(ctx: ActionContext): Promise<GateDecision> {
+    // F.7.1: emit a span per gate decision with tenant_id + action_class
+    // attached at span start; record outcome (mode + reason) at end.
+    return withServiceSpan({
+      name: 'gate.decision',
+      attributes: {
+        'oweibo.tenant_id': ctx.tenantId,
+        'oweibo.action_class': ctx.actionClass,
+      },
+    }, async (recordAttr) => {
+      const decision = await this.gateInner(ctx);
+      recordAttr('oweibo.gate.mode', decision.mode);
+      if ('reason' in decision && decision.reason) recordAttr('oweibo.gate.reason', String(decision.reason));
+      return decision;
+    });
+  }
+
+  private async gateInner(ctx: ActionContext): Promise<GateDecision> {
     if (!this.isEnabled()) {
       return { mode: 'execute' };
     }

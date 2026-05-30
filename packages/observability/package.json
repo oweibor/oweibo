@@ -28,6 +28,7 @@
     "pino":                                      "^9.6.0"
   },
   "devDependencies": {
+    "@opentelemetry/sdk-trace-base":             "^1.27.0",
     "@types/node": "^20.14.0",
     "rimraf":      "^6.0.1",
     "typescript":  "^5.5.4",

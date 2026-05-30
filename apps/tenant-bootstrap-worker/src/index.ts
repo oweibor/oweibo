@@ -36,6 +36,13 @@ interface LifecycleEnvelope {
 }
 
 async function main(): Promise<void> {
+  // F.7.1: bootstrap OpenTelemetry before any other module work.
+  if (process.env['OWEIBO_TRACING_ENABLED'] === 'true') {
+    const { initOtel } = await import('@oweibo/observability');
+    initOtel(process.env['OTEL_SERVICE_NAME'] ?? 'tenant-bootstrap-worker');
+    console.log('[tenant-bootstrap-worker] OpenTelemetry SDK initialised');
+  }
+
   const DATABASE_URL = process.env['DATABASE_URL'];
   if (!DATABASE_URL) {
     console.error('[tenant-bootstrap-worker] DATABASE_URL required');

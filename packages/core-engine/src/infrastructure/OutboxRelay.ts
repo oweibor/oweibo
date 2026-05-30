@@ -21,6 +21,7 @@
  *     matches the established OperationalModeService pattern.
  */
 import type { Pool } from 'pg';
+import { withServiceSpan } from '@oweibo/observability';
 
 export interface OutboxPublisher {
   /** Publish a JSON-encoded payload to a Redis channel (pub/sub). */
@@ -141,7 +142,15 @@ export class OutboxRelay {
     if (this.running) return 0;
     this.running = true;
     try {
-      return await this.drainOnce();
+      // F.7.1: every periodic worker tick emits a span with batch size + counts.
+      return await withServiceSpan(
+        { name: 'outbox.tick', attributes: { 'oweibo.write_mode': this.writeMode() } },
+        async (recordAttr) => {
+          const published = await this.drainOnce();
+          recordAttr('oweibo.outbox.published', published);
+          return published;
+        },
+      );
     } catch (err) {
       this.log('error', 'OutboxRelay.tick threw', { error: errMessage(err) });
       return 0;

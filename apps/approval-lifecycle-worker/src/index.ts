@@ -27,6 +27,13 @@
 import { wireWorker } from './wireWorker.js';
 
 async function main(): Promise<void> {
+  // F.7.1: bootstrap OpenTelemetry before any other module work.
+  if (process.env['OWEIBO_TRACING_ENABLED'] === 'true') {
+    const { initOtel } = await import('@oweibo/observability');
+    initOtel(process.env['OTEL_SERVICE_NAME'] ?? 'approval-lifecycle-worker');
+    console.log('[approval-lifecycle-worker] OpenTelemetry SDK initialised');
+  }
+
   const ack = process.env['APPROVAL_LIFECYCLE_STANDALONE_NOOP_ACK'] === 'true';
   if (ack) {
     runIdleStandalone();

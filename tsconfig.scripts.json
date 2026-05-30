@@ -17,6 +17,7 @@
   "exclude": [
     "node_modules", "**/dist",
     "scripts/seed-langfuse-prompts.ts",
-    "scripts/backfill-tenant-bootstrap.ts"
+    "scripts/backfill-tenant-bootstrap.ts",
+    "scripts/check-bootstrap-tables.ts"
   ]
 }

@@ -23,8 +23,19 @@
 import type { Pool } from 'pg';
 
 export interface OutboxPublisher {
-  /** Publish a JSON-encoded payload to a Redis channel. */
+  /** Publish a JSON-encoded payload to a Redis channel (pub/sub). */
   publish(channel: string, payload: string): Promise<void>;
+  /**
+   * F.6: XADD to a Redis Stream. Optional — implementations without
+   * stream support either omit this or throw. OutboxRelay only calls
+   * this method when `streamsDualWriteEnabled` or `streamsOnlyEnabled`
+   * is true.
+   */
+  addToStream?(
+    stream: string,
+    payload: string,
+    opts?: { eventId?: string; maxLen?: number },
+  ): Promise<void>;
 }
 
 export interface OutboxRelayOptions {
@@ -36,11 +47,28 @@ export interface OutboxRelayOptions {
   maxAttemptsPerRow?: number;
   /** Override for tests; otherwise uses console. */
   log?: (level: 'info' | 'warn' | 'error', message: string, extra?: Record<string, unknown>) => void;
+  /**
+   * F.6 deploy-1 flag: when true, every successful publish ALSO XADDs
+   * to `oweibo.lifecycle.<subject>` (in addition to pub/sub PUBLISH).
+   * Default false. Pairs with the consumer-side `OUTBOX_STREAMS_ENABLED`
+   * flag for the 3-deploy rollout.
+   */
+  streamsDualWriteEnabled?: boolean;
+  /**
+   * F.6 deploy-3 flag: when true AND `streamsDualWriteEnabled` is
+   * false, skip the pub/sub PUBLISH entirely; XADD only. Reaching this
+   * state cleanly requires deploy-2 (consumers reading streams) to be
+   * green first. Default false.
+   */
+  streamsOnlyEnabled?: boolean;
+  /** F.6: MAXLEN ~ N on every XADD so the stream auto-trims. Default 100_000. */
+  streamMaxLen?: number;
 }
 
 const DEFAULT_INTERVAL_MS = 2_000;
 const DEFAULT_BATCH_SIZE = 100;
 const DEFAULT_MAX_ATTEMPTS = 100;
+const DEFAULT_STREAM_MAXLEN = 100_000;
 
 interface OutboxRow {
   id: string;
@@ -55,6 +83,9 @@ export class OutboxRelay {
   private readonly batchSize: number;
   private readonly maxAttempts: number;
   private readonly log: NonNullable<OutboxRelayOptions['log']>;
+  private readonly streamsDualWriteEnabled: boolean;
+  private readonly streamsOnlyEnabled: boolean;
+  private readonly streamMaxLen: number;
   /** In-memory per-id attempt counter; resets on process restart (safe — rows are durable). */
   private readonly attempts = new Map<string, number>();
 
@@ -67,6 +98,23 @@ export class OutboxRelay {
     this.batchSize = opts.batchSize ?? DEFAULT_BATCH_SIZE;
     this.maxAttempts = opts.maxAttemptsPerRow ?? DEFAULT_MAX_ATTEMPTS;
     this.log = opts.log ?? defaultLog;
+    this.streamsDualWriteEnabled = opts.streamsDualWriteEnabled ?? false;
+    this.streamsOnlyEnabled = opts.streamsOnlyEnabled ?? false;
+    this.streamMaxLen = opts.streamMaxLen ?? DEFAULT_STREAM_MAXLEN;
+
+    // Fail-loud: streams flags require the optional addToStream method.
+    if ((this.streamsDualWriteEnabled || this.streamsOnlyEnabled) && !publisher.addToStream) {
+      throw new Error(
+        'OutboxRelay: streamsDualWriteEnabled / streamsOnlyEnabled set but publisher has no addToStream() method',
+      );
+    }
+  }
+
+  /** Compute the effective per-row writes given current flags. */
+  private writeMode(): 'pubsub' | 'dual' | 'streams_only' {
+    if (this.streamsOnlyEnabled && !this.streamsDualWriteEnabled) return 'streams_only';
+    if (this.streamsDualWriteEnabled) return 'dual';
+    return 'pubsub';
   }
 
   start(): void {
@@ -129,24 +177,40 @@ export class OutboxRelay {
       const publishedIds: string[] = [];
       const deadLetterIds: string[] = [];
 
+      const mode = this.writeMode();
+
       for (const row of result.rows as OutboxRow[]) {
         const channel = `oweibo.lifecycle.${row.subject}`;
-        const body = JSON.stringify({ subject: row.subject, payload: row.payload });
+        // F.6: include row.id as eventId so consumers can dedup via
+        // processed_outbox_events on it (XADD * generates its own
+        // stream-internal id; we tag the row id inside the payload so
+        // the consumer keys dedup on the source-of-truth id).
+        const body = JSON.stringify({ eventId: row.id, subject: row.subject, payload: row.payload });
         try {
-          await this.publisher.publish(channel, body);
+          if (mode === 'pubsub' || mode === 'dual') {
+            await this.publisher.publish(channel, body);
+          }
+          if (mode === 'dual' || mode === 'streams_only') {
+            // F.6: XADD to the stream. The optional addToStream is
+            // contract-checked at constructor time when these flags are on.
+            await this.publisher.addToStream!(channel, body, {
+              eventId: row.id,
+              maxLen: this.streamMaxLen,
+            });
+          }
           publishedIds.push(row.id);
           this.attempts.delete(row.id);
         } catch (err) {
           const next = (this.attempts.get(row.id) ?? 0) + 1;
           this.attempts.set(row.id, next);
           this.log('warn', 'OutboxRelay publish failed', {
-            id: row.id, subject: row.subject, attempts: next, error: errMessage(err),
+            id: row.id, subject: row.subject, attempts: next, mode, error: errMessage(err),
           });
           if (next >= this.maxAttempts) {
             deadLetterIds.push(row.id);
             this.attempts.delete(row.id);
             this.log('error', 'OutboxRelay dead-lettering row after max attempts', {
-              id: row.id, subject: row.subject, attempts: next,
+              id: row.id, subject: row.subject, attempts: next, mode,
             });
           }
         }

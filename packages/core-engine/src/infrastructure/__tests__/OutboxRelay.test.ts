@@ -88,6 +88,7 @@ describe('OutboxRelay.tick', () => {
     expect(publisher.published).toHaveLength(2);
     expect(publisher.published[0]?.channel).toBe('oweibo.lifecycle.tenant.created.v1');
     expect(JSON.parse(publisher.published[0]?.payload ?? '{}')).toEqual({
+      eventId: 'r1',
       subject: 'tenant.created.v1',
       payload: { tenantId: 't1' },
     });
@@ -201,5 +202,124 @@ describe('OutboxRelay.tick', () => {
     // Allow the first tick to complete cleanly.
     connectResolve(client);
     await first;
+  });
+});
+
+// ── F.6: dual-write + streams-only modes ────────────────────────────────
+
+interface StreamingPublisher extends OutboxPublisher {
+  published: { channel: string; payload: string }[];
+  streamed:  { stream: string; payload: string; eventId?: string; maxLen?: number }[];
+  failPublishNext: number;
+  failStreamNext: number;
+}
+
+function makeStreamingPublisher(): StreamingPublisher {
+  const pub: StreamingPublisher = {
+    published: [],
+    streamed:  [],
+    failPublishNext: 0,
+    failStreamNext: 0,
+    publish: jest.fn().mockImplementation(async (channel: string, payload: string) => {
+      if (pub.failPublishNext > 0) { pub.failPublishNext -= 1; throw new Error('pub/sub down'); }
+      pub.published.push({ channel, payload });
+    }),
+    addToStream: jest.fn().mockImplementation(async (stream: string, payload: string, opts?: { eventId?: string; maxLen?: number }) => {
+      if (pub.failStreamNext > 0) { pub.failStreamNext -= 1; throw new Error('XADD down'); }
+      pub.streamed.push({ stream, payload, ...(opts ?? {}) });
+    }),
+  };
+  return pub;
+}
+
+describe('OutboxRelay F.6 dual-write', () => {
+  it('default mode: pub/sub only, no XADD even if publisher supports it', async () => {
+    const { pool } = makePool([
+      { match: 'SELECT id, subject, payload', rows: [{ id: 'r1', subject: 'tenant.created.v1', payload: {} }] },
+      { match: 'UPDATE oweibo.outbox', rows: [] },
+    ]);
+    const pub = makeStreamingPublisher();
+    const relay = new OutboxRelay(pool, pub, { log: silent });
+    await relay.tick();
+    expect(pub.published).toHaveLength(1);
+    expect(pub.streamed).toHaveLength(0);
+  });
+
+  it('streamsDualWriteEnabled: writes to BOTH pub/sub and XADD', async () => {
+    const { pool } = makePool([
+      { match: 'SELECT id, subject, payload', rows: [{ id: 'r1', subject: 'tenant.created.v1', payload: { x: 1 } }] },
+      { match: 'UPDATE oweibo.outbox', rows: [] },
+    ]);
+    const pub = makeStreamingPublisher();
+    const relay = new OutboxRelay(pool, pub, { log: silent, streamsDualWriteEnabled: true });
+    const n = await relay.tick();
+    expect(n).toBe(1);
+    expect(pub.published).toHaveLength(1);
+    expect(pub.streamed).toHaveLength(1);
+    expect(pub.streamed[0]?.stream).toBe('oweibo.lifecycle.tenant.created.v1');
+    expect(pub.streamed[0]?.eventId).toBe('r1');
+    expect(pub.streamed[0]?.maxLen).toBe(100_000);
+    const parsed = JSON.parse(pub.streamed[0]!.payload);
+    expect(parsed).toEqual({ eventId: 'r1', subject: 'tenant.created.v1', payload: { x: 1 } });
+  });
+
+  it('streamsOnlyEnabled (and dualWrite=false): skips PUBLISH, XADD only', async () => {
+    const { pool } = makePool([
+      { match: 'SELECT id, subject, payload', rows: [{ id: 'r2', subject: 'tenant.created.v1', payload: {} }] },
+      { match: 'UPDATE oweibo.outbox', rows: [] },
+    ]);
+    const pub = makeStreamingPublisher();
+    const relay = new OutboxRelay(pool, pub, { log: silent, streamsOnlyEnabled: true });
+    await relay.tick();
+    expect(pub.published).toHaveLength(0);
+    expect(pub.streamed).toHaveLength(1);
+  });
+
+  it('honours custom streamMaxLen', async () => {
+    const { pool } = makePool([
+      { match: 'SELECT id, subject, payload', rows: [{ id: 'r3', subject: 'x', payload: {} }] },
+      { match: 'UPDATE oweibo.outbox', rows: [] },
+    ]);
+    const pub = makeStreamingPublisher();
+    const relay = new OutboxRelay(pool, pub, { log: silent, streamsOnlyEnabled: true, streamMaxLen: 500 });
+    await relay.tick();
+    expect(pub.streamed[0]?.maxLen).toBe(500);
+  });
+
+  it('dual-write: XADD failure marks row failed even if PUBLISH succeeded', async () => {
+    const { pool, calls } = makePool([
+      { match: 'SELECT id, subject, payload', rows: [{ id: 'r4', subject: 'x', payload: {} }] },
+      { match: 'UPDATE oweibo.outbox', rows: [] },
+    ]);
+    const pub = makeStreamingPublisher();
+    pub.failStreamNext = 1;
+    const relay = new OutboxRelay(pool, pub, { log: silent, streamsDualWriteEnabled: true });
+    const n = await relay.tick();
+    expect(n).toBe(0); // row stays unpublished
+    expect(pub.published).toHaveLength(1); // pub/sub did succeed but row not marked
+    const update = calls.find((c) => c.sql.includes('UPDATE oweibo.outbox') && c.sql.includes('published_at = NOW()'));
+    expect(update).toBeUndefined();
+  });
+
+  it('throws at construction time when streams flag is set but publisher lacks addToStream', () => {
+    const { pool } = makePool([]);
+    const basicPub: OutboxPublisher = { publish: jest.fn() };
+    expect(() => new OutboxRelay(pool, basicPub, { streamsDualWriteEnabled: true }))
+      .toThrow(/streamsDualWriteEnabled.*addToStream/);
+    expect(() => new OutboxRelay(pool, basicPub, { streamsOnlyEnabled: true }))
+      .toThrow(/streamsOnlyEnabled.*addToStream/);
+  });
+
+  it('dual-write disabled trumps streams-only=false; pure pubsub still works', async () => {
+    const { pool } = makePool([
+      { match: 'SELECT id, subject, payload', rows: [{ id: 'r5', subject: 'x', payload: {} }] },
+      { match: 'UPDATE oweibo.outbox', rows: [] },
+    ]);
+    const pub = makeStreamingPublisher();
+    // Both flags off — falls back to legacy pub/sub.
+    const relay = new OutboxRelay(pool, pub, { log: silent });
+    await relay.tick();
+    expect(pub.published).toHaveLength(1);
+    expect(pub.streamed).toHaveLength(0);
   });
 });

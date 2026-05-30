@@ -518,12 +518,34 @@ async function main(): Promise<void> {
     });
     // F.4.3: rollbackOrchestrator now flows into createServer below.
 
-    // T.0: outbox relay. Drains oweibo.outbox to Redis lifecycle channels
-    // (oweibo.lifecycle.<subject>). Polls every 2s; fail-open on Redis errors.
+    // T.0 + F.6: outbox relay. Drains oweibo.outbox to Redis lifecycle
+    // channels (oweibo.lifecycle.<subject>). Polls every 2s; fail-open on
+    // Redis errors. F.6 dual-write flags add XADD to Redis Streams on top
+    // of the legacy pub/sub PUBLISH; see plan F.6 for the 3-deploy
+    // rollout sequence.
+    const outboxDualWriteEnabled = process.env['OUTBOX_DUAL_WRITE_ENABLED'] === 'true';
+    const outboxStreamsOnlyEnabled = process.env['OUTBOX_STREAMS_ENABLED'] === 'true'
+      && !outboxDualWriteEnabled;
     const outboxRelay = new OutboxRelay(pgPool, {
       publish: (channel, body) => rPub(channel, body),
+      addToStream: (stream, body, opts) => {
+        // ioredis XADD signature: xadd(key, [maxLen?], NOMKSTREAM?|empty, '*'|id, ...field-value pairs)
+        // We pass a single field "payload" containing the JSON body and key the dedup on opts.eventId
+        // which is embedded in `body` as well.
+        const maxLen = opts?.maxLen;
+        const args = maxLen !== undefined
+          ? [stream, 'MAXLEN', '~', String(maxLen), '*', 'payload', body, 'eventId', opts?.eventId ?? '']
+          : [stream, '*', 'payload', body, 'eventId', opts?.eventId ?? ''];
+        return (redis.call('XADD', ...args) as Promise<unknown>).then(() => undefined as void);
+      },
+    }, {
+      streamsDualWriteEnabled: outboxDualWriteEnabled,
+      streamsOnlyEnabled: outboxStreamsOnlyEnabled,
     });
     outboxRelay.start();
+    if (outboxDualWriteEnabled || outboxStreamsOnlyEnabled) {
+      console.log(`[main] OutboxRelay: streams ${outboxStreamsOnlyEnabled ? 'ONLY' : 'DUAL-WRITE'} mode enabled`);
+    }
   }
 
   const swarm = new SwarmCoordinator(

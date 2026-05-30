@@ -10,6 +10,7 @@
  *   - SQL JOIN against releasable_buckets is present (K ≥ 5 guard)
  */
 import type { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
+import { CANONICAL_ROLES } from '@oweibo/core-contracts';
 import { PlatformLessonRecall, type AuditRow } from '../PlatformLessonRecall.js';
 
 interface QueryStub {
@@ -64,10 +65,10 @@ describe('PlatformLessonRecall.recall', () => {
       { match: 'FROM oweibo.platform_lessons', rows: [] },
     ]);
     const svc = new PlatformLessonRecall(pool);
-    await svc.recall({ query: 'a b c', role: 'executor', slotId: 'main' });
+    await svc.recall({ query: 'a b c', role: CANONICAL_ROLES[1], slotId: 'main' });
     const q = calls.find((c) => c.sql.includes('FROM oweibo.platform_lessons'));
     // role and slotId are bound parameters, in $1/$2 with the limit last
-    expect(q?.params.slice(0, 2)).toEqual(['executor', 'main']);
+    expect(q?.params.slice(0, 2)).toEqual([CANONICAL_ROLES[1], 'main']);
   });
 
   it('scores hits by lexical token overlap and returns top-K', async () => {
@@ -119,7 +120,7 @@ describe('PlatformLessonRecall.recall', () => {
     ]);
     const audits: AuditRow[] = [];
     const svc = new PlatformLessonRecall(pool, { audit: async (r) => { audits.push(r); } });
-    await svc.recall({ query: 'deploy please', role: 'executor', slotId: 'main' });
+    await svc.recall({ query: 'deploy please', role: CANONICAL_ROLES[1], slotId: 'main' });
     // Audit is fire-and-forget; let microtask drain.
     await new Promise((r) => setImmediate(r));
     expect(audits).toHaveLength(1);
@@ -128,7 +129,7 @@ describe('PlatformLessonRecall.recall', () => {
     expect(a?.details.query_hash).toMatch(/^[0-9a-f]{64}$/);
     // Raw query MUST NOT appear in the audit row.
     expect(JSON.stringify(a)).not.toContain('deploy please');
-    expect(a?.details.role).toBe('executor');
+    expect(a?.details.role).toBe(CANONICAL_ROLES[1]);
     expect(a?.details.slot_id).toBe('main');
     expect(a?.details.hits_returned).toBe(1);
     expect(a?.details.bucket_keys).toEqual(['b1']);

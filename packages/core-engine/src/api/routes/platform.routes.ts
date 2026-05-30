@@ -22,6 +22,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import type { Pool } from 'pg';
+import { CANONICAL_ROLES, type CanonicalRole } from '@oweibo/core-contracts';
 import type { AuthenticatedRequest } from '../middleware/authenticate.js';
 import {
   OperationalModeService,
@@ -78,7 +79,7 @@ const SetThresholdsSchema = z.object({
 const PromotionDecisionSchema = z.object({
   armId:       z.string().min(1).max(200),
   slotId:      z.string().min(1).max(100),
-  role:        z.enum(['architect', 'executor', 'reviewer', 'decomposer']),
+  role:        z.enum([...CANONICAL_ROLES] as [CanonicalRole, ...CanonicalRole[]]),
   promptHash:  z.string().min(1).max(200),
   fromChannel: z.string().min(1).max(100),
   toChannel:   z.string().min(1).max(100),

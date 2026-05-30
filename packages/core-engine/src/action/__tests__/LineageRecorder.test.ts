@@ -111,7 +111,7 @@ describe('LineageRecorder.readPlanLineage', () => {
             producer_type: 'gate', producer_id: 'plan-gate', summary: 'gated',
             detail: { ok: true }, trace_id: null, recorded_at: t1 },
           { id: 'n2', plan_id: PLAN, parent_node_id: 'n1', kind: 'execution',
-            producer_type: 'agent', producer_id: 'executor', summary: 'executed',
+            producer_type: 'agent', producer_id: 'exec-agent', summary: 'executed',
             detail: {}, trace_id: 'trace-1', recorded_at: t2 },
         ],
       },

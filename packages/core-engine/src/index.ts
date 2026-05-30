@@ -234,6 +234,35 @@ export { DeployRollbackAdapter } from './action/rollback-adapters/DeployRollback
 export type { DeployConfig, DeployConfigResolver } from './action/rollback-adapters/DeployRollbackAdapter.js';
 export { RollbackOrchestrator, RollbackAdapterRegistry } from './action/RollbackOrchestrator.js';
 
+// ── F.5 bootstrap adapters (ttv-finals) ───────────────────────────────────────
+export { PgConnectorRecommender } from './seed/bootstrap/PgConnectorRecommender.js';
+export { PgGoalTemplateAcknowledger } from './seed/bootstrap/PgGoalTemplateAcknowledger.js';
+export { PgBanditPriorsSeeder } from './seed/bootstrap/PgBanditPriorsSeeder.js';
+export { PgOrgGraphSeederAdapter } from './seed/bootstrap/PgOrgGraphSeederAdapter.js';
+export { PgTenantCloner } from './seed/bootstrap/PgTenantCloner.js';
+export { PgOntologyPackInstaller, type IOntologyMemoryWriter, type OntologyMemorySeed } from './seed/bootstrap/PgOntologyPackInstaller.js';
+export { PgProjectSeeder } from './seed/bootstrap/PgProjectSeeder.js';
+export { PgSkillSeeder, type ISkillRegistryFacade } from './seed/bootstrap/PgSkillSeeder.js';
+export { PgDomainIntakeProcessor } from './seed/bootstrap/PgDomainIntakeProcessor.js';
+export { HttpMemoryWriter } from './seed/bootstrap/HttpMemoryWriter.js';
+export { JsonSeedCatalogProvider, type SeedMemoryRequest } from './seed/bootstrap/JsonSeedCatalogProvider.js';
+export {
+  DockerRepoSandbox,
+  NullRepoSandbox,
+  RepoScanError,
+  REPO_SCAN_DEFAULTS,
+  type IRepoSandbox,
+  type RepoScanSpec,
+  type RepoSignals,
+} from './seed/bootstrap/RepoScanSandbox.js';
+export { ConnectorRegistry } from './connector/ConnectorRegistry.js';
+export { GoalTemplateCatalog } from './seed/GoalTemplateCatalog.js';
+export { OperationalModeService } from './infrastructure/OperationalModeService.js';
+export { OntologyPackRegistry } from './domain/OntologyPackRegistry.js';
+export { OrgGraphService } from './org/OrgGraphService.js';
+export { PlatformSeedCatalog } from './seed/PlatformSeedCatalog.js';
+export { starterProjectSpec, STARTER_TEMPLATE_SLUGS } from './seed/StarterProjectTemplates.js';
+
 // ── Type re-exports ───────────────────────────────────────────────────────────
 export type { GeneralCodingResult } from './general-coding/GeneralCodingOrchestrator.js';
 export type { EditPlan } from './general-coding/ConversationalLoop.js';

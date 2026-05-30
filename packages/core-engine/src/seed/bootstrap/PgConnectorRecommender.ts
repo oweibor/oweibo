@@ -40,9 +40,9 @@ export class PgConnectorRecommender {
     tenantId: string,
     templateSlug: string,
     _industry?: string,
-  ): Promise<readonly ConnectorRecommendation[]> {
+  ): Promise<ConnectorRecommendation[]> {
     const result = await this.recommendWithCounts(tenantId, templateSlug);
-    return result.recommendations;
+    return [...result.recommendations];
   }
 
   async recommendWithCounts(

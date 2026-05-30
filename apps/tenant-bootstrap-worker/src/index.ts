@@ -15,6 +15,7 @@ import { Pool } from 'pg';
 import { default as IORedis } from 'ioredis';
 import { TENANT_CREATED_V1_SUBJECT, type TenantCreatedV1Payload } from '@oweibo/core-contracts';
 import { BootstrapWorker, defaultFeaturesLoader } from './BootstrapWorker.js';
+import { buildBootstrapPipeline } from './wiring.js';
 
 interface LifecycleEnvelope {
   subject: string;
@@ -41,7 +42,12 @@ async function main(): Promise<void> {
   const sub = new IORedis(REDIS_URL, { maxRetriesPerRequest: null, lazyConnect: true });
   await sub.connect();
 
-  const worker = new BootstrapWorker(pool, defaultFeaturesLoader);
+  // F.5: construct the wired pipeline from env-resolved infra. Steps
+  // whose infra isn't available stay unwired -- validatePipeline reports
+  // them and BOOTSTRAP_ALLOW_UNWIRED_STEPS gates start.
+  const { pipeline, notes } = await buildBootstrapPipeline({ pool, redis: sub });
+  for (const note of notes) console.log(`[tenant-bootstrap-worker] wiring: ${note}`);
+  const worker = new BootstrapWorker(pool, defaultFeaturesLoader, { pipeline });
 
   // Audit-fix: the default STEP_PIPELINE instantiates each step without
   // its writer/seeder/cloner adapters. In production this silently

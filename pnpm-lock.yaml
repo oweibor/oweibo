@@ -413,6 +413,9 @@ importers:
       '@oweibo/core-contracts':
         specifier: workspace:*
         version: link:../../packages/core-contracts
+      '@oweibo/core-engine':
+        specifier: workspace:*
+        version: link:../../packages/core-engine
       ioredis:
         specifier: ^5.4.1
         version: 5.10.1

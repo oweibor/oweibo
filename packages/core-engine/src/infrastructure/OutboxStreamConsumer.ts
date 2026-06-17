@@ -107,7 +107,25 @@ export class OutboxStreamConsumer {
     };
   }
 
-  /** Idempotently ensure the consumer group exists. */
+  /**
+   * Idempotently ensure the consumer group exists.
+   *
+   * Start position `0` (NOT `$`) so an at-least-once promise survives
+   * the bootstrap race: when the producer starts XADDing entries
+   * before the consumer group exists (F.6 deploy-1 → deploy-2 window),
+   * `$` would have silently dropped every backlog entry. `0` makes
+   * the consumer pick them up from the head of the stream.
+   *
+   * Same logic for the NOGROUP recovery path in loop(): if a stream
+   * is deleted out from under us, re-creating the group at `0`
+   * preserves at-least-once for any entries the replacement stream
+   * received between deletion and recreation.
+   *
+   * Operators who specifically want only-new-messages behaviour
+   * (e.g. a dev environment with a poisoned backlog) can re-CREATE
+   * the group manually with `XGROUP SETID … $` once their tooling
+   * is in place.
+   */
   async ensureGroup(): Promise<void> {
     try {
       // MKSTREAM creates the stream if it doesn't exist (otherwise XGROUP
@@ -115,7 +133,7 @@ export class OutboxStreamConsumer {
       await this.redis.call(
         'XGROUP', 'CREATE',
         this.opts.streamKey, this.opts.consumerGroup,
-        '$',           // start position: only new messages on first ever creation
+        '0',           // start position: deliver every entry already in the stream
         'MKSTREAM',
       );
       this.opts.log('info', 'OutboxStreamConsumer: created group', {
@@ -234,27 +252,62 @@ export class OutboxStreamConsumer {
     }
   }
 
+  /**
+   * Reclaim and process every PEL entry whose idle time exceeds
+   * `claimMinIdleMs`. Advances through the entire backlog by
+   * threading the cursor that XAUTOCLAIM returns (out[0]) back into
+   * the next call, rather than restarting at `'0-0'` every tick. A
+   * fully-drained cycle ends when XAUTOCLAIM returns the special
+   * cursor `'0-0'`.
+   *
+   * Malformed entries (no `payload` field) are XACK'd inline instead
+   * of being silently skipped — otherwise they would persist in the
+   * PEL forever and be re-fetched on every cycle.
+   */
   private async reclaimStale(): Promise<void> {
+    let cursor = '0-0';
+    let safetyBudget = 1000; // Worst-case 1000×COUNT entries per tick.
     try {
-      // XAUTOCLAIM is the modern (Redis 6.2+) way; falls back to XPENDING+XCLAIM
-      // would be heavier. We assume 6.2+ since the deploy target is post-2022.
-      const out = await this.redis.call(
-        'XAUTOCLAIM',
-        this.opts.streamKey,
-        this.opts.consumerGroup,
-        this.opts.consumerName,
-        this.opts.claimMinIdleMs,
-        '0-0',
-        'COUNT', 32,
-      ) as unknown;
-      // Result shape: [next_cursor, [[id, [field, value, ...]], ...], deleted_ids[]]
-      if (!Array.isArray(out) || out.length < 2 || !Array.isArray(out[1])) return;
-      for (const entry of out[1] as unknown[]) {
-        if (!Array.isArray(entry) || entry.length < 2) continue;
-        const streamId = String(entry[0]);
-        const fields = entry[1] as unknown;
-        const m = entryToMessage(streamId, fields);
-        if (m) await this.processOne(m);
+      while (this.running && safetyBudget > 0) {
+        safetyBudget -= 1;
+        // XAUTOCLAIM is the modern (Redis 6.2+) way; falls back to XPENDING+XCLAIM
+        // would be heavier. We assume 6.2+ since the deploy target is post-2022.
+        const out = await this.redis.call(
+          'XAUTOCLAIM',
+          this.opts.streamKey,
+          this.opts.consumerGroup,
+          this.opts.consumerName,
+          this.opts.claimMinIdleMs,
+          cursor,
+          'COUNT', 32,
+        ) as unknown;
+        // Result shape: [next_cursor, [[id, [field, value, ...]], ...], deleted_ids[]]
+        if (!Array.isArray(out) || out.length < 2) return;
+        const nextCursor = String(out[0]);
+        const entries = out[1];
+        if (!Array.isArray(entries)) return;
+        for (const entry of entries as unknown[]) {
+          if (!Array.isArray(entry) || entry.length < 2) continue;
+          const streamId = String(entry[0]);
+          const fields = entry[1] as unknown;
+          const m = entryToMessage(streamId, fields);
+          if (m) {
+            await this.processOne(m);
+          } else {
+            // Malformed entry (no `payload` field). XACK it inline so
+            // it stops re-appearing in every XAUTOCLAIM cycle and
+            // burning claim budget — the alternative is an
+            // ever-growing PEL with the same poison entry getting
+            // re-fetched every claimIntervalMs forever.
+            this.opts.log('warn', 'OutboxStreamConsumer: acking malformed PEL entry', {
+              streamId, stream: this.opts.streamKey,
+            });
+            await this.ack(streamId).catch(() => undefined);
+          }
+        }
+        // Cursor `0-0` from XAUTOCLAIM means "no more entries to scan".
+        if (nextCursor === '0-0' || entries.length === 0) return;
+        cursor = nextCursor;
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

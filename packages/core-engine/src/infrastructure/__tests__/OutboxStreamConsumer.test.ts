@@ -93,7 +93,7 @@ describe('OutboxStreamConsumer.ensureGroup', () => {
     }, jest.fn());
     await c.ensureGroup();
     expect(calls[0]?.command).toBe('XGROUP');
-    expect(calls[0]?.args).toEqual(['CREATE', 's', 'g', '$', 'MKSTREAM']);
+    expect(calls[0]?.args).toEqual(['CREATE', 's', 'g', '0', 'MKSTREAM']);
   });
 
   it('swallows BUSYGROUP (group already exists) as a no-op', async () => {
@@ -192,6 +192,69 @@ describe('OutboxStreamConsumer message processing', () => {
     await (consumerA as unknown as { readBatch(): Promise<void> }).readBatch();
     await (consumerB as unknown as { readBatch(): Promise<void> }).readBatch();
     expect(handler).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('OutboxStreamConsumer.reclaimStale', () => {
+  it('advances through XAUTOCLAIM cursor until next_cursor is 0-0 (drains full backlog)', async () => {
+    // Three XAUTOCLAIM responses: 32 entries / 16 entries / empty + 0-0 terminator.
+    const batch1Entries = Array.from({ length: 32 }, (_, i) =>
+      [`${100 + i}-0`, ['payload', `{"i":${i}}`, 'eventId', `e1-${i}`]]);
+    const batch2Entries = Array.from({ length: 16 }, (_, i) =>
+      [`${200 + i}-0`, ['payload', `{"j":${i}}`, 'eventId', `e2-${i}`]]);
+    const responses: unknown[] = [
+      ['200-0', batch1Entries, []],          // first XAUTOCLAIM → next cursor = '200-0'
+      ...batch1Entries.flatMap(() => ['OK']), // 32 XACKs
+      ['300-0', batch2Entries, []],          // second XAUTOCLAIM → next cursor = '300-0'
+      ...batch2Entries.flatMap(() => ['OK']), // 16 XACKs
+      ['0-0', [], []],                        // third XAUTOCLAIM → terminator
+    ];
+    const { client, calls } = fakeRedis(responses);
+    const handler: OutboxStreamHandler = jest.fn().mockResolvedValue(undefined);
+    const c = new OutboxStreamConsumer(client, {
+      streamKey: 's', consumerGroup: 'g', consumerName: 'c', dedupStore: memoryDedupStore(),
+      blockMs: 1, log: silent,
+    }, handler);
+    // running flag must be true so the inner while-loop iterates.
+    (c as unknown as { running: boolean }).running = true;
+
+    await (c as unknown as { reclaimStale(): Promise<void> }).reclaimStale();
+    expect(handler).toHaveBeenCalledTimes(48);
+
+    const autoclaims = calls.filter((c) => c.command === 'XAUTOCLAIM');
+    expect(autoclaims).toHaveLength(3);
+    expect(autoclaims[0]!.args[4]).toBe('0-0');   // first call starts at 0-0
+    expect(autoclaims[1]!.args[4]).toBe('200-0'); // second call uses returned cursor
+    expect(autoclaims[2]!.args[4]).toBe('300-0'); // third call uses next returned cursor
+  });
+
+  it('acks malformed PEL entries (no payload field) inline instead of leaking them', async () => {
+    const responses: unknown[] = [
+      ['0-0', [['99-0', ['eventId', 'evt-malformed']]], []], // no payload field
+      'OK', // the XACK
+    ];
+    const { client, calls } = fakeRedis(responses);
+    const handler: OutboxStreamHandler = jest.fn();
+    const c = new OutboxStreamConsumer(client, {
+      streamKey: 's', consumerGroup: 'g', consumerName: 'c', dedupStore: memoryDedupStore(),
+      blockMs: 1, log: silent,
+    }, handler);
+    (c as unknown as { running: boolean }).running = true;
+
+    await (c as unknown as { reclaimStale(): Promise<void> }).reclaimStale();
+    expect(handler).not.toHaveBeenCalled();
+    const xack = calls.find((c) => c.command === 'XACK');
+    expect(xack?.args).toEqual(['s', 'g', '99-0']);
+  });
+
+  it('returns when XAUTOCLAIM result is not a recognisable shape', async () => {
+    const { client } = fakeRedis([null]);
+    const c = new OutboxStreamConsumer(client, {
+      streamKey: 's', consumerGroup: 'g', consumerName: 'c', dedupStore: memoryDedupStore(),
+      blockMs: 1, log: silent,
+    }, jest.fn());
+    (c as unknown as { running: boolean }).running = true;
+    await expect((c as unknown as { reclaimStale(): Promise<void> }).reclaimStale()).resolves.toBeUndefined();
   });
 });
 

@@ -12,5 +12,6 @@ module.exports = {
     '^(\\.{1,2}/.*)\\.js$': '$1',
     '^@oweibo/core-contracts$': '<rootDir>/../../packages/core-contracts/src/index.ts',
     '^@oweibo/core-engine$':    '<rootDir>/../../packages/core-engine/src/index.ts',
+    '^@oweibo/observability$':  '<rootDir>/../../packages/observability/src/index.ts',
   },
 };

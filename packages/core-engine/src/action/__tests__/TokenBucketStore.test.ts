@@ -123,7 +123,12 @@ describe('InMemoryTokenBucketStore.tryConsume', () => {
 
 describe('InMemoryTokenBucketStore.consumption', () => {
   it('reports used + capacity per window', async () => {
-    const store = new InMemoryTokenBucketStore();
+    // Freeze the clock so the refill between tryConsume and consumption
+    // doesn't add fractional tokens back -- CI's higher event-loop
+    // latency exposed `expect(used).toBe(1)` failing as 0.9998... when
+    // the real wall-clock elapsed between the two calls.
+    const frozenNow = new Date('2026-05-30T12:00:00Z');
+    const store = new InMemoryTokenBucketStore({ now: () => frozenNow });
     await store.tryConsume({
       tenantId: TENANT, actionClass: CLASS,
       buckets: [

@@ -12,5 +12,9 @@ module.exports = {
     '^(\\.{1,2}/.*)\\.js$': '$1',
     '^@oweibo/core-contracts$': '<rootDir>/../core-contracts/src/index.ts',
     '^@oweibo/core-contracts/testing$': '<rootDir>/../core-contracts/src/testing/index.ts',
+    // F.7.1: ActionTrustLadder, OutboxRelay, OutboxStreamConsumer
+    // import from @oweibo/observability. Mapping to its src/index.ts
+    // lets jest resolve without a separate dist build step on CI.
+    '^@oweibo/observability$': '<rootDir>/../observability/src/index.ts',
   },
 };

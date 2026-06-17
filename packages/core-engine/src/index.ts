@@ -245,6 +245,7 @@ export {
   type OutboxStreamConsumerOptions,
 } from './infrastructure/OutboxStreamConsumer.js';
 export { PgProcessedOutboxDedupStore } from './infrastructure/PgProcessedOutboxDedupStore.js';
+export { withTenantScope } from './infrastructure/withTenantScope.js';
 
 // ── F.5 bootstrap adapters (ttv-finals) ───────────────────────────────────────
 export { PgConnectorRecommender } from './seed/bootstrap/PgConnectorRecommender.js';

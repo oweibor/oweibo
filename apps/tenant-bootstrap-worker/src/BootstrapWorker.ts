@@ -18,6 +18,7 @@
  */
 import type { Pool, PoolClient } from 'pg';
 import { withServiceSpan } from '@oweibo/observability';
+import { withTenantScope } from '@oweibo/core-engine';
 import type {
   IBootstrapStep,
   IBootstrapStepContext,
@@ -284,16 +285,19 @@ export class BootstrapWorker {
   }
 
   private async loadHomeRegion(tenantId: string): Promise<string | undefined> {
-    const client = await this.pool.connect();
-    try {
+    // F.5 audit fix: previously this lookup ran on a raw connection with
+    // no platform_admin role and no app.tenant_id GUC -> RLS on
+    // oweibo.tenants filtered every row out, so home_region resolved
+    // to undefined for every tenant whenever the regionAwareIntake
+    // flag was on. withTenantScope opens a transaction and sets both
+    // GUC + role so SET LOCAL actually takes effect.
+    return withTenantScope(this.pool, tenantId, async (client) => {
       const r = await client.query<{ home_region: string }>(
         `SELECT home_region FROM oweibo.tenants WHERE id = $1::uuid`,
         [tenantId],
       );
       return r.rows[0]?.home_region ?? undefined;
-    } finally {
-      client.release();
-    }
+    });
   }
 
   private async loadStep(tenantId: string, stepName: string): Promise<StepRow | null> {

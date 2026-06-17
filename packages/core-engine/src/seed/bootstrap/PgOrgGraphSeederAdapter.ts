@@ -16,6 +16,7 @@
 import type { Pool } from 'pg';
 import { OrgGraphSeeder } from '../../org/OrgGraphSeeder.js';
 import type { OrgGraphService } from '../../org/OrgGraphService.js';
+import { withTenantScope } from '../../infrastructure/withTenantScope.js';
 
 export interface OrgGraphSeedResult {
   readonly creatorNodeId: string | null;
@@ -44,13 +45,13 @@ export class PgOrgGraphSeederAdapter {
    * Earliest-invited member with an admin-flavoured role. Falls back to
    * the earliest membership regardless of role, then to null.
    *
-   * Runs under platform_admin to bypass RLS — this lookup happens at
-   * worker boot of the bootstrap pipeline, before app.tenant_id is set.
+   * Runs inside `withTenantScope(pool, tenantId, …)` so the tenant id
+   * GUC is set AND the platform_admin role takes effect (SET LOCAL is
+   * a no-op outside a transaction — the prior implementation lost the
+   * role grant silently, breaking RLS-bypass).
    */
   private async findCreatingUser(tenantId: string): Promise<string | null> {
-    const client = await this.pool.connect();
-    try {
-      await client.query(`SET LOCAL ROLE platform_admin`).catch(() => undefined);
+    return withTenantScope(this.pool, tenantId, async (client) => {
       // Prefer a tenant_admin / admin role; fall back to earliest member.
       const adminRow = await client.query<{ user_id: string }>(
         `SELECT user_id
@@ -70,8 +71,6 @@ export class PgOrgGraphSeederAdapter {
         [tenantId],
       );
       return anyRow.rows[0]?.user_id ?? null;
-    } finally {
-      client.release();
-    }
+    });
   }
 }

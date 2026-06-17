@@ -23,6 +23,7 @@ import { TENANT_CREATED_V1_SUBJECT, type TenantCreatedV1Payload } from '@oweibo/
 import {
   OutboxStreamConsumer,
   PgProcessedOutboxDedupStore,
+  withTenantScope,
   type IRedisStreamClient,
 } from '@oweibo/core-engine';
 import { BootstrapWorker, defaultFeaturesLoader } from './BootstrapWorker.js';
@@ -180,31 +181,34 @@ async function handleMessage(raw: string, worker: BootstrapWorker): Promise<void
 }
 
 async function reconcile(pool: Pool, worker: BootstrapWorker): Promise<void> {
-  const client = await pool.connect();
-  try {
-    await client.query(`SET LOCAL ROLE platform_admin`).catch(() => undefined);
-    const stuck = await client.query<{ tenant_id: string }>(
+  // F.5 audit fix: previously this loop did `SET LOCAL ROLE platform_admin`
+  // on a raw connection (no BEGIN), so the SET LOCAL was discarded by
+  // Postgres semantics and the SELECT ran under RLS as oweibo_app with
+  // no app.tenant_id set -> zero rows -> the periodic recovery sweep
+  // never observed a stuck tenant. withTenantScope(pool, null, …)
+  // opens a transaction and sets the role for the SELECT; downstream
+  // handleTenantCreated still manages its own per-tenant scope.
+  const stuck = await withTenantScope(pool, null, async (client) =>
+    client.query<{ tenant_id: string }>(
       `SELECT tenant_id
          FROM oweibo.tenant_bootstrap
         WHERE state IN ('pending','failed')
         ORDER BY updated_at ASC
         LIMIT 100`,
-    );
-    if (stuck.rows.length > 0) {
-      console.log(`[tenant-bootstrap-worker] reconcile sweep: ${stuck.rows.length} tenant(s)`);
+    ),
+  );
+  if (stuck.rows.length > 0) {
+    console.log(`[tenant-bootstrap-worker] reconcile sweep: ${stuck.rows.length} tenant(s)`);
+  }
+  for (const row of stuck.rows) {
+    try {
+      await worker.handleTenantCreated(row.tenant_id);
+    } catch (err) {
+      console.error('[tenant-bootstrap-worker] reconcile threw', {
+        tenantId: row.tenant_id,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
-    for (const row of stuck.rows) {
-      try {
-        await worker.handleTenantCreated(row.tenant_id);
-      } catch (err) {
-        console.error('[tenant-bootstrap-worker] reconcile threw', {
-          tenantId: row.tenant_id,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-  } finally {
-    client.release();
   }
 }
 

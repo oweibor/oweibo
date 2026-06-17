@@ -109,12 +109,20 @@ describe('PgOrgGraphSeederAdapter', () => {
     expect(approves).toBeDefined();
   });
 
-  it('runs lookup under SET LOCAL ROLE platform_admin', async () => {
+  it('runs lookup inside a tx (BEGIN before SET LOCAL ROLE) so the role grant survives', async () => {
     const { pool, queries } = makePool({ user_id: 'user-admin' }, null);
     const { service } = makeOrgService();
     const adapter = new PgOrgGraphSeederAdapter(pool, service);
     await adapter.seed(tenantId);
 
-    expect(queries.some((q) => q.includes('SET LOCAL ROLE platform_admin'))).toBe(true);
+    // The whole sequence must be: BEGIN -> SET LOCAL app.tenant_id -> SET LOCAL ROLE -> SELECTs -> COMMIT.
+    // The prior implementation did SET LOCAL ROLE without BEGIN, which Postgres treats as a no-op.
+    const beginIdx = queries.findIndex((q) => q === 'BEGIN');
+    const setRoleIdx = queries.findIndex((q) => q.includes('SET LOCAL ROLE platform_admin'));
+    const setTenantIdx = queries.findIndex((q) => q.includes('SET LOCAL app.tenant_id'));
+    expect(beginIdx).toBeGreaterThanOrEqual(0);
+    expect(setTenantIdx).toBeGreaterThan(beginIdx);
+    expect(setRoleIdx).toBeGreaterThan(beginIdx);
+    expect(queries.find((q) => q === 'COMMIT')).toBeDefined();
   });
 });

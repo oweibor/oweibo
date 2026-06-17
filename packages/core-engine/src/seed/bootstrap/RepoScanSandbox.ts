@@ -65,13 +65,49 @@ export class RepoScanError extends Error {
       | 'file_count_limit_exceeded'
       | 'container_runtime_unavailable'
       | 'sandbox_exit_nonzero'
-      | 'malformed_sandbox_output',
+      | 'malformed_sandbox_output'
+      | 'invalid_repo_url',
     message: string,
     public readonly detail?: Record<string, unknown>,
   ) {
     super(`RepoScanError(${reason}): ${message}`);
     this.name = 'RepoScanError';
   }
+}
+
+/**
+ * Reject tenant-supplied repo URLs that could be interpreted as git
+ * options or shell metachars. Belt-and-braces against the documented
+ * `git clone $REPO_URL` pattern inside the container — even with
+ * `--end-of-options`, an attacker who controls the URL string can do
+ * damage via `ext::sh`, `--upload-pack=`, or values that begin with
+ * `-` (treated as a flag).
+ *
+ * Allowed: https:// and http:// (the public repo-fetch surfaces) plus
+ * `git@host:owner/repo` SSH form. Everything else (file://, ext::,
+ * leading `-`, embedded whitespace/control chars, `;`, `|`, `` ` ``,
+ * `$`, `\n`) is rejected at sandbox boundary.
+ */
+export function validateRepoUrl(repoUrl: string): { ok: true } | { ok: false; reason: string } {
+  if (typeof repoUrl !== 'string') return { ok: false, reason: 'not a string' };
+  if (repoUrl.length === 0)        return { ok: false, reason: 'empty' };
+  if (repoUrl.length > 2048)       return { ok: false, reason: 'exceeds 2048 chars' };
+  if (repoUrl.startsWith('-'))     return { ok: false, reason: 'starts with `-` (would be parsed as a CLI flag)' };
+  // Reject any control char, whitespace, shell metachar, or backslash.
+  if (/[\s\x00-\x1f\x7f`$;|&<>\\]/.test(repoUrl)) {
+    return { ok: false, reason: 'contains whitespace, control char, or shell metachar' };
+  }
+  // Reject git's own special remote-helper schemes that allow shell execution.
+  if (/^(ext|local|file|gitfile|ssh\+local|filter)::/i.test(repoUrl)) {
+    return { ok: false, reason: 'unsupported git remote-helper scheme' };
+  }
+  // Allow exactly: https://, http://, or git@host:owner/repo (SSH short form).
+  const httpsOk = /^https?:\/\/[A-Za-z0-9.\-_]+(:\d+)?\/[A-Za-z0-9._\-\/]+(?:\.git)?$/.test(repoUrl);
+  const sshOk   = /^git@[A-Za-z0-9.\-_]+:[A-Za-z0-9._\-\/]+(?:\.git)?$/.test(repoUrl);
+  if (!httpsOk && !sshOk) {
+    return { ok: false, reason: 'must match https://host/path, http://host/path, or git@host:owner/repo' };
+  }
+  return { ok: true };
 }
 
 export interface IRepoSandbox {
@@ -107,13 +143,32 @@ export class DockerRepoSandbox implements IRepoSandbox {
   }
 
   async scan(spec: RepoScanSpec): Promise<RepoSignals> {
+    // Validate tenant-supplied URL BEFORE forwarding to the container.
+    // Catches git-option injection (`--upload-pack=…`), remote-helper
+    // schemes (`ext::sh -c …`), and shell metachars. Matches the
+    // documented F.5.10a contract clause 6 ("never execute repo
+    // content") at the sandbox boundary, not inside the container.
+    const v = validateRepoUrl(spec.repoUrl);
+    if (!v.ok) {
+      throw new RepoScanError('invalid_repo_url', v.reason, { repoUrl: spec.repoUrl });
+    }
+
     const timeoutMs = spec.timeoutMs ?? REPO_SCAN_DEFAULTS.WALL_CLOCK_MS;
     const docker = this.opts.dockerBinary ?? 'docker';
     const args: string[] = [
       'run',
       '--rm',
       '--read-only',
-      `--network=bridge`, // Outbound only — bridge allows DNS + repo fetch
+      // Plan §F.5.10a specifies `--network=none` for cross-platform
+      // sandboxing. The container image is responsible for
+      // pre-fetching the repo (e.g. via a volume-mounted tarball
+      // produced by an out-of-band fetcher that DOES have egress).
+      // Bridge was the previous (incorrect) default — it grants full
+      // outbound, which violates the file-header contract clause 7
+      // ("outbound only to the repo URL host; no other DNS"). Custom
+      // bridges with iptables-based egress restrictions can be wired
+      // via `extraDockerArgs`.
+      `--network=none`,
       '--cap-drop=ALL',
       '--security-opt=no-new-privileges',
       `--memory=1g`,
@@ -193,11 +248,13 @@ export class NullRepoSandbox implements IRepoSandbox {
 export async function probeSandboxAvailable(sandbox: IRepoSandbox): Promise<{ available: true } | { available: false; reason: string }> {
   if (sandbox instanceof NullRepoSandbox) return { available: true };
   try {
-    // We don't actually scan; just attempt a no-op spawn with a known
-    // bad URL and a tight timeout. The expected outcome is
-    // sandbox_exit_nonzero or unreachable_repo, NOT
-    // container_runtime_unavailable.
-    await sandbox.scan({ repoUrl: 'about:blank', timeoutMs: 2_000 });
+    // Use a syntactically-valid but deliberately-unreachable URL so the
+    // tightened validateRepoUrl() doesn't short-circuit the probe.
+    // Expected outcomes: sandbox_exit_nonzero (container ran + git
+    // clone failed) or wall_clock_exceeded (image still pulling) —
+    // both confirm the runtime is wired. The only distinguishing
+    // failure mode we care about is container_runtime_unavailable.
+    await sandbox.scan({ repoUrl: 'https://probe.invalid/_/_.git', timeoutMs: 2_000 });
     return { available: true };
   } catch (err) {
     if (err instanceof RepoScanError && err.reason === 'container_runtime_unavailable') {

@@ -139,12 +139,19 @@ export async function buildBootstrapPipeline(
     // seeds, not platform-seed memories). Adapter writes through the
     // same HTTP endpoint -- shape compatibility holds at runtime since
     // both pass arrays of seed objects with tags + content.
+    //
+    // F.5 review fix: preserve the per-seed kind ('glossary' /
+    // 'named-entity' / 'terminology') by mapping to a corresponding
+    // MemoryKind value instead of flattening every seed to
+    // 'domain-fact'. Downstream consumers that filter memories by
+    // kind would otherwise see zero rows for any of the three
+    // sub-kinds.
     const ontologyMemoryWriter: IOntologyMemoryWriter = {
       writeSeeds: async (tenantId, seeds) => {
         const result = await writer.writeSeeds(tenantId, seeds.map((s) => ({
           seedId: s.seedId,
           catalogVersion: ontologyRegistry.get(s.domainSlug as never)?.packVersion ?? 'v1',
-          kind: 'domain-fact',
+          kind: ontologyKindToMemoryKind(s.kind),
           summary: s.content,
           importance: s.importance,
           tags: s.tags,
@@ -217,4 +224,23 @@ export async function buildBootstrapPipeline(
     ],
     notes,
   };
+}
+
+/**
+ * Map an OntologyMemorySeed.kind ('glossary' | 'named-entity' |
+ * 'terminology') onto a MemoryKind that the downstream memory store
+ * indexes. The split is load-bearing: 'glossary' and 'named-entity'
+ * become 'domain-fact' (factual knowledge), while 'terminology'
+ * becomes 'tool-heuristic' (style guidance applied at artifact-time).
+ *
+ * Without this mapping every kind was flattened to 'domain-fact',
+ * which meant downstream consumers filtering by kind could never
+ * distinguish a vocabulary rule from a regulator name.
+ */
+function ontologyKindToMemoryKind(seedKind: 'glossary' | 'named-entity' | 'terminology'): string {
+  switch (seedKind) {
+    case 'glossary':     return 'domain-fact';
+    case 'named-entity': return 'domain-fact';
+    case 'terminology':  return 'tool-heuristic';
+  }
 }

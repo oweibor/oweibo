@@ -59,11 +59,27 @@ export class ConnectorRegistry {
    * Recommendation for a tenant: entries whose recommendedFor includes the
    * tenant's templateSlug or `'*'`. Order is the order entries were loaded,
    * which is filesystem-alphabetic from the catalog directory.
+   *
+   * F.5 review: optional industry filter. When supplied AND the catalog
+   * entry has a non-empty `applicableIndustries` array, the connector
+   * is included only if the tenant's industry is in that list. Catalog
+   * entries with no `applicableIndustries` field (or `[]`) are
+   * industry-agnostic — they pass the filter unconditionally,
+   * preserving byte-identical-to-today behavior for the existing
+   * catalog files which don't yet declare industries.
    */
-  recommend(templateSlug: string): ConnectorCatalogEntry[] {
-    return this.entries.filter((e) =>
-      e.recommendedFor.includes('*') || e.recommendedFor.includes(templateSlug),
-    );
+  recommend(templateSlug: string, industry?: string): ConnectorCatalogEntry[] {
+    return this.entries.filter((e) => {
+      const templateMatch =
+        e.recommendedFor.includes('*') || e.recommendedFor.includes(templateSlug);
+      if (!templateMatch) return false;
+      const industries = e.applicableIndustries;
+      if (industries && industries.length > 0) {
+        if (!industry) return false;
+        if (!industries.includes(industry)) return false;
+      }
+      return true;
+    });
   }
 
   /**

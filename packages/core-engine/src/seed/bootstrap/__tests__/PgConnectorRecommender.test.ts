@@ -43,7 +43,7 @@ function makePool(insertConflictsAfter = -1): {
   return { pool: pool as Pool, queries };
 }
 
-function entry(connectorId: string, recommendedFor: string[]): ConnectorCatalogEntry {
+function entry(connectorId: string, recommendedFor: string[], applicableIndustries?: string[]): ConnectorCatalogEntry {
   return {
     connectorId,
     displayName: connectorId.charAt(0).toUpperCase() + connectorId.slice(1),
@@ -61,6 +61,7 @@ function entry(connectorId: string, recommendedFor: string[]): ConnectorCatalogE
     recommendedFor,
     certification: 'verified',
     certifiedFor: [],
+    ...(applicableIndustries ? { applicableIndustries } : {}),
   };
 }
 
@@ -129,6 +130,29 @@ describe('PgConnectorRecommender', () => {
     const out = await adapter.recommend(tenantId, 'unrelated-template');
     expect(out).toHaveLength(0);
     expect(queries.filter((q) => q.text.includes('INSERT INTO oweibo.tenant_connectors'))).toHaveLength(0);
+  });
+
+  it('F.5 review: industry argument filters catalog entries that declare applicableIndustries', async () => {
+    const registry = ConnectorRegistry.fromEntries([
+      entry('stripe', ['*'], ['fintech']),
+      entry('epic',   ['*'], ['healthcare']),
+      entry('slack',  ['*']), // industry-agnostic
+    ]);
+    const { pool, queries } = makePool();
+    const adapter = new PgConnectorRecommender(registry, pool);
+
+    const out = await adapter.recommend(tenantId, 'default', 'fintech');
+    expect(out.map((r) => r.connectorId).sort()).toEqual(['slack', 'stripe']);
+
+    const insertedConnectorIds = queries
+      .filter((q) => q.text.includes('INSERT INTO oweibo.tenant_connectors'))
+      .map((q) => (q.values as unknown[])[1]);
+    expect(insertedConnectorIds.sort()).toEqual(['slack', 'stripe']);
+    // Industry preserved in the connector's metadata for audit.
+    const insertWithIndustry = queries.find((q) =>
+      q.text.includes('INSERT INTO oweibo.tenant_connectors')
+      && String((q.values as unknown[])[1]) === 'stripe');
+    expect(String((insertWithIndustry!.values as unknown[])[5])).toContain('"industry":"fintech"');
   });
 
   it('sets app.tenant_id GUC inside the transaction for RLS', async () => {

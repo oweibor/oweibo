@@ -89,6 +89,29 @@ describe('ConnectorRegistry.recommend', () => {
     ]);
     expect(reg.recommend('default')).toHaveLength(0);
   });
+
+  it('F.5 review: industry filter excludes entries whose applicableIndustries differs', () => {
+    const reg = ConnectorRegistry.fromEntries([
+      entry({ connectorId: 'stripe', recommendedFor: ['*'], applicableIndustries: ['fintech'] }),
+      entry({ connectorId: 'epic',   recommendedFor: ['*'], applicableIndustries: ['healthcare'] }),
+      entry({ connectorId: 'slack',  recommendedFor: ['*'] /* no applicableIndustries -> generic */ }),
+    ]);
+    // With industry='fintech': stripe + slack (generic) match; epic does not.
+    expect(reg.recommend('default', 'fintech').map((e) => e.connectorId).sort())
+      .toEqual(['slack', 'stripe']);
+    // Without industry: industry-tagged entries DROP because the catalog
+    // explicitly declares they don't apply industry-agnostically.
+    expect(reg.recommend('default').map((e) => e.connectorId).sort())
+      .toEqual(['slack']);
+  });
+
+  it('F.5 review: empty applicableIndustries treated as industry-agnostic (back-compat)', () => {
+    const reg = ConnectorRegistry.fromEntries([
+      entry({ connectorId: 'a', recommendedFor: ['*'], applicableIndustries: [] }),
+    ]);
+    expect(reg.recommend('default').map((e) => e.connectorId)).toEqual(['a']);
+    expect(reg.recommend('default', 'fintech').map((e) => e.connectorId)).toEqual(['a']);
+  });
 });
 
 describe('ConnectorRegistry.getCapability', () => {

@@ -83,6 +83,17 @@ export interface ConnectorCatalogEntry {
    * not appear in domain-specific recommendation lists.
    */
   readonly certifiedFor?: readonly string[];
+  /**
+   * F.5 review: optional industry filter. When present and non-empty,
+   * the connector is recommended ONLY when the tenant's industry is
+   * in this list. Omitted / `[]` means industry-agnostic (the default
+   * for catalog entries that pre-date this field). Pair with
+   * `industry` argument on ConnectorRegistry.recommend().
+   *
+   * Lowercase, ascii-only strings (e.g. 'fintech', 'healthcare',
+   * 'ml-research') — match by exact equality.
+   */
+  readonly applicableIndustries?: readonly string[];
 }
 
 /** A per-tenant installed instance, as stored in oweibo.tenant_connectors. */

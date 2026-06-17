@@ -39,17 +39,18 @@ export class PgConnectorRecommender {
   async recommend(
     tenantId: string,
     templateSlug: string,
-    _industry?: string,
+    industry?: string,
   ): Promise<ConnectorRecommendation[]> {
-    const result = await this.recommendWithCounts(tenantId, templateSlug);
+    const result = await this.recommendWithCounts(tenantId, templateSlug, industry);
     return [...result.recommendations];
   }
 
   async recommendWithCounts(
     tenantId: string,
     templateSlug: string,
+    industry?: string,
   ): Promise<PgConnectorRecommenderResult> {
-    const matches = this.registry.recommend(templateSlug);
+    const matches = this.registry.recommend(templateSlug, industry);
     const recommendations: ConnectorRecommendation[] = matches.map((e) => ({
       connectorId: e.connectorId,
       displayName: e.displayName,
@@ -76,7 +77,11 @@ export class PgConnectorRecommender {
             entry.catalogVersion,
             DEFAULT_INSTANCE_LABEL,
             vaultPath,
-            JSON.stringify({ recommendedAt: new Date().toISOString(), templateSlug }),
+            JSON.stringify({
+              recommendedAt: new Date().toISOString(),
+              templateSlug,
+              ...(industry ? { industry } : {}),
+            }),
           ],
         );
         if (r.rowCount && r.rowCount > 0) inserted += 1;

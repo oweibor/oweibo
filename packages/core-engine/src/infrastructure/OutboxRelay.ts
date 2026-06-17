@@ -89,6 +89,18 @@ export class OutboxRelay {
   private readonly streamMaxLen: number;
   /** In-memory per-id attempt counter; resets on process restart (safe — rows are durable). */
   private readonly attempts = new Map<string, number>();
+  /**
+   * F.6 fix: per-row per-transport success tracking. Without it, a
+   * dual-write where PUBLISH succeeds but XADD fails would re-PUBLISH
+   * on the next tick — legacy SUBSCRIBE consumers (no dedup ledger)
+   * would then process the event twice. We remember which transport
+   * already succeeded so the retry only re-runs the missing one.
+   * Cleared on full success (both transports) or dead-letter. Resets
+   * on process restart (acceptable — at worst causes one extra
+   * publish per in-flight row, which the consumer dedups via
+   * processed_outbox_events).
+   */
+  private readonly transportSuccess = new Map<string, { pubsub: boolean; stream: boolean }>();
 
   constructor(
     private readonly pool: Pool,
@@ -195,31 +207,64 @@ export class OutboxRelay {
         // stream-internal id; we tag the row id inside the payload so
         // the consumer keys dedup on the source-of-truth id).
         const body = JSON.stringify({ eventId: row.id, subject: row.subject, payload: row.payload });
+
+        // Compute what each transport needs, accounting for any
+        // already-succeeded transport from a previous tick.
+        const prior = this.transportSuccess.get(row.id) ?? { pubsub: false, stream: false };
+        const needsPubSub = (mode === 'pubsub' || mode === 'dual') && !prior.pubsub;
+        const needsStream = (mode === 'dual' || mode === 'streams_only') && !prior.stream;
+
+        let transportError: unknown = null;
         try {
-          if (mode === 'pubsub' || mode === 'dual') {
+          if (needsPubSub) {
             await this.publisher.publish(channel, body);
+            prior.pubsub = true;
+            this.transportSuccess.set(row.id, prior);
           }
-          if (mode === 'dual' || mode === 'streams_only') {
-            // F.6: XADD to the stream. The optional addToStream is
-            // contract-checked at constructor time when these flags are on.
+        } catch (err) {
+          transportError = err;
+        }
+        try {
+          if (needsStream && transportError === null) {
             await this.publisher.addToStream!(channel, body, {
               eventId: row.id,
               maxLen: this.streamMaxLen,
             });
+            prior.stream = true;
+            this.transportSuccess.set(row.id, prior);
           }
+        } catch (err) {
+          transportError = err;
+        }
+
+        // Compute final completion state for this row.
+        const required = {
+          pubsub: (mode === 'pubsub' || mode === 'dual'),
+          stream: (mode === 'dual' || mode === 'streams_only'),
+        };
+        const done =
+          (!required.pubsub || prior.pubsub) &&
+          (!required.stream || prior.stream);
+
+        if (done) {
           publishedIds.push(row.id);
           this.attempts.delete(row.id);
-        } catch (err) {
+          this.transportSuccess.delete(row.id);
+        } else if (transportError !== null) {
           const next = (this.attempts.get(row.id) ?? 0) + 1;
           this.attempts.set(row.id, next);
           this.log('warn', 'OutboxRelay publish failed', {
-            id: row.id, subject: row.subject, attempts: next, mode, error: errMessage(err),
+            id: row.id, subject: row.subject, attempts: next, mode,
+            pubsubOk: prior.pubsub, streamOk: prior.stream,
+            error: errMessage(transportError),
           });
           if (next >= this.maxAttempts) {
             deadLetterIds.push(row.id);
             this.attempts.delete(row.id);
+            this.transportSuccess.delete(row.id);
             this.log('error', 'OutboxRelay dead-lettering row after max attempts', {
               id: row.id, subject: row.subject, attempts: next, mode,
+              pubsubOk: prior.pubsub, streamOk: prior.stream,
             });
           }
         }

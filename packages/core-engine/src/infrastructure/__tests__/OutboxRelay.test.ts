@@ -322,4 +322,60 @@ describe('OutboxRelay F.6 dual-write', () => {
     expect(pub.published).toHaveLength(1);
     expect(pub.streamed).toHaveLength(0);
   });
+
+  it('per-transport retry: PUBLISH succeeds + XADD fails, next tick re-runs XADD ONLY (no double-PUBLISH)', async () => {
+    // Same row appears in two consecutive SELECTs since we never marked it published.
+    let selectCount = 0;
+    const row = { id: 'r-retry', subject: 'tenant.created.v1', payload: { tenantId: 't1' } };
+    const queryFn = (sql: string): Promise<QueryResult<QueryResultRow>> => {
+      if (sql.includes('SELECT id, subject, payload')) {
+        selectCount += 1;
+        return Promise.resolve({ rows: [row], rowCount: 1, command: '', oid: 0, fields: [] });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0, command: '', oid: 0, fields: [] });
+    };
+    const client = { query: jest.fn().mockImplementation(queryFn), release: jest.fn() } as unknown as PoolClient;
+    const pool = { connect: jest.fn().mockResolvedValue(client) } as unknown as Pool;
+
+    const pub = makeStreamingPublisher();
+    pub.failStreamNext = 1; // First XADD throws; subsequent succeeds.
+    const relay = new OutboxRelay(pool, pub, { log: silent, streamsDualWriteEnabled: true });
+
+    // Tick 1: PUBLISH ok, XADD fails → row stays unpublished, transport-success map remembers pubsub=true.
+    await relay.tick();
+    expect(pub.published).toHaveLength(1);
+    expect(pub.streamed).toHaveLength(0);
+
+    // Tick 2: PUBLISH skipped (already done), XADD retried + succeeds → row marked published.
+    await relay.tick();
+    expect(pub.published).toHaveLength(1); // No double publish!
+    expect(pub.streamed).toHaveLength(1);
+    expect(selectCount).toBe(2); // The row reappeared in the second SELECT.
+  });
+
+  it('per-transport retry: XADD succeeds + PUBLISH fails, next tick re-runs PUBLISH ONLY (no double-XADD)', async () => {
+    const row = { id: 'r-retry-2', subject: 'x', payload: {} };
+    const queryFn = (sql: string): Promise<QueryResult<QueryResultRow>> => {
+      if (sql.includes('SELECT id, subject, payload')) {
+        return Promise.resolve({ rows: [row], rowCount: 1, command: '', oid: 0, fields: [] });
+      }
+      return Promise.resolve({ rows: [], rowCount: 0, command: '', oid: 0, fields: [] });
+    };
+    const client = { query: jest.fn().mockImplementation(queryFn), release: jest.fn() } as unknown as PoolClient;
+    const pool = { connect: jest.fn().mockResolvedValue(client) } as unknown as Pool;
+
+    const pub = makeStreamingPublisher();
+    pub.failPublishNext = 1; // PUBLISH throws first time; XADD always succeeds.
+    const relay = new OutboxRelay(pool, pub, { log: silent, streamsDualWriteEnabled: true });
+
+    // Tick 1: PUBLISH throws BEFORE XADD runs → both pending.
+    await relay.tick();
+    expect(pub.published).toHaveLength(0);
+    expect(pub.streamed).toHaveLength(0);
+
+    // Tick 2: PUBLISH succeeds, XADD succeeds → row published exactly once across both transports.
+    await relay.tick();
+    expect(pub.published).toHaveLength(1);
+    expect(pub.streamed).toHaveLength(1);
+  });
 });

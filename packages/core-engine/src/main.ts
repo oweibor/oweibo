@@ -701,6 +701,17 @@ async function main(): Promise<void> {
     connectorRegistry,
     tenantConnectorService,
     tenantTemplateRegistry,
+    // F.5.9 server: enables POST /api/v1/_internal/memories/seed when both
+    // the token AND a memory orchestrator are available. The token is the
+    // shared internal secret -- workers (tenant-bootstrap-worker) hold
+    // the same value. When unset, the path stays 404 (HttpMemoryWriter
+    // callers will fail fast rather than write to a broken endpoint).
+    ...(process.env['OWEIBO_INTERNAL_API_TOKEN'] && memorySubsystem.orchestrator
+      ? {
+          internalApiToken: process.env['OWEIBO_INTERNAL_API_TOKEN'],
+          memoryOrchestrator: memorySubsystem.orchestrator,
+        }
+      : {}),
   });
 
   // ── Channel Gateway (optional) ────────────────────────────────────────────

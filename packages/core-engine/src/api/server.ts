@@ -23,6 +23,7 @@ import { createCalibrationRouter } from './routes/calibration.routes.js';
 import { createPoliciesRouter } from './routes/policies.routes.js';
 import { createConnectorsRouter } from './routes/connectors.routes.js';
 import { createTemplatesRouter } from './routes/templates.routes.js';
+import { createInternalRouter } from './routes/internal.routes.js';
 import { createAuthMiddleware } from './middleware/authenticate.js';
 import { openapiSpec } from './openapi.js';
 import type { SecretsManager } from '../secrets/SecretsManager.js';
@@ -131,6 +132,11 @@ export async function createServer(
     connectorRegistry?: import('../connector/ConnectorRegistry.js').ConnectorRegistry;
     tenantConnectorService?: import('../connector/PgTenantConnectorService.js').PgTenantConnectorService;
     tenantTemplateRegistry?: import('../seed/TenantTemplateRegistry.js').TenantTemplateRegistry;
+    /** F.5.9 server side: enables POST /api/v1/_internal/memories/seed for the
+     *  HttpMemoryWriter caller. When the token + orchestrator are absent the
+     *  route stays unmounted so the path returns 404. */
+    internalApiToken?: string;
+    memoryOrchestrator?: import('@oweibo/core-contracts').IMemoryOrchestrator;
   },
   config: Partial<ServerConfig> = {},
 ): Promise<{ app: import('express').Application; port: number }> {
@@ -308,6 +314,22 @@ export async function createServer(
       ...(deps.gepaInspector      ? { gepaInspector:      deps.gepaInspector }      : {}),
       ...(deps.privacyAudit       ? { privacyAudit:       deps.privacyAudit }       : {}),
     }));
+  }
+
+  // F.5.9 server: mount the _internal/* routes BEFORE the main v1 router
+  // so they bypass the JWT auth middleware (they use their own Bearer
+  // token comparison against OWEIBO_INTERNAL_API_TOKEN). Only mounted
+  // when both the token AND the memory orchestrator are wired; absent
+  // either, the path returns 404 -- preserving fail-loud semantics.
+  if (deps.internalApiToken && deps.memoryOrchestrator) {
+    app.use(
+      '/api/v1/_internal',
+      express.json({ limit: '4mb' }), // larger ceiling than v1 to fit batched seed payloads
+      createInternalRouter({
+        internalToken: deps.internalApiToken,
+        memoryOrchestrator: deps.memoryOrchestrator,
+      }),
+    );
   }
 
   app.use('/api/v1', v1);

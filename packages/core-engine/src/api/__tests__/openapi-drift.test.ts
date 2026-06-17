@@ -50,6 +50,9 @@ const ROUTE_FILE_MOUNTS: readonly MountSpec[] = [
   // Mounted under /api/v1/platform (admin-only); not in the customer-
   // facing OpenAPI surface.
   { file: 'platform.routes.ts',        mount: '/platform', multipleMounts: true },
+  // Mounted under /api/v1/_internal (internal-only Bearer auth); not
+  // in the customer-facing OpenAPI surface either.
+  { file: 'internal.routes.ts',        mount: '/_internal', multipleMounts: true },
 ];
 
 interface ExtractedRoute {

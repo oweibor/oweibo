@@ -93,20 +93,25 @@ export class PgTenantCloner {
       // Person nodes: shell (user_id NULL) so FK invariants hold without
       // moving real users between tenants. Per TenantCloneSeeder docs:
       // shells appear in the child tenant's "review needed" admin list.
+      //
+      // Mapping strategy: stamp the source id into the child's
+      // metadata.clonedFromNodeId at insert time, then read it back
+      // via RETURNING. The prior implementation JOIN'd on (label,
+      // node_type) — but org_nodes has no UNIQUE constraint on
+      // (tenant_id, label, node_type), so duplicate labels in the
+      // parent produced a Cartesian map and edges silently rewired to
+      // the wrong target. The metadata stamp is unique per source
+      // row, so the RETURNING is one-to-one regardless of duplicates,
+      // AND it leaves an audit trail of provenance on the cloned node.
       const nodes = await client.query<{ old_id: string; new_id: string }>(
-        `WITH src AS (
-           SELECT id, node_type, label, external_ref, metadata
-             FROM oweibo.org_nodes WHERE tenant_id = $1::uuid
-         ),
-         ins AS (
-           INSERT INTO oweibo.org_nodes
-             (tenant_id, node_type, label, user_id, external_ref, metadata)
-           SELECT $2::uuid, node_type, label, NULL, external_ref, metadata FROM src
-           RETURNING id, label, node_type
-         )
-         SELECT src.id AS old_id, ins.id AS new_id
-           FROM src JOIN ins
-             ON ins.label = src.label AND ins.node_type = src.node_type`,
+        `INSERT INTO oweibo.org_nodes
+           (tenant_id, node_type, label, user_id, external_ref, metadata)
+         SELECT
+           $2::uuid, node_type, label, NULL, external_ref,
+           COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('clonedFromNodeId', id::text)
+           FROM oweibo.org_nodes
+          WHERE tenant_id = $1::uuid
+         RETURNING (metadata ->> 'clonedFromNodeId') AS old_id, id::text AS new_id`,
         [parent, child],
       );
       const map = new Map(nodes.rows.map((r) => [r.old_id, r.new_id]));

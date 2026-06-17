@@ -27,12 +27,12 @@ function makePool(state: MockState): { pool: Pool; queries: string[] } {
       if (text.includes('INSERT INTO oweibo.tenant_projects')) {
         return Promise.resolve({ rows: [], rowCount: state.projectsCopied, command: 'INSERT', oid: 0, fields: [] });
       }
-      if (text.includes('WITH src AS') && text.includes('org_nodes')) {
-        // copyOrgGraph node insert + map
+      if (text.includes('INSERT INTO oweibo.org_nodes') && text.includes('clonedFromNodeId')) {
+        // copyOrgGraph node insert + RETURNING-derived old/new mapping.
         const rows = Array.from({ length: state.nodesCopied }, (_, i) => ({
           old_id: `old-${i}`, new_id: `new-${i}`,
         }));
-        return Promise.resolve({ rows, rowCount: rows.length, command: 'SELECT', oid: 0, fields: [] });
+        return Promise.resolve({ rows, rowCount: rows.length, command: 'INSERT', oid: 0, fields: [] });
       }
       if (text.includes('SELECT from_node, to_node')) {
         const rows = Array.from({ length: state.edgesCopied }, (_, i) => ({
@@ -117,8 +117,28 @@ describe('PgTenantCloner', () => {
     const out = await cloner.clone({ parentTenantId: parent, childTenantId: child, scopes: ['org_graph'] });
     expect(out.results[0]!.status).toBe('ok');
 
-    const nodeInsert = queries.find((q) => q.includes('WITH src AS') && q.includes('org_nodes'));
+    const nodeInsert = queries.find((q) => q.includes('INSERT INTO oweibo.org_nodes') && q.includes('clonedFromNodeId'));
+    expect(nodeInsert).toBeDefined();
     expect(nodeInsert).toContain('NULL'); // user_id stripped
+    expect(nodeInsert).toContain('clonedFromNodeId'); // metadata stamp for stable mapping
+  });
+
+  it('node insert RETURNs old_id from metadata (not a JOIN) -- safe under duplicate labels', async () => {
+    const { pool, queries } = makePool({
+      parentExists: true,
+      projectsCopied: 0, nodesCopied: 2, edgesCopied: 0,
+      settingsCopied: 0, connectorsCopied: 0,
+    });
+    const cloner = new PgTenantCloner(pool);
+    await cloner.clone({ parentTenantId: parent, childTenantId: child, scopes: ['org_graph'] });
+
+    const nodeInsert = queries.find((q) => q.includes('INSERT INTO oweibo.org_nodes'));
+    // The fix replaces a JOIN on (label, node_type) -- which collapses on
+    // duplicate labels into a Cartesian product -- with a stable
+    // metadata.clonedFromNodeId stamp. Confirm the new shape:
+    expect(nodeInsert).not.toContain('JOIN ins');
+    expect(nodeInsert).not.toContain('ON ins.label = src.label');
+    expect(nodeInsert).toContain("(metadata ->> 'clonedFromNodeId') AS old_id");
   });
 
   it('settings copy preserves child existing features (jsonb concat)', async () => {

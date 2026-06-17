@@ -105,16 +105,23 @@ async function main(): Promise<void> {
   }
 
   const channel = `oweibo.lifecycle.${TENANT_CREATED_V1_SUBJECT}`;
-  const streamsEnabled = process.env['OUTBOX_STREAMS_ENABLED'] === 'true';
+  // F.6 review fix: parse the streams env var STRICTLY -- only literal
+  // 'true' or 'false' (or unset) is accepted. Without this, a typo
+  // ('tru', 'TRUE', '1', 'yes') silently fell through to the `else`
+  // branch and de-subscribed the worker -- events fired on pub/sub
+  // had no consumer and the worker only recovered them via the 6h
+  // reconcile sweep.
+  const streamsEnabled = parseStrictBoolEnv('OUTBOX_STREAMS_ENABLED');
   let streamConsumer: OutboxStreamConsumer | null = null;
+  let streamClient: IORedis | null = null;
+  const dedupStore = new PgProcessedOutboxDedupStore(pool);
 
-  if (streamsEnabled) {
+  if (streamsEnabled === true) {
     // F.6 deploy 2+: consume via XREADGROUP with PG-backed dedup.
     // Separate ioredis instance so the SUBSCRIBE/XREADGROUP modes don't
-    // share connection state (sub is reused only for legacy mode).
-    const streamClient = new IORedis(REDIS_URL, { maxRetriesPerRequest: null, lazyConnect: true });
+    // share connection state.
+    streamClient = new IORedis(REDIS_URL, { maxRetriesPerRequest: null, lazyConnect: true });
     await streamClient.connect();
-    const dedupStore = new PgProcessedOutboxDedupStore(pool);
     streamConsumer = new OutboxStreamConsumer(
       streamClient as unknown as IRedisStreamClient,
       {
@@ -127,11 +134,11 @@ async function main(): Promise<void> {
     );
     await streamConsumer.ensureGroup();
     streamConsumer.start();
-    console.log(`[tenant-bootstrap-worker] F.6 stream consumer started on ${channel} group=${CONSUMER_GROUP}`);
+    console.log(`[tenant-bootstrap-worker] F.6 stream consumer ACTIVE on ${channel} group=${CONSUMER_GROUP}`);
   } else {
     // Legacy pub/sub (F.6 deploy 0 / 1).
     await sub.subscribe(channel);
-    console.log(`[tenant-bootstrap-worker] subscribed to ${channel}`);
+    console.log(`[tenant-bootstrap-worker] legacy SUBSCRIBE ACTIVE on ${channel}`);
     sub.on('message', (ch: string, raw: string) => {
       if (ch !== channel) return;
       void handleMessage(raw, worker);
@@ -147,6 +154,7 @@ async function main(): Promise<void> {
     console.log('[tenant-bootstrap-worker] shutting down');
     clearInterval(timer);
     streamConsumer?.stop();
+    await streamClient?.quit().catch(() => undefined);
     await sub.quit().catch(() => undefined);
     await pool.end().catch(() => undefined);
     process.exit(0);
@@ -210,6 +218,27 @@ async function reconcile(pool: Pool, worker: BootstrapWorker): Promise<void> {
       });
     }
   }
+}
+
+/**
+ * Strict boolean env-var parser: accepts ONLY undefined, 'true', or
+ * 'false' (case-sensitive). Anything else exits the process with a
+ * clear error before the worker can silently de-subscribe / mis-route.
+ *
+ * The original `process.env['OUTBOX_STREAMS_ENABLED'] === 'true'`
+ * pattern silently treated any typo as `false`, which de-subscribed
+ * the worker from pub/sub without warning -- a class of operability
+ * bug F.7 review explicitly called out.
+ */
+export function parseStrictBoolEnv(name: string): boolean {
+  const v = process.env[name];
+  if (v === undefined || v === 'false') return false;
+  if (v === 'true') return true;
+  console.error(
+    `[tenant-bootstrap-worker] ${name} must be exactly 'true', 'false', or unset. ` +
+    `Got ${JSON.stringify(v)}. Refusing to start.`,
+  );
+  process.exit(2);
 }
 
 void main().catch((err) => {

@@ -55,6 +55,46 @@ describe('HttpMemoryWriter', () => {
     expect(calls[0]!.url).toBe('http://x/api/v1/_internal/memories/seed');
     expect(headersSeen['authorization']).toBe('Bearer t');
     expect(headersSeen['x-tenant-id']).toBe(tenantId);
+    expect(headersSeen['idempotency-key']).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('F.5 review: identical batch retries carry the SAME Idempotency-Key (server-side dedup)', async () => {
+    const keysSeen: string[] = [];
+    const wrap: typeof fetch = (async (_input: unknown, init?: { headers?: HeadersInit }) => {
+      const h = Object.fromEntries(new Headers(init?.headers).entries());
+      keysSeen.push(h['idempotency-key']!);
+      return new Response(JSON.stringify({ inserted: [], skipped: [], failed: [] }));
+    }) as unknown as typeof fetch;
+    const writer = new HttpMemoryWriter({ apiBaseUrl: 'http://x', internalToken: 't', fetchImpl: wrap });
+    await writer.writeSeeds(tenantId, [seed('a'), seed('b'), seed('c')]);
+    await writer.writeSeeds(tenantId, [seed('a'), seed('b'), seed('c')]);
+    expect(keysSeen[0]).toBe(keysSeen[1]); // same batch -> same key -> server dedups
+  });
+
+  it('F.5 review: different batches produce different Idempotency-Keys', async () => {
+    const keysSeen: string[] = [];
+    const wrap: typeof fetch = (async (_input: unknown, init?: { headers?: HeadersInit }) => {
+      const h = Object.fromEntries(new Headers(init?.headers).entries());
+      keysSeen.push(h['idempotency-key']!);
+      return new Response(JSON.stringify({ inserted: [], skipped: [], failed: [] }));
+    }) as unknown as typeof fetch;
+    const writer = new HttpMemoryWriter({ apiBaseUrl: 'http://x', internalToken: 't', fetchImpl: wrap });
+    await writer.writeSeeds(tenantId, [seed('a'), seed('b')]);
+    await writer.writeSeeds(tenantId, [seed('c'), seed('d')]); // disjoint payload
+    expect(keysSeen[0]).not.toBe(keysSeen[1]);
+  });
+
+  it('F.5 review: seed ORDER does not affect the Idempotency-Key (sorted before hashing)', async () => {
+    const keysSeen: string[] = [];
+    const wrap: typeof fetch = (async (_input: unknown, init?: { headers?: HeadersInit }) => {
+      const h = Object.fromEntries(new Headers(init?.headers).entries());
+      keysSeen.push(h['idempotency-key']!);
+      return new Response(JSON.stringify({ inserted: [], skipped: [], failed: [] }));
+    }) as unknown as typeof fetch;
+    const writer = new HttpMemoryWriter({ apiBaseUrl: 'http://x', internalToken: 't', fetchImpl: wrap });
+    await writer.writeSeeds(tenantId, [seed('a'), seed('b'), seed('c')]);
+    await writer.writeSeeds(tenantId, [seed('c'), seed('a'), seed('b')]); // same set, diff order
+    expect(keysSeen[0]).toBe(keysSeen[1]);
   });
 
   it('batches into groups of 20 (default) when more seeds are supplied', async () => {

@@ -26,12 +26,13 @@ async function readCatalog(): Promise<CatalogEntry[]> {
     __dirname, '..', '..', '..',
     'packages', 'core-engine', 'src', 'seed', 'seed-memories',
   );
-  let files: string[] = [];
-  try {
-    files = await fs.readdir(dir);
-  } catch {
-    return [];
-  }
+  // F.7 review: prior code returned [] on readdir failure (EIO, EACCES,
+  // transient volume unmount). Reconciler.runBatch then treated every
+  // install_log row as 'no longer in catalog' and tombstoned it (see
+  // Reconciler.ts:192 / :278). A single disk blip = mass install
+  // retirement. Re-throw so the cron tick fails loud and a sibling
+  // worker (or the next tick) re-runs against a working filesystem.
+  const files = await fs.readdir(dir);
   const entries: CatalogEntry[] = [];
   for (const f of files) {
     if (!f.endsWith('.json')) continue;

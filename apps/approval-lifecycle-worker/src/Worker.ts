@@ -444,8 +444,15 @@ export class ApprovalLifecycleWorker {
       await client.query('COMMIT');
       return r.rows[0] ?? null;
     } catch (err) {
+      // F.7 review: prior code swallowed DB errors into null. processRow
+      // then treated null as "proposal gone" and called clearState(),
+      // which DELETEs the SLA state row -- a transient DB blip
+      // permanently dropped escalation/expiry tracking for the
+      // proposal. Re-throw so runOnce's per-row catch logs and skips
+      // this iteration; the row stays under lease and the next tick
+      // retries.
       await client.query('ROLLBACK').catch(() => undefined);
-      return null;
+      throw err;
     } finally {
       client.release();
     }

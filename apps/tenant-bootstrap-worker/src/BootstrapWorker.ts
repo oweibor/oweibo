@@ -164,6 +164,35 @@ export class BootstrapWorker {
       return 'noop';
     }
 
+    // F.7 review: from this point the tenant_bootstrap row is in
+    // state='running'. The reconcile sweep selects only
+    // WHERE state IN ('pending','failed'), so any unexpected throw
+    // from loadFeatures / loadStep / upsertStep / transitionState
+    // would strand the tenant in 'running' forever (invisible to
+    // recovery). Wrap the rest of the body so any escape calls
+    // transitionState('failed', ...) before re-throwing.
+    try {
+      return await this.runPipeline(tenantId, bootstrap);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error('BootstrapWorker: unexpected throw outside step loop', { tenantId, error: message });
+      await this.transitionState(tenantId, 'failed', { lastError: `unexpected: ${message}` })
+        .catch((teErr: unknown) => {
+          // If the failure transition itself blows up there is nothing
+          // left to do but log -- swallowing the original throw would
+          // hide it from the caller.
+          this.logger.error('BootstrapWorker: transitionState(failed) after throw also threw', {
+            tenantId, error: teErr instanceof Error ? teErr.message : String(teErr),
+          });
+        });
+      throw err;
+    }
+  }
+
+  private async runPipeline(
+    tenantId: string,
+    bootstrap: BootstrapRow,
+  ): Promise<'ready' | 'failed'> {
     const features = await this.loadFeatures(tenantId);
     // T.8: when the platform-wide flag is on, load tenant home_region so
     // region-tagged content can be filtered at install time. The lookup is

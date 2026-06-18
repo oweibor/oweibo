@@ -222,11 +222,19 @@ export function wireWorker(cfg: WireWorkerConfig, env: WireEnv = process.env): W
     worker,
     resources: redis ? { pool, redis } : { pool },
     startTickLoop(): { stop(): void } {
+      // Do NOT unref these timers. pg Pool is lazy and ioredis is
+      // constructed with lazyConnect:true with no eager .connect() in
+      // the wireWorker setup, so no socket is open at the moment
+      // startTickLoop returns. process.on('SIGTERM',...) does not ref
+      // the loop. The setInterval is therefore the only ref'd handle
+      // keeping the worker alive long enough to execute the first
+      // tick; unref-ing it makes the process exit immediately after
+      // main() returns, before any work runs. Shutdown is handled by
+      // the explicit stop() / shutdown() pair the caller drives from
+      // the signal handlers.
       timer = setInterval(() => { void runTick(worker, cfg, env); }, tickMs);
-      timer.unref?.();
       if (digestTickMs > 0) {
         digestTimer = setInterval(() => { void runDigestTick(digest, router, cfg); }, digestTickMs);
-        digestTimer.unref?.();
       }
       return {
         stop(): void {

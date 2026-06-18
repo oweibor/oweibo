@@ -37,6 +37,34 @@ export interface IntakeProcessResult {
   readonly recommendedSeedSkills: readonly string[];
 }
 
+/**
+ * Seam for the classification step. The in-process default wraps
+ * DomainIntakeService directly; HttpDomainClassifier (B.2) implements
+ * this against the server-side /domain/classify route so the worker
+ * doesn't need an embedder or ontology locally.
+ */
+export interface IIntakeClassifier {
+  classify(tenantId: string, input: IntakeInput): Promise<IntakeProcessResult>;
+}
+
+/** Default in-process classifier — wraps DomainIntakeService. */
+export class InProcessIntakeClassifier implements IIntakeClassifier {
+  constructor(private readonly intake: DomainIntakeService) {}
+
+  async classify(_tenantId: string, input: IntakeInput): Promise<IntakeProcessResult> {
+    const recommendation = await this.intake.classifyAndRecommend(input);
+    return {
+      classifiedDomain: recommendation.classification.domain === 'unclassified'
+        ? null
+        : recommendation.classification.domain,
+      classifiedConfidence: recommendation.classification.confidence,
+      recommendedTemplate: recommendation.classification.recommendedTemplate ?? null,
+      recommendedConnectors: recommendation.classification.recommendedConnectors ?? [],
+      recommendedSeedSkills: recommendation.recommendedSeedSkills,
+    };
+  }
+}
+
 interface IntakeRow {
   intake_state:            IntakeStateLookup;
   interview_answers:       Record<string, unknown> | null;
@@ -50,12 +78,21 @@ export interface PgDomainIntakeProcessorOptions {
 }
 
 export class PgDomainIntakeProcessor {
+  private readonly classifier: IIntakeClassifier;
+
   constructor(
     private readonly pool: Pool,
-    private readonly intake: DomainIntakeService,
+    classifier: DomainIntakeService | IIntakeClassifier,
     private readonly sandbox: IRepoSandbox,
     private readonly opts: PgDomainIntakeProcessorOptions = {},
-  ) {}
+  ) {
+    // Backwards-compatible: a DomainIntakeService gets auto-wrapped in the
+    // in-process classifier. The worker (B.2) passes an HttpDomainClassifier
+    // implementing IIntakeClassifier directly.
+    this.classifier = isIntakeClassifier(classifier)
+      ? classifier
+      : new InProcessIntakeClassifier(classifier);
+  }
 
   /** Read the current intake_state from oweibo.tenant_domain_intake; `'absent'` if no row exists. */
   async loadState(tenantId: string): Promise<IntakeStateLookup | 'absent'> {
@@ -83,17 +120,7 @@ export class PgDomainIntakeProcessor {
       }
 
       const input = this.buildIntakeInput(claimed, signals);
-      const recommendation = await this.intake.classifyAndRecommend(input);
-
-      const result: IntakeProcessResult = {
-        classifiedDomain: recommendation.classification.domain === 'unclassified'
-          ? null
-          : recommendation.classification.domain,
-        classifiedConfidence: recommendation.classification.confidence,
-        recommendedTemplate: recommendation.classification.recommendedTemplate ?? null,
-        recommendedConnectors: recommendation.classification.recommendedConnectors ?? [],
-        recommendedSeedSkills: recommendation.recommendedSeedSkills,
-      };
+      const result = await this.classifier.classify(tenantId, input);
 
       await this.completeRow(tenantId, result, signals);
       return result;
@@ -245,4 +272,10 @@ function parsePrimerExcerpts(raw: Record<string, unknown> | null, max?: number):
   if (!Array.isArray(excerpts)) return [];
   const filtered = excerpts.filter((s): s is string => typeof s === 'string');
   return max ? filtered.slice(0, max) : filtered;
+}
+
+function isIntakeClassifier(c: DomainIntakeService | IIntakeClassifier): c is IIntakeClassifier {
+  // Structural: IIntakeClassifier has a 2-arg classify(tenantId, input);
+  // DomainIntakeService has classifyAndRecommend(input).
+  return typeof (c as IIntakeClassifier).classify === 'function';
 }

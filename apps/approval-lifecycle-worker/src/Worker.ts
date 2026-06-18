@@ -203,18 +203,48 @@ export class ApprovalLifecycleWorker {
   private async claimDue(): Promise<readonly DueRow[]> {
     const client = await this.pool.connect();
     try {
-      // Platform-admin scope so the worker can see across tenants.
+      // Two F.7-review fixes wrapped here:
+      //
+      // 1. `SET LOCAL` outside a transaction is a no-op in Postgres.
+      //    The prior code set `app.is_platform_admin` on a raw
+      //    connection, so the cross-tenant grant never took effect and
+      //    RLS hid the rows from the worker. BEGIN/COMMIT around the
+      //    SET LOCAL + query lets the GUC take effect for the SELECT.
+      //
+      // 2. `FOR UPDATE SKIP LOCKED` row locks release at the end of
+      //    the SELECT statement -- without a longer-running tx wrapping
+      //    processRow, sibling replicas could re-claim the same rows
+      //    in the gap, double-sending approval notifications via
+      //    router.route. The fix pushes `next_action_at` 5 minutes
+      //    into the future atomically inside the same WITH+UPDATE
+      //    statement -- this acts as a soft lease: even after COMMIT
+      //    releases the row lock, the row no longer matches
+      //    `WHERE next_action_at <= NOW()`, so siblings skip it. If
+      //    this worker crashes mid-process, the 5-minute lease expires
+      //    and the next tick picks the row up.
+      await client.query('BEGIN');
       await client.query(`SET LOCAL app.is_platform_admin = 'true'`);
       const r = await client.query<DueRow>(
-        `SELECT proposal_id, tenant_id, current_stage, hard_expire_at, notified_approvers
-           FROM oweibo.approval_sla_state
-          WHERE next_action_at <= NOW()
-          ORDER BY next_action_at
-          FOR UPDATE SKIP LOCKED
-          LIMIT $1`,
+        `WITH due AS (
+           SELECT proposal_id
+             FROM oweibo.approval_sla_state
+            WHERE next_action_at <= NOW()
+            ORDER BY next_action_at
+            FOR UPDATE SKIP LOCKED
+            LIMIT $1
+         )
+         UPDATE oweibo.approval_sla_state s
+            SET next_action_at = NOW() + INTERVAL '5 minutes'
+           FROM due
+          WHERE s.proposal_id = due.proposal_id
+         RETURNING s.proposal_id, s.tenant_id, s.current_stage, s.hard_expire_at, s.notified_approvers`,
         [this.batchSize],
       );
+      await client.query('COMMIT');
       return r.rows;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
     } finally {
       client.release();
     }

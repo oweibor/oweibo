@@ -137,6 +137,14 @@ export async function createServer(
      *  route stays unmounted so the path returns 404. */
     internalApiToken?: string;
     memoryOrchestrator?: import('@oweibo/core-contracts').IMemoryOrchestrator;
+    /** B.1 server side: enables POST /api/v1/_internal/skills/seed for the
+     *  HttpSkillSeeder caller. Worker calls this so it doesn't need to bundle
+     *  ModelRouter+Qdrant+Redis+Vault. */
+    skillRegistry?: import('./routes/internal.routes.js').ISkillRegistryFacade;
+    /** B.2 server side: enables POST /api/v1/_internal/domain/classify for the
+     *  HttpDomainClassifier caller. Worker keeps its Postgres state machine
+     *  local and outsources only the classification step. */
+    domainIntakeService?: import('../seed/DomainIntakeService.js').DomainIntakeService;
   },
   config: Partial<ServerConfig> = {},
 ): Promise<{ app: import('express').Application; port: number }> {
@@ -316,18 +324,23 @@ export async function createServer(
     }));
   }
 
-  // F.5.9 server: mount the _internal/* routes BEFORE the main v1 router
-  // so they bypass the JWT auth middleware (they use their own Bearer
-  // token comparison against OWEIBO_INTERNAL_API_TOKEN). Only mounted
-  // when both the token AND the memory orchestrator are wired; absent
-  // either, the path returns 404 -- preserving fail-loud semantics.
-  if (deps.internalApiToken && deps.memoryOrchestrator) {
+  // F.5.9 + B.1 + B.2 server: mount the _internal/* routes BEFORE the main
+  // v1 router so they bypass the JWT auth middleware (they use their own
+  // Bearer token comparison against OWEIBO_INTERNAL_API_TOKEN). Mounted
+  // when the token is set AND at least one route-backing dep is present;
+  // each individual route returns 503 unconfigured when its own dep is
+  // missing -- so partial wiring (e.g. memories yes, skills no) is
+  // explicit rather than a 404 surprise.
+  if (deps.internalApiToken
+      && (deps.memoryOrchestrator || deps.skillRegistry || deps.domainIntakeService)) {
     app.use(
       '/api/v1/_internal',
       express.json({ limit: '4mb' }), // larger ceiling than v1 to fit batched seed payloads
       createInternalRouter({
         internalToken: deps.internalApiToken,
-        memoryOrchestrator: deps.memoryOrchestrator,
+        ...(deps.memoryOrchestrator  ? { memoryOrchestrator:  deps.memoryOrchestrator }  : {}),
+        ...(deps.skillRegistry       ? { skillRegistry:       deps.skillRegistry }       : {}),
+        ...(deps.domainIntakeService ? { domainIntakeService: deps.domainIntakeService } : {}),
       }),
     );
   }

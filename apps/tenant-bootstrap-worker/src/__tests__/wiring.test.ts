@@ -43,19 +43,44 @@ describe('F.5 wiring', () => {
     expect(unwired.has('install_ontology_pack')).toBe(true);
   });
 
-  it('memory + ontology wire on when INTERNAL_API_URL and TOKEN are set', async () => {
+  it('memory + ontology + domain-intake wire on when INTERNAL_API_URL and TOKEN are set', async () => {
+    // B.2: HttpDomainClassifier handles classification, so domain_intake
+    // wires on with just INTERNAL_API_URL/TOKEN. Skills still needs the
+    // bundle path as a third env.
     const { report, notes } = await buildAndValidate({
       INTERNAL_API_URL: 'http://internal-api',
       INTERNAL_API_TOKEN: 'tok',
     });
     expect(report.wired).toContain('seed_memories');
     expect(report.wired).toContain('install_ontology_pack');
-    // Skills + domain-intake still unwired without their additional infra.
+    expect(report.wired).toContain('domain_intake');
+    // Skills still unwired without OWEIBO_SEED_SKILL_BUNDLE_PATH.
     expect(report.unwired).toContain('seed_skills');
-    expect(report.unwired).toContain('domain_intake');
-    // The wiring notes call out which steps stay unwired and why.
-    expect(notes.join(' ')).toContain('PgSkillSeeder');
-    expect(notes.join(' ')).toContain('DomainClassifier');
+    expect(notes.join(' ')).toContain('OWEIBO_SEED_SKILL_BUNDLE_PATH');
+    expect(notes.join(' ')).toContain('HttpDomainClassifier');
+  });
+
+  it('all 10 steps wire on when INTERNAL_API_URL + TOKEN + skill bundle path are set (B.11 acceptance)', async () => {
+    const { report, notes } = await buildAndValidate({
+      INTERNAL_API_URL: 'http://internal-api',
+      INTERNAL_API_TOKEN: 'tok',
+      OWEIBO_SEED_SKILL_BUNDLE_PATH: '/var/lib/oweibo/skills/starter',
+    });
+    expect(report.unwired).toEqual([]);
+    expect([...report.wired].sort()).toEqual([
+      'clone_from_tenant',
+      'domain_intake',
+      'install_ontology_pack',
+      'seed_connectors',
+      'seed_goal_templates',
+      'seed_memories',
+      'seed_org_graph',
+      'seed_priors',
+      'seed_project',
+      'seed_skills',
+    ]);
+    expect(notes.join(' ')).toContain('HttpSkillSeeder');
+    expect(notes.join(' ')).toContain('HttpDomainClassifier');
   });
 
   it('reports the F.5.10 sandbox fallback when OWEIBO_REPO_SCAN_IMAGE is unset', async () => {

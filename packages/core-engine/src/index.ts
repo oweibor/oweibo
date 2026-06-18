@@ -256,8 +256,10 @@ export { PgTenantCloner } from './seed/bootstrap/PgTenantCloner.js';
 export { PgOntologyPackInstaller, type IOntologyMemoryWriter, type OntologyMemorySeed } from './seed/bootstrap/PgOntologyPackInstaller.js';
 export { PgProjectSeeder } from './seed/bootstrap/PgProjectSeeder.js';
 export { PgSkillSeeder, type ISkillRegistryFacade } from './seed/bootstrap/PgSkillSeeder.js';
-export { PgDomainIntakeProcessor } from './seed/bootstrap/PgDomainIntakeProcessor.js';
+export { PgDomainIntakeProcessor, InProcessIntakeClassifier, type IIntakeClassifier } from './seed/bootstrap/PgDomainIntakeProcessor.js';
 export { HttpMemoryWriter } from './seed/bootstrap/HttpMemoryWriter.js';
+export { HttpSkillSeeder } from './seed/bootstrap/HttpSkillSeeder.js';
+export { HttpDomainClassifier } from './seed/bootstrap/HttpDomainClassifier.js';
 export { JsonSeedCatalogProvider, type SeedMemoryRequest } from './seed/bootstrap/JsonSeedCatalogProvider.js';
 export {
   DockerRepoSandbox,

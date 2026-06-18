@@ -86,6 +86,9 @@ import { ConnectorRegistry }           from './connector/ConnectorRegistry.js';
 import { PgTenantConnectorService }    from './connector/PgTenantConnectorService.js';
 import { TenantTemplateRegistry }      from './seed/TenantTemplateRegistry.js';
 import { CalibrationService }        from './infrastructure/CalibrationService.js';
+import { DomainIntakeService }       from './seed/DomainIntakeService.js';
+import { DomainClassifier, type DomainOntologyEntry } from './seed/DomainClassifier.js';
+import * as fsSync                   from 'node:fs';
 import { TtvMetricsService }         from './observability/TtvMetricsService.js';
 import { DomainCurrencyMonitor }     from './domain/DomainCurrencyMonitor.js';
 import { DomainDepthMetrics }        from './domain/DomainDepthMetrics.js';
@@ -577,6 +580,12 @@ async function main(): Promise<void> {
   void skillFetcher;
   const skillRegistry = new SkillRegistry(modelRouter, null as never, redis, vault);
 
+  // ── DomainIntakeService (B.2 server side) ─────────────────────────────────
+  // Constructs a DomainClassifier from an on-disk ontology when
+  // OWEIBO_DOMAIN_ONTOLOGY_PATH is set. The route exposed by
+  // createInternalRouter returns 503 when this is undefined.
+  const domainIntakeService = buildDomainIntakeService(modelRouter);
+
   // ── General coding orchestrator ───────────────────────────────────────────
   const generalCodingOrchestrator = new GeneralCodingOrchestrator(
     null as never, null as never, null as never,
@@ -706,10 +715,22 @@ async function main(): Promise<void> {
     // shared internal secret -- workers (tenant-bootstrap-worker) hold
     // the same value. When unset, the path stays 404 (HttpMemoryWriter
     // callers will fail fast rather than write to a broken endpoint).
-    ...(process.env['OWEIBO_INTERNAL_API_TOKEN'] && memorySubsystem.orchestrator
+    // B.1 + B.2 server side: when the internal token is set, also expose
+    // the SkillRegistry (already constructed above) and a DomainIntakeService
+    // for the worker's HTTP adapters. SkillRegistry is unconditionally
+    // available; DomainIntakeService loads its ontology from
+    // OWEIBO_DOMAIN_ONTOLOGY_PATH (a JSON array of DomainOntologyEntry).
+    // When the path is unset OR the file fails to parse, the service is
+    // not exposed -- the /domain/classify route then returns 503 and
+    // the worker's HttpDomainClassifier fails fast.
+    ...(process.env['OWEIBO_INTERNAL_API_TOKEN']
       ? {
           internalApiToken: process.env['OWEIBO_INTERNAL_API_TOKEN'],
-          memoryOrchestrator: memorySubsystem.orchestrator,
+          ...(memorySubsystem.orchestrator
+            ? { memoryOrchestrator: memorySubsystem.orchestrator }
+            : {}),
+          skillRegistry,
+          ...(domainIntakeService ? { domainIntakeService } : {}),
         }
       : {}),
   });
@@ -749,3 +770,43 @@ main().catch(err => {
   console.error('[oweibo] Fatal startup error:', err);
   process.exit(1);
 });
+
+/**
+ * B.2 server-side helper. Reads OWEIBO_DOMAIN_ONTOLOGY_PATH and constructs
+ * a DomainIntakeService over a DomainClassifier wired to ModelRouter's
+ * embedding client. Returns `undefined` when:
+ *   - The env var is unset.
+ *   - The file is missing or malformed JSON.
+ *   - The JSON does not parse to a non-empty DomainOntologyEntry[].
+ *
+ * In each failure case we log and return undefined; the server simply
+ * does not expose POST /api/v1/_internal/domain/classify, and the worker
+ * fail-fast on the resulting 503. We do NOT throw at startup so a misset
+ * ontology file cannot crash the platform.
+ */
+function buildDomainIntakeService(modelRouter: ModelRouter): DomainIntakeService | undefined {
+  const ontologyPath = process.env['OWEIBO_DOMAIN_ONTOLOGY_PATH'];
+  if (!ontologyPath) return undefined;
+  let raw: string;
+  try {
+    raw = fsSync.readFileSync(ontologyPath, 'utf-8');
+  } catch (err) {
+    console.warn(`[oweibo] OWEIBO_DOMAIN_ONTOLOGY_PATH (${ontologyPath}) unreadable; /domain/classify will return 503:`, err);
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    console.warn(`[oweibo] OWEIBO_DOMAIN_ONTOLOGY_PATH parse error; /domain/classify will return 503:`, err);
+    return undefined;
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    console.warn(`[oweibo] OWEIBO_DOMAIN_ONTOLOGY_PATH must contain a non-empty array; /domain/classify will return 503`);
+    return undefined;
+  }
+  const ontology = parsed as readonly DomainOntologyEntry[];
+  const embedClient = modelRouter.forEmbedding();
+  const classifier = new DomainClassifier(ontology, (text: string) => embedClient.embed(text));
+  return new DomainIntakeService(classifier);
+}

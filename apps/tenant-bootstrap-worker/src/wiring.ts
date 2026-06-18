@@ -6,14 +6,18 @@
  * per step:
  *
  *   - Always available in this worker (pool-only): F.5.1, F.5.2, F.5.3,
- *     F.5.4, F.5.5, F.5.7, F.5.6
- *   - Requires extra env: F.5.8 (Skills: ModelRouter + Qdrant + Redis +
- *     Vault), F.5.9 (Memories: HTTP base URL + token), F.5.10
- *     (DomainIntake: optional sandbox image)
+ *     F.5.4, F.5.5, F.5.7
+ *   - Requires INTERNAL_API_URL + INTERNAL_API_TOKEN: F.5.6 + F.5.9
+ *     (memory/ontology writes), F.5.8 (skills -- via HttpSkillSeeder
+ *     when OWEIBO_SEED_SKILL_BUNDLE_PATH is also set), F.5.10
+ *     (DomainIntake -- HttpDomainClassifier handles classification,
+ *     PgDomainIntakeProcessor still owns the local state machine)
  *
- * Steps for which the additional infra is absent stay unwired -- the
+ * Steps for which the additional env is absent stay unwired -- the
  * worker's existing validatePipeline()/BOOTSTRAP_ALLOW_UNWIRED_STEPS gate
- * is the operator-facing signal.
+ * is the operator-facing signal. All 10 adapters reach wired in production
+ * once INTERNAL_API_URL + INTERNAL_API_TOKEN + OWEIBO_SEED_SKILL_BUNDLE_PATH
+ * are set (B.11 acceptance from ttv_finals_followups.md).
  */
 import type { Pool } from 'pg';
 import type IORedis from 'ioredis';
@@ -40,9 +44,10 @@ import {
   PgTenantCloner,
   PgOntologyPackInstaller,
   PgProjectSeeder,
-  PgSkillSeeder,
   PgDomainIntakeProcessor,
   HttpMemoryWriter,
+  HttpSkillSeeder,
+  HttpDomainClassifier,
   JsonSeedCatalogProvider,
   DockerRepoSandbox,
   NullRepoSandbox,
@@ -117,16 +122,24 @@ export async function buildBootstrapPipeline(
   if (!env.OWEIBO_REPO_SCAN_IMAGE) {
     notes.push('F.5.10: OWEIBO_REPO_SCAN_IMAGE unset; using NullRepoSandbox (no real scan).');
   }
-  // DomainIntakeService requires a DomainClassifier; constructing one
-  // needs an embedder + ontology. For the worker, wire only if
-  // INTERNAL_API_URL is set (we'd POST classify requests rather than
-  // run an embedder in-process).
-  // For now, leave the processor unwired in this worker and let the
-  // step fall back to skipped. A future iteration carves out a
-  // remote-classifier wiring.
-  notes.push('F.5.10: PgDomainIntakeProcessor not wired in worker (needs in-process or remote DomainClassifier).');
-  void PgDomainIntakeProcessor; // mark as referenced so the import doesn't lint-fail
-  const domainIntakeStep = new DomainIntakeStep();
+  // B.2: HttpDomainClassifier outsources the embedding+classification
+  // step to the server (which holds the embedder + ontology). The worker
+  // keeps the Postgres state machine local via PgDomainIntakeProcessor.
+  // The step is additionally gated by DOMAIN_INTAKE_ENABLED (off by
+  // default until B.3 security review).
+  let domainIntakeStep: DomainIntakeStep;
+  if (env.INTERNAL_API_URL && env.INTERNAL_API_TOKEN) {
+    const httpClassifier = new HttpDomainClassifier({
+      apiBaseUrl: env.INTERNAL_API_URL,
+      internalToken: env.INTERNAL_API_TOKEN,
+    });
+    const processor = new PgDomainIntakeProcessor(deps.pool, httpClassifier, sandbox);
+    domainIntakeStep = new DomainIntakeStep({ processor });
+    notes.push('F.5.10: PgDomainIntakeProcessor wired via HttpDomainClassifier.');
+  } else {
+    notes.push('F.5.10: INTERNAL_API_URL/TOKEN unset; DomainIntakeStep stays unwired.');
+    domainIntakeStep = new DomainIntakeStep();
+  }
 
   // ── F.5.6 InstallOntologyPack ──────────────────────────────────────────
   // Needs a memory writer. Use the HttpMemoryWriter shape if internal
@@ -180,11 +193,24 @@ export async function buildBootstrapPipeline(
     const seedMemoriesStep = new SeedMemoriesStep({ writer, catalog });
 
     // ── F.5.8 SeedSkills ──────────────────────────────────────────────────
-    // SkillRegistry needs ModelRouter + Qdrant + Redis + Vault. Not
-    // attempted from the worker process. Leave unwired.
-    notes.push('F.5.8: PgSkillSeeder not wired in worker (SkillRegistry requires ModelRouter+Qdrant+Vault).');
-    void PgSkillSeeder;
-    const seedSkillsStep = new SeedSkillsStep();
+    // B.1: HttpSkillSeeder outsources discover+ensureEmbedded to the
+    // server-side route (which holds ModelRouter+Qdrant+Redis+Vault).
+    // Wired when both internal API env AND a bundle path are present.
+    let seedSkillsStep: SeedSkillsStep;
+    if (env.OWEIBO_SEED_SKILL_BUNDLE_PATH) {
+      const httpSeeder = new HttpSkillSeeder({
+        apiBaseUrl: env.INTERNAL_API_URL!,
+        internalToken: env.INTERNAL_API_TOKEN!,
+      });
+      seedSkillsStep = new SeedSkillsStep({
+        seeder: httpSeeder,
+        bundlePath: env.OWEIBO_SEED_SKILL_BUNDLE_PATH,
+      });
+      notes.push('F.5.8: SeedSkillsStep wired via HttpSkillSeeder.');
+    } else {
+      notes.push('F.5.8: OWEIBO_SEED_SKILL_BUNDLE_PATH unset; SeedSkillsStep stays unwired.');
+      seedSkillsStep = new SeedSkillsStep();
+    }
 
     // ── F.5.7 SeedProject ─────────────────────────────────────────────────
     const projectSeeder = new PgProjectSeeder(deps.pool);

@@ -124,6 +124,14 @@ jobs:
           pnpm --filter @oweibo/db exec prisma generate
           pnpm --filter @oweibo/db build
           pnpm --filter @oweibo/api-middleware build
+          # kilo/pipeline tests run via tsx and import @oweibo/core-engine
+          # at runtime through Node module resolution (no jest
+          # moduleNameMapper for this package). `...` after the
+          # filter selects core-engine AND its workspace deps
+          # (observability, channel-contracts, prompt-registry) in
+          # topological order so every dist/ exists before kilo's
+          # tests run.
+          pnpm --filter @oweibo/core-engine... build
 
       - name: Run tests
         run: pnpm -r test --if-present

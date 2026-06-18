@@ -42,6 +42,61 @@ import { MutationGovernanceService } from './governance/MutationGovernanceServic
 import { CohortAdminService }       from './infrastructure/CohortAdminService.js';
 import { GepaInspectorService }     from './bandit/GepaInspectorService.js';
 import { PrivacyAuditService }      from './distillation/PrivacyAuditService.js';
+import { ActionTrustLadder }        from './action/ActionTrustLadder.js';
+import { DryRunRegistry }           from './action/DryRunRegistry.js';
+import { ShadowExecutor }           from './action/ShadowExecutor.js';
+import { ApprovalSlaService }       from './action/ApprovalSlaService.js';
+import { MultiPartyApprovalService } from './action/MultiPartyApprovalService.js';
+import { QuotaService }             from './action/QuotaService.js';
+import { BudgetEstimator }          from './action/BudgetEstimator.js';
+import { RateLimiter }              from './action/RateLimiter.js';
+import { RateLimitPolicyResolver }  from './action/RateLimitPolicy.js';
+import { InMemoryTokenBucketStore } from './action/TokenBucketStore.js';
+import { ContentInspectorRegistry } from './action/ContentInspectorRegistry.js';
+import { GenericPiiInspector }      from './action/inspectors/GenericPiiInspector.js';
+import { EmailContentInspector }    from './action/inspectors/EmailContentInspector.js';
+import { SqlContentInspector }      from './action/inspectors/SqlContentInspector.js';
+import { GitContentInspector }      from './action/inspectors/GitContentInspector.js';
+import { DeploymentContentInspector } from './action/inspectors/DeploymentContentInspector.js';
+import { FinancialContentInspector } from './action/inspectors/FinancialContentInspector.js';
+import { OutboxRelay }              from './infrastructure/OutboxRelay.js';
+import { ForensicPacketBuilder }     from './action/ForensicPacketBuilder.js';
+import { HitlHandoffService }        from './action/HitlHandoffService.js';
+import { LineageRecorder }           from './action/LineageRecorder.js';
+import { resolveForensicStorageFromEnv } from './action/storage/ForensicPacketStorage.js';
+import { hmacPacketSignerFromSecrets } from './action/storage/PacketSigner.js';
+import { RollbackOrchestrator, RollbackAdapterRegistry } from './action/RollbackOrchestrator.js';
+import { NoOpRollbackAdapter }       from './action/rollback-adapters/NoOpRollbackAdapter.js';
+import { PostgresRollbackAdapter }   from './action/rollback-adapters/PostgresRollbackAdapter.js';
+import { GitRollbackAdapter }        from './action/rollback-adapters/GitRollbackAdapter.js';
+import { SlackRollbackAdapter }      from './action/rollback-adapters/SlackRollbackAdapter.js';
+import { DeployRollbackAdapter }     from './action/rollback-adapters/DeployRollbackAdapter.js';
+import { GenericWebhookRollbackAdapter } from './action/rollback-adapters/GenericWebhookRollbackAdapter.js';
+import { PostExecutionVerifierService, InMemoryVerifierRegistry } from './action/PostExecutionVerifierService.js';
+import { DeployHealthCheckVerifier } from './action/verifiers/DeployHealthCheckVerifier.js';
+import { EmailDeliveredVerifier }    from './action/verifiers/EmailDeliveredVerifier.js';
+import { PostgresRowCountVerifier }  from './action/verifiers/PostgresRowCountVerifier.js';
+import { ComplianceRuleEvaluator }   from './domain/ComplianceRuleEvaluator.js';
+import { ComplianceRulePackRegistry } from './domain/ComplianceRulePackRegistry.js';
+import { PgTenantDomainBindingLookup } from './domain/PgTenantDomainBindingLookup.js';
+import { DomainRegistry }             from './domain/DomainRegistry.js';
+import { TenantDomainBindingService } from './domain/TenantDomainBindingService.js';
+import { PgComplianceEvaluationReader } from './domain/PgComplianceEvaluationReader.js';
+import { ConnectorRegistry }           from './connector/ConnectorRegistry.js';
+import { PgTenantConnectorService }    from './connector/PgTenantConnectorService.js';
+import { TenantTemplateRegistry }      from './seed/TenantTemplateRegistry.js';
+import { CalibrationService }        from './infrastructure/CalibrationService.js';
+import { TtvMetricsService }         from './observability/TtvMetricsService.js';
+import { DomainCurrencyMonitor }     from './domain/DomainCurrencyMonitor.js';
+import { DomainDepthMetrics }        from './domain/DomainDepthMetrics.js';
+import { SmeFeedbackAggregator }     from './domain/SmeFeedbackAggregator.js';
+import { SmeReviewService }          from './domain/SmeReviewService.js';
+import { runWithAdvisoryLock }       from './infrastructure/runWithAdvisoryLock.js';
+import {
+  HmacSnapshotSigner,
+  HmacSnapshotVerifier,
+  loadHmacSnapshotKeys,
+}                                    from './action/HmacSnapshotVerifier.js';
 import { PromptRegistry }          from '@oweibo/prompt-registry';
 import { PromptAssembler }         from '@oweibo/prompt-registry';
 import { createServer }            from './api/server.js';
@@ -54,6 +109,16 @@ import { AuditLogger }             from './doc-generator/observability/AuditLogg
 import { createDocsRouter }        from './doc-generator/http/docsRouter.js';
 
 async function main(): Promise<void> {
+  // F.7.1: bootstrap OpenTelemetry SDK BEFORE any other module work so
+  // every subsequent service operates inside the tracer's context. Opt-in
+  // via OWEIBO_TRACING_ENABLED=true so dev/test runs aren't forced to
+  // bind to the OTLP exporter port.
+  if (process.env['OWEIBO_TRACING_ENABLED'] === 'true') {
+    const { initOtel } = await import('@oweibo/observability');
+    initOtel(process.env['OTEL_SERVICE_NAME'] ?? 'oweibo-api');
+    console.log('[main] OpenTelemetry SDK initialised');
+  }
+
   // ── Infrastructure ────────────────────────────────────────────────────────
   const vault   = new NullVaultClient();
   const secrets = new SecretsManager(vault);
@@ -161,6 +226,11 @@ async function main(): Promise<void> {
   let cohortAdmin: CohortAdminService | undefined;
   let gepaInspector: GepaInspectorService | undefined;
   let privacyAudit: PrivacyAuditService | undefined;
+  let actionTrustLadder: ActionTrustLadder | undefined;
+  let dryRunRegistry: DryRunRegistry | undefined;
+  let shadowExecutor: ShadowExecutor | undefined;
+  let multiPartyApproval: MultiPartyApprovalService | undefined;
+  let quotaService: QuotaService | undefined;
   if (process.env['DATABASE_URL']) {
     pgPool = new Pool({ connectionString: process.env['DATABASE_URL'] });
     const promptRegistry = new PromptRegistry(
@@ -177,6 +247,315 @@ async function main(): Promise<void> {
     cohortAdmin = new CohortAdminService(pgPool);
     gepaInspector = new GepaInspectorService(pgPool);
     privacyAudit = new PrivacyAuditService(pgPool);
+    // T.−1: action trust ladder + S.1–S.7 + D.3 integrations.
+    //
+    // Each integration is independently flag-gated inside the
+    // construct-and-pass pattern below. Disabled-by-flag means the
+    // integration is constructed but its tryConsume/preflight/evaluate
+    // short-circuits to allow/no_grant/pass — the gate stays
+    // byte-identical-to-today when ACTION_TRUST_LADDER_ENABLED=false.
+    const slaService = new ApprovalSlaService(pgPool);
+    multiPartyApproval = new MultiPartyApprovalService(pgPool);
+    quotaService = new QuotaService(pgPool);
+    const budgetEstimator = new BudgetEstimator(pgPool);
+    // In-memory token bucket is per-process — multi-replica deployments
+    // MUST replace this with RedisTokenBucketStore (see file header).
+    // Surfaced as a startup warning instead of failing closed so
+    // single-replica dev/test deployments keep working.
+    if (process.env['ACTION_RATE_LIMITING_ENABLED'] === 'true'
+        && process.env['NODE_ENV'] === 'production') {
+      console.warn('[oweibo] ACTION_RATE_LIMITING_ENABLED=true with in-memory token bucket — multi-replica deployments will NOT enforce a global rate limit; wire RedisTokenBucketStore for production');
+    }
+    const tokenBucket = new InMemoryTokenBucketStore();
+    const rateLimiter = new RateLimiter(pgPool, tokenBucket);
+    // F.4.4: RateLimitPolicyResolver backs both the gate-side hot path
+    // (via RateLimiter, which can resolve internally) and the admin
+    // /actions/policies/ratelimit surface introduced here.
+    const rateLimitPolicyResolver = new RateLimitPolicyResolver(pgPool);
+    const contentInspectors = new ContentInspectorRegistry();
+    contentInspectors.register(new GenericPiiInspector());
+    contentInspectors.register(new EmailContentInspector());
+    contentInspectors.register(new SqlContentInspector());
+    contentInspectors.register(new GitContentInspector());
+    contentInspectors.register(new DeploymentContentInspector());
+    contentInspectors.register(new FinancialContentInspector());
+    // ── F.2.5: ComplianceRuleEvaluator + tenant-domain binding lookup ─────
+    //
+    // ComplianceRulePackRegistry loads the v1 in-memory packs (fintech,
+    // healthcare, legal — see D.3). PgTenantDomainBindingLookup (F.1.8)
+    // resolves per-tenant bound domain slugs from oweibo.tenant_domain_binding.
+    // The evaluator's default bypass resolver is scopeBasedBypassResolver
+    // (declared in ComplianceRuleEvaluator.ts) — it reads
+    // ctx.principalScopes and matches against rule.bypassPolicy.
+    const tenantDomainLookup = new PgTenantDomainBindingLookup(pgPool);
+    const compliancePackRegistry = new ComplianceRulePackRegistry(undefined, {
+      tenantDomainLookup: (t) => tenantDomainLookup.forTenant(t),
+    });
+    const complianceRuleEvaluator = new ComplianceRuleEvaluator(compliancePackRegistry);
+    // F.4.5: companion services for the /tenants/:tenantId/domains/* admin
+    // surface. Registry is the canonical taxonomy (v1 bundled catalog);
+    // bindingService writes tenant_domain_binding rows; evaluationsReader
+    // surfaces compliance_rule_evaluations rows for the audit page.
+    const domainRegistry            = new DomainRegistry();
+    const tenantDomainBindings      = new TenantDomainBindingService(pgPool);
+    const complianceEvaluations     = new PgComplianceEvaluationReader(pgPool);
+
+    // ── F.3.1: CalibrationService + snapshot signer/verifier ───────────────
+    //
+    // The signer/verifier pair share key material from
+    // infra/calibration-signer in Vault. When the key is unavailable
+    // (NullVaultClient in dev, secret missing in prod) the wiring
+    // gracefully degrades:
+    //   - CalibrationService falls back to its legacy sourceKey HMAC,
+    //     producing snapshots the gate's verifier will REJECT.
+    //   - ActionTrustLadder.snapshotVerifier stays undefined.
+    // The gate's existing fallback (cold-start defaults on verify
+    // failure) absorbs both branches without blocking legitimate work.
+    let snapshotSigner: HmacSnapshotSigner | undefined;
+    let snapshotVerifier: HmacSnapshotVerifier | undefined;
+    try {
+      const keys = await loadHmacSnapshotKeys(secrets);
+      snapshotSigner   = new HmacSnapshotSigner(keys);
+      snapshotVerifier = new HmacSnapshotVerifier(keys);
+    } catch (err) {
+      console.warn('[oweibo] snapshot signer/verifier dormant:',
+        err instanceof Error ? err.message : String(err));
+    }
+    const calibrationService = new CalibrationService(pgPool, {
+      ...(snapshotSigner ? { snapshotSigner } : {}),
+    });
+    // F.4.6: calibrationService now flows into createServer below for
+    // /tenants/:tenantId/calibration. Task-create-path wiring is the
+    // follow-up that F.3.1's scope deferred.
+
+    // ── F.3.2: TtvMetricsService — time-to-value telemetry ─────────────────
+    //
+    // The service auto-detects @opentelemetry/api at construction. When
+    // present, all 14 metric series are real OTEL histograms/counters;
+    // when absent, every record() call lands on a no-op and the wider
+    // observability path stays silent. Operators wire the OTEL exporter
+    // (Prometheus, OTLP, etc.) via the SDK config outside this code —
+    // standard OTEL SDK env vars apply.
+    //
+    // The service is referenced via void today; threading the instance
+    // into call sites (bootstrap worker, cognitive engine, action gate)
+    // is per-caller work and ships as those callers are refactored.
+    const ttvMetrics = new TtvMetricsService();
+    if (!ttvMetrics.hasMeter) {
+      console.warn(
+        '[oweibo] TtvMetricsService: @opentelemetry/api not present — TTV ' +
+        'metrics will not be emitted (NoOp histograms/counters). ' +
+        'Install @opentelemetry/api + a matching exporter (e.g. ' +
+        '@opentelemetry/exporter-prometheus) to enable.',
+      );
+    } else {
+      console.log('[oweibo] TtvMetricsService: OTEL meter wired (14 metric series).');
+    }
+    void ttvMetrics;
+
+    // ── F.3.3: periodic domain services ────────────────────────────────────
+    //
+    // DomainCurrencyMonitor.tick() walks the domain_artifact_currency table
+    // daily and emits transitions. The cron is gated by a Postgres advisory
+    // lock so concurrent triggers on multi-replica deployments are no-ops.
+    //
+    // DomainDepthMetrics and SmeFeedbackAggregator are per-event services
+    // (writeSnapshot / aggregateForQueueItem) rather than tick-driven —
+    // they're constructed here so the admin-web routes (F.4) and the SME
+    // review flow can take them via runtime composition, but no periodic
+    // tick is wired for them.
+    const domainCurrencyMonitor    = new DomainCurrencyMonitor(pgPool);
+    const domainDepthMetrics       = new DomainDepthMetrics(pgPool);
+    const smeFeedbackAggregator    = new SmeFeedbackAggregator(pgPool);
+    // F.3.4: SmeReviewService handles the per-queue-item review lifecycle
+    // (enqueue → reviewers vote → aggregation via SmeFeedbackAggregator).
+    // Constructed here so the F.4 /domains/sme-review admin routes can
+    // take it via runtime composition.
+    const smeReviewService         = new SmeReviewService(pgPool);
+    // domainDepthMetrics + smeReviewService now flow into createServer
+    // for the F.4.5 /tenants/:tenantId/domains/* surface.
+    void smeFeedbackAggregator;     // event-driven; no admin-web route consumes it directly
+
+    // Daily DomainCurrency tick. node-cron is a CJS module; import via the
+    // existing 'node-cron' dep without pulling type machinery into the
+    // composition root.
+    const cronExpr = process.env['DOMAIN_CURRENCY_CRON'] ?? '0 2 * * *';  // daily 02:00 UTC
+    if (cronExpr.toLowerCase() === 'off' || cronExpr === '') {
+      console.log('[oweibo] DomainCurrencyMonitor cron disabled (DOMAIN_CURRENCY_CRON=off)');
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const cron = require('node-cron') as { schedule(expr: string, fn: () => void): unknown };
+      cron.schedule(cronExpr, () => {
+        void runWithAdvisoryLock(pgPool!, 'domain_currency_tick', async () => {
+          const r = await domainCurrencyMonitor.tick();
+          console.log('[oweibo] DomainCurrencyMonitor.tick():', {
+            artifactsScanned: r.artifactsScanned,
+            feedsAttempted:   r.feedsAttempted,
+            transitions:      r.transitions.length,
+            feedFailures:     r.feedFailures.length,
+          });
+        }).catch((err: unknown) => {
+          console.error('[oweibo] DomainCurrencyMonitor.tick() failed:',
+            err instanceof Error ? err.message : String(err));
+        });
+      });
+      console.log(`[oweibo] DomainCurrencyMonitor cron scheduled: ${cronExpr}`);
+    }
+
+    actionTrustLadder = new ActionTrustLadder(pgPool, {
+      slaAttacher: slaService,
+      rateLimiter: { tryConsume: (t, c) => rateLimiter.tryConsume(t, c) },
+      grantChecker: { tryConsume: (req) => multiPartyApproval.tryConsume(req) },
+      contentInspectors: { run: (ctx) => contentInspectors.run(ctx) },
+      quotaService: { preflight: (args) => quotaService.preflight(args) },
+      budgetEstimator: { estimate: (args) => budgetEstimator.estimate(args) },
+      complianceRuleEvaluator,
+      ...(snapshotVerifier ? { snapshotVerifier } : {}),
+    });
+    dryRunRegistry = new DryRunRegistry(pgPool);
+    shadowExecutor = new ShadowExecutor(pgPool);
+
+    // ── F.4.2: lineage recorder (read-side surfacing only at this point) ──
+    // Write-side wiring is the responsibility of ActionTrustLadder + the
+    // execution path; this construction supplies the read API the admin
+    // surface needs in /tenants/:tenantId/lineage/*.
+    const lineageRecorder = new LineageRecorder(pgPool);
+
+    // ── F.4.7: connectors + templates admin surfaces ──────────────────────
+    // ConnectorRegistry loads the platform catalog from disk; degrades
+    // to an empty registry when the directory is missing (the route
+    // still mounts and surfaces 'unknown_connector' on install).
+    let connectorRegistry: ConnectorRegistry;
+    try {
+      connectorRegistry = await ConnectorRegistry.loadFromDirectory(
+        ConnectorRegistry.defaultDirectory(),
+      );
+    } catch (err) {
+      console.warn('[oweibo] connector catalog load failed; using empty registry:',
+        err instanceof Error ? err.message : String(err));
+      connectorRegistry = ConnectorRegistry.fromEntries([]);
+    }
+    const tenantConnectorService = new PgTenantConnectorService(pgPool);
+    const tenantTemplateRegistry = new TenantTemplateRegistry(pgPool);
+
+    // ── F.2.3: forensic packet pipeline + HITL handoff ────────────────────
+    //
+    // Storage backend is selected via OWEIBO_FORENSIC_STORAGE_KIND
+    // (filesystem|s3|none). When the kind resolves to none/undefined the
+    // forensic features stay dormant — the HITL routes will surface
+    // 'forensic_features_disabled' to operators. Signer requires
+    // infra/forensic-signer in Vault (CALIBRATION_SIGNING_KEY equivalent
+    // for packets); without it we skip construction with a startup warning.
+    let forensicBuilder: ForensicPacketBuilder | undefined;
+    let hitlHandoff:     HitlHandoffService     | undefined;
+    let forensicStorage: import('@oweibo/core-contracts').IForensicPacketStorage | undefined;
+    try {
+      forensicStorage = resolveForensicStorageFromEnv();
+      if (forensicStorage) {
+        const signer = await hmacPacketSignerFromSecrets(secrets);
+        forensicBuilder = new ForensicPacketBuilder(pgPool, forensicStorage, signer);
+        hitlHandoff     = new HitlHandoffService(pgPool, forensicBuilder);
+      }
+    } catch (err) {
+      console.warn('[oweibo] forensic packet pipeline disabled:',
+        err instanceof Error ? err.message : String(err));
+    }
+    // forensicBuilder is consumed by hitlHandoff; suppress unused-var
+    // when the wiring is dormant.
+    void forensicBuilder;
+
+    // ── F.2.4: PostExecutionVerifierService + 3 production verifiers ──────
+    //
+    // Registry is populated with the three verifier impls. Each verifier
+    // takes per-action config via deferred_verifications.verifier_config,
+    // so adding a verifier here doesn't fire it for every action — only
+    // for actions whose adapter populated the matching config.
+    //
+    // autoHitlHandoff routes severity-3 outcomes on AUTO_HITL_TRIGGER_CLASSES
+    // (financial.*, irreversible.*, deploy.prod*) to hitlHandoff.prepare.
+    // The hook is undefined when the forensic pipeline is dormant
+    // (storage / signer not wired) — the verifier service no-ops in that case.
+    const verifierRegistry = new InMemoryVerifierRegistry();
+    verifierRegistry.register(new DeployHealthCheckVerifier());
+    verifierRegistry.register(new EmailDeliveredVerifier());
+    verifierRegistry.register(new PostgresRowCountVerifier(pgPool));
+    const postExecVerifier = new PostExecutionVerifierService(pgPool, verifierRegistry, {
+      ...(hitlHandoff ? {
+        autoHitlHandoff: async (args) => {
+          const planId = args.proposalId; // single-action proposals: planId == proposalId fallback
+          await hitlHandoff!.prepare({
+            tenantId: args.tenantId,
+            planId,
+            triggerKind: 'auto_drift',
+            triggeredBy: 'post_execution_verifier',
+            ...(args.reason ? { summary: args.reason } : {}),
+          });
+          return { ok: true };
+        },
+      } : {}),
+    });
+    void postExecVerifier;  // wired into the lifecycle worker via runtime composition
+
+    // ── F.2.2: rollback orchestrator + full adapter registry ──────────────
+    //
+    // Adapters that need per-tenant external config (slack token,
+    // deploy service URL, webhook destination) take resolver shims that
+    // return null until F.1.6 resolvers + F.4 admin routes are wired
+    // end-to-end. Until then the adapters preflight-fail with operator-
+    // readable messages — the orchestrator itself short-circuits the
+    // rollback execution and reports the configuration gap.
+    //
+    // onRollbackSuccess marks any deferred verification for the rolled-back
+    // proposal as `superseded` (PostExecutionVerifierService.supersedeForProposal)
+    // so the lifecycle worker skips re-checking a system the operator
+    // has already moved on from.
+    const rollbackRegistry = new RollbackAdapterRegistry();
+    rollbackRegistry.register(new NoOpRollbackAdapter());
+    rollbackRegistry.register(new PostgresRollbackAdapter(pgPool));
+    rollbackRegistry.register(new GitRollbackAdapter());
+    rollbackRegistry.register(new SlackRollbackAdapter({
+      resolve: async () => null,
+    }));
+    rollbackRegistry.register(new DeployRollbackAdapter({
+      resolve: async () => null,
+    }));
+    rollbackRegistry.register(new GenericWebhookRollbackAdapter());
+
+    const rollbackOrchestrator = new RollbackOrchestrator(pgPool, rollbackRegistry, {
+      onRollbackSuccess: async ({ tenantId, proposalId }) => {
+        await postExecVerifier.supersedeForProposal(tenantId, proposalId);
+      },
+    });
+    // F.4.3: rollbackOrchestrator now flows into createServer below.
+
+    // T.0 + F.6: outbox relay. Drains oweibo.outbox to Redis lifecycle
+    // channels (oweibo.lifecycle.<subject>). Polls every 2s; fail-open on
+    // Redis errors. F.6 dual-write flags add XADD to Redis Streams on top
+    // of the legacy pub/sub PUBLISH; see plan F.6 for the 3-deploy
+    // rollout sequence.
+    const outboxDualWriteEnabled = process.env['OUTBOX_DUAL_WRITE_ENABLED'] === 'true';
+    const outboxStreamsOnlyEnabled = process.env['OUTBOX_STREAMS_ENABLED'] === 'true'
+      && !outboxDualWriteEnabled;
+    const outboxRelay = new OutboxRelay(pgPool, {
+      publish: (channel, body) => rPub(channel, body),
+      addToStream: (stream, body, opts) => {
+        // ioredis XADD signature: xadd(key, [maxLen?], NOMKSTREAM?|empty, '*'|id, ...field-value pairs)
+        // We pass a single field "payload" containing the JSON body and key the dedup on opts.eventId
+        // which is embedded in `body` as well.
+        const maxLen = opts?.maxLen;
+        const args = maxLen !== undefined
+          ? [stream, 'MAXLEN', '~', String(maxLen), '*', 'payload', body, 'eventId', opts?.eventId ?? '']
+          : [stream, '*', 'payload', body, 'eventId', opts?.eventId ?? ''];
+        return (redis.call('XADD', ...args) as Promise<unknown>).then(() => undefined as void);
+      },
+    }, {
+      streamsDualWriteEnabled: outboxDualWriteEnabled,
+      streamsOnlyEnabled: outboxStreamsOnlyEnabled,
+    });
+    outboxRelay.start();
+    if (outboxDualWriteEnabled || outboxStreamsOnlyEnabled) {
+      console.log(`[main] OutboxRelay: streams ${outboxStreamsOnlyEnabled ? 'ONLY' : 'DUAL-WRITE'} mode enabled`);
+    }
   }
 
   const swarm = new SwarmCoordinator(
@@ -284,6 +663,55 @@ async function main(): Promise<void> {
     ...(cohortAdmin        ? { cohortAdmin }        : {}),
     ...(gepaInspector      ? { gepaInspector }      : {}),
     ...(privacyAudit       ? { privacyAudit }       : {}),
+    ...(actionTrustLadder && dryRunRegistry && shadowExecutor
+      ? { actionTrustLadder, dryRunRegistry, shadowExecutor }
+      : {}),
+    ...(multiPartyApproval && quotaService
+      ? { multiPartyApproval, quotaService }
+      : {}),
+    // F.4.1: forensic + replay surface. Mounts iff the forensic pipeline
+    // is wired (storage adapter + HMAC signer + HitlHandoffService).
+    ...(hitlHandoff && forensicStorage
+      ? { hitlHandoff, forensicStorage }
+      : {}),
+    // F.4.2: lineage read surface — recorder is always constructed.
+    lineageRecorder,
+    // F.4.3: rollback invocation + plan reads — orchestrator is always
+    // constructed; without it the routes return 503 rollback_disabled.
+    rollbackOrchestrator,
+    // F.4.5: domain admin surface — registry, bindings, sme review,
+    // depth metrics, compliance evaluations. All six are always
+    // constructed; the server mounts the router only when all six are
+    // present, so any future degradation is observable at boot.
+    domainRegistry,
+    tenantDomainBindings,
+    tenantDomainBindingLookup: tenantDomainLookup,
+    smeReviewService,
+    domainDepthMetrics,
+    complianceEvaluations,
+    // F.4.6: calibration readiness snapshot — admin badge + onboarding.
+    calibrationService,
+    // F.4.4: tenant policy override surface. SLA, multiparty, ratelimit,
+    // and quota services flow in. multiPartyApproval + quotaService are
+    // already threaded above for the F.4.0 grants/quotas surface; the
+    // SLA and rate-limit-policy resolvers are new here.
+    approvalSlaService: slaService,
+    rateLimitPolicyResolver,
+    // F.4.7: connectors + templates admin surfaces.
+    connectorRegistry,
+    tenantConnectorService,
+    tenantTemplateRegistry,
+    // F.5.9 server: enables POST /api/v1/_internal/memories/seed when both
+    // the token AND a memory orchestrator are available. The token is the
+    // shared internal secret -- workers (tenant-bootstrap-worker) hold
+    // the same value. When unset, the path stays 404 (HttpMemoryWriter
+    // callers will fail fast rather than write to a broken endpoint).
+    ...(process.env['OWEIBO_INTERNAL_API_TOKEN'] && memorySubsystem.orchestrator
+      ? {
+          internalApiToken: process.env['OWEIBO_INTERNAL_API_TOKEN'],
+          memoryOrchestrator: memorySubsystem.orchestrator,
+        }
+      : {}),
   });
 
   // ── Channel Gateway (optional) ────────────────────────────────────────────

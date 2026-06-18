@@ -11,7 +11,7 @@
  * Usage:
  *   app.use(authenticate(jwksConfig, legacyTokenMap))
  */
-import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
+import { createRemoteJWKSet, jwtVerify, decodeProtectedHeader, type JWTPayload } from 'jose';
 import { createHash } from 'crypto';
 import { prisma } from '@oweibo/db';
 import type { Principal } from '@oweibo/db';
@@ -35,7 +35,22 @@ function getJwksSet(uri: string) {
   return jwksSets.get(uri)!;
 }
 
+function isLoopback(host: string): boolean {
+  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]';
+}
+
 export function authenticate(jwksCfg: JwksConfig, legacyMap: Map<string, LegacyToken> = new Map()) {
+  if (!jwksCfg.allowedKids || jwksCfg.allowedKids.length === 0) {
+    throw new Error('authenticate: allowedKids must be a non-empty array');
+  }
+  const url = new URL(jwksCfg.jwksUri);
+  if (url.protocol !== 'https:' && !isLoopback(url.hostname) && !jwksCfg.allowInsecureJwksUri) {
+    throw new Error(
+      `authenticate: refusing to fetch JWKS over insecure transport (${jwksCfg.jwksUri}); ` +
+      `set allowInsecureJwksUri:true to override (only safe behind a TLS-terminating proxy)`,
+    );
+  }
+
   return async function authenticateMiddleware(
     req: Request,
     res: Response,
@@ -63,6 +78,20 @@ export function authenticate(jwksCfg: JwksConfig, legacyMap: Map<string, LegacyT
 }
 
 async function resolveJwt(token: string, cfg: JwksConfig, req: Request, next: NextFunction) {
+  // Pre-verify gate: reject before any JWKS fetch on alg confusion, missing
+  // kid, or kid outside the allowlist. Stops rogue-key attacks and JWKS-
+  // endpoint DoS via rotated-attacker-kid floods.
+  const header = decodeProtectedHeader(token);
+  if (header.alg !== 'RS256') {
+    throw new Error(`authenticate: unsupported alg ${String(header.alg)}`);
+  }
+  if (!header.kid) {
+    throw new Error('authenticate: missing kid in protected header');
+  }
+  if (!cfg.allowedKids.includes(header.kid)) {
+    throw new Error(`authenticate: kid ${header.kid} not in allowlist`);
+  }
+
   const jwks = getJwksSet(cfg.jwksUri);
   const { payload } = await jwtVerify<OweiboClaims>(token, jwks, {
     issuer:     cfg.issuer,

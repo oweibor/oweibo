@@ -8,6 +8,7 @@
  * Designed for fintech/payment use-cases (OWASP ASVS L2, PCI-DSS v4, GDPR).
  */
 import type { ArtifactBundle, ArtifactFile } from '@oweibo/core-contracts';
+import { analyzeFileAst, resetAstProject } from './ast-analyzers/AstComplianceAnalyzer.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -34,6 +35,12 @@ export interface ComplianceGateOptions {
   readonly blockOn?: 'critical' | 'high';
   /** Skip specific rule IDs (e.g. rules not applicable to this app). */
   readonly skipRules?: ReadonlySet<string>;
+  /**
+   * Audit-fix: skip the full AST analysis pass. Useful when callers
+   * have already analyzed the bundle out-of-band or are running a
+   * fast pre-flight check. Default: false (AST runs).
+   */
+  readonly skipAst?: boolean;
 }
 
 // ─── Dangerous pattern detectors ─────────────────────────────────────────────
@@ -290,10 +297,12 @@ function extractLine(content: string, pattern: RegExp): string {
 export class ComplianceGate {
   private readonly blockOn: 'critical' | 'high';
   private readonly skipRules: ReadonlySet<string>;
+  private readonly skipAst: boolean;
 
   constructor(options: ComplianceGateOptions = {}) {
     this.blockOn = options.blockOn ?? 'critical';
     this.skipRules = options.skipRules ?? new Set();
+    this.skipAst = options.skipAst ?? false;
   }
 
   /**
@@ -316,6 +325,55 @@ export class ComplianceGate {
           message: `Rule ${rule.id} threw an error during evaluation`,
         });
       }
+    }
+
+    // Audit-fix (ComplianceGate AST): run ts-morph deep analysis on
+    // every .ts/.tsx/.js/.jsx file in the bundle. The regex rules above
+    // catch the obvious cases; AST analyzers in
+    // ./ast-analyzers/AstComplianceAnalyzer.ts close the documented
+    // bypass classes (string-concat secrets, indirect eval, SQL
+    // concatenation, aliased exec). One try/finally to guarantee the
+    // shared ts-morph Project is reset between checks. Callers can
+    // opt out via { skipAst: true } when they've analyzed the bundle
+    // out-of-band.
+    if (!this.skipAst) try {
+      const allFiles: readonly ArtifactFile[] = [
+        ...bundle.files,
+        ...bundle.testFiles,
+      ];
+      for (const file of allFiles) {
+        if (this.skipRules.has('AST-SEC-002') &&
+            this.skipRules.has('AST-SEC-003') &&
+            this.skipRules.has('AST-SEC-004') &&
+            this.skipRules.has('AST-SEC-005')) {
+          break;
+        }
+        if (!/\.(ts|tsx|js|jsx|mts|cts)$/i.test(file.path)) continue;
+        if (file.encoding !== 'utf-8') continue;
+        try {
+          const astViolations = analyzeFileAst(file.path, file.content);
+          for (const v of astViolations) {
+            if (this.skipRules.has(v.ruleId)) continue;
+            allViolations.push({
+              ruleId: v.ruleId,
+              severity: v.severity,
+              message: v.message,
+              filePath: v.filePath,
+              evidence: v.evidence,
+            });
+          }
+        } catch {
+          // Per-file parse failure must not crash the gate.
+          allViolations.push({
+            ruleId: 'AST-PARSE',
+            severity: 'low',
+            message: `AST analysis failed for ${file.path}`,
+            filePath: file.path,
+          });
+        }
+      }
+    } finally {
+      resetAstProject();
     }
 
     const blocking = this.blockOn === 'high'

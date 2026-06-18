@@ -1,0 +1,28 @@
+{
+  "entries": [
+    {
+      "templateId": "maintenance.fix-flaky-test",
+      "catalogVersion": "1",
+      "triggerSummary": "Diagnose and fix a flaky test that passes sometimes and fails sometimes without the underlying code changing.",
+      "subGoalSkeleton": [
+        { "description": "Reproduce the flake locally: run the test in a tight loop and confirm the failure surface" },
+        { "description": "Identify the source of non-determinism (clock, randomness, network, ordering, shared state)", "dependsOn": ["Reproduce the flake locally: run the test in a tight loop and confirm the failure surface"] },
+        { "description": "Apply a fix that pins the non-deterministic input (fake clock, seeded RNG, isolated state)", "dependsOn": ["Identify the source of non-determinism (clock, randomness, network, ordering, shared state)"] },
+        { "description": "Re-run the loop and confirm the failure no longer surfaces over 100+ iterations", "dependsOn": ["Apply a fix that pins the non-deterministic input (fake clock, seeded RNG, isolated state)"] }
+      ],
+      "applicableTo": { "templates": ["*"] }
+    },
+    {
+      "templateId": "maintenance.dependency-bump",
+      "catalogVersion": "1",
+      "triggerSummary": "Bump a runtime dependency to a newer version, resolve any breaking changes, and keep tests green.",
+      "subGoalSkeleton": [
+        { "description": "Read the release notes / changelog between the current and target version" },
+        { "description": "Bump the dependency in package.json (or equivalent) and reinstall", "dependsOn": ["Read the release notes / changelog between the current and target version"] },
+        { "description": "Run the full test suite; capture any breakages", "dependsOn": ["Bump the dependency in package.json (or equivalent) and reinstall"] },
+        { "description": "Apply the smallest possible fixes for the breakages and re-run", "dependsOn": ["Run the full test suite; capture any breakages"] }
+      ],
+      "applicableTo": { "templates": ["*"] }
+    }
+  ]
+}

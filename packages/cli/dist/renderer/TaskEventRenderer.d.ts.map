@@ -1,1 +1,0 @@
-{"version":3,"file":"TaskEventRenderer.d.ts","sourceRoot":"","sources":["../../src/renderer/TaskEventRenderer.ts"],"names":[],"mappings":"AAAA;;;;;;GAMG;AAEH,OAAO,KAAK,EAAE,SAAS,EAAE,MAAM,WAAW,CAAC;AAE3C,qBAAa,iBAAiB;IAC5B;;;OAGG;IACH,MAAM,CAAC,MAAM,CAAC,KAAK,EAAE,SAAS,EAAE,GAAG,EAAE,OAAO,GAAG,OAAO;CA+GvD"}

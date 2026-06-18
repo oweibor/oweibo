@@ -1,0 +1,22 @@
+{
+  "entries": [
+    {
+      "seedId": "success-pattern.smallest-test-then-iterate",
+      "catalogVersion": "1",
+      "kind": "success-pattern",
+      "summary": "Write the smallest passing test first, then iterate. Tests built bottom-up shake out interface assumptions before the implementation locks them in.",
+      "importance": 0.55,
+      "tags": ["scope:starter", "topic:testing", "role:executor"],
+      "applicableTo": { "templates": ["*"] }
+    },
+    {
+      "seedId": "success-pattern.bisect-on-regression",
+      "catalogVersion": "1",
+      "kind": "success-pattern",
+      "summary": "When a regression is hard to reproduce, bisect commits or feature flags instead of reading code top-down — bisection localizes the change set fast.",
+      "importance": 0.5,
+      "tags": ["scope:starter", "topic:debugging", "role:executor"],
+      "applicableTo": { "templates": ["*"] }
+    }
+  ]
+}

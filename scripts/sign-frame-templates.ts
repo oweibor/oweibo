@@ -10,7 +10,7 @@ import { join } from 'path';
 const key = process.env['FRAME_SIGNING_KEY'];
 if (!key) { console.error('FRAME_SIGNING_KEY is required'); process.exit(1); }
 
-const templatesDir = join(import.meta.dirname ?? __dirname, '..', 'packages', 'prompt-registry', 'templates');
+const templatesDir = join(__dirname, '..', 'packages', 'prompt-registry', 'templates');
 const sigsDir      = join(templatesDir, 'sigs');
 
 const files = readdirSync(templatesDir).filter(f => f.endsWith('.tpl'));

@@ -13,6 +13,17 @@ import { createTasksRouter } from './routes/tasks.routes.js';
 import { createHITLRouter } from './routes/hitl.routes.js';
 import { createSkillsRouter } from './routes/skills.routes.js';
 import { createPlatformRouter } from './routes/platform.routes.js';
+import { createActionsRouter } from './routes/actions.routes.js';
+import { createActionsExtendedRouter } from './routes/actionsExtended.routes.js';
+import { createForensicsRouter } from './routes/forensics.routes.js';
+import { createLineageRouter } from './routes/lineage.routes.js';
+import { createTenantActionsRouter } from './routes/tenantActions.routes.js';
+import { createDomainsRouter } from './routes/domains.routes.js';
+import { createCalibrationRouter } from './routes/calibration.routes.js';
+import { createPoliciesRouter } from './routes/policies.routes.js';
+import { createConnectorsRouter } from './routes/connectors.routes.js';
+import { createTemplatesRouter } from './routes/templates.routes.js';
+import { createInternalRouter } from './routes/internal.routes.js';
 import { createAuthMiddleware } from './middleware/authenticate.js';
 import { openapiSpec } from './openapi.js';
 import type { SecretsManager } from '../secrets/SecretsManager.js';
@@ -23,6 +34,9 @@ import type { MutationGovernanceService } from '../governance/MutationGovernance
 import type { CohortAdminService } from '../infrastructure/CohortAdminService.js';
 import type { GepaInspectorService } from '../bandit/GepaInspectorService.js';
 import type { PrivacyAuditService } from '../distillation/PrivacyAuditService.js';
+import type { ActionTrustLadder } from '../action/ActionTrustLadder.js';
+import type { DryRunRegistry } from '../action/DryRunRegistry.js';
+import type { ShadowExecutor } from '../action/ShadowExecutor.js';
 
 export interface ServerConfig {
   readonly port: number;
@@ -87,6 +101,42 @@ export async function createServer(
     gepaInspector?: GepaInspectorService;
     /** Optional — when provided, enables /api/v1/platform/privacy/audit (B.7). */
     privacyAudit?: PrivacyAuditService;
+    /** T.−1: when all three are provided, enables /api/v1/actions/* routes. */
+    actionTrustLadder?: ActionTrustLadder;
+    dryRunRegistry?: DryRunRegistry;
+    shadowExecutor?: ShadowExecutor;
+    /** S.4 / S.6: enables /api/v1/actions/{grants,approvals,quotas}/* routes. */
+    multiPartyApproval?: import('../action/MultiPartyApprovalService.js').MultiPartyApprovalService;
+    quotaService?: import('../action/QuotaService.js').QuotaService;
+    /** F.4.1: enables /api/v1/tenants/:tenantId/forensics/* routes. */
+    hitlHandoff?: import('../action/HitlHandoffService.js').HitlHandoffService;
+    forensicStorage?: import('@oweibo/core-contracts').IForensicPacketStorage;
+    actionReplay?: import('../action/ActionReplayService.js').ActionReplayService;
+    /** F.4.2: enables /api/v1/tenants/:tenantId/lineage/* routes. */
+    lineageRecorder?: import('../action/LineageRecorder.js').LineageRecorder;
+    /** F.4.3: enables rollback + plan-level reads at /tenants/:tenantId/actions. */
+    rollbackOrchestrator?: import('../action/RollbackOrchestrator.js').RollbackOrchestrator;
+    /** F.4.5: enables /api/v1/tenants/:tenantId/domains/* routes. */
+    domainRegistry?: import('../domain/DomainRegistry.js').DomainRegistry;
+    tenantDomainBindings?: import('../domain/TenantDomainBindingService.js').TenantDomainBindingService;
+    tenantDomainBindingLookup?: import('../domain/PgTenantDomainBindingLookup.js').PgTenantDomainBindingLookup;
+    smeReviewService?: import('../domain/SmeReviewService.js').SmeReviewService;
+    domainDepthMetrics?: import('../domain/DomainDepthMetrics.js').DomainDepthMetrics;
+    complianceEvaluations?: import('../domain/PgComplianceEvaluationReader.js').PgComplianceEvaluationReader;
+    /** F.4.6: enables GET /api/v1/tenants/:tenantId/calibration. */
+    calibrationService?: import('../infrastructure/CalibrationService.js').CalibrationService;
+    /** F.4.4: enables /api/v1/tenants/:tenantId/actions/policies/* routes. */
+    approvalSlaService?: import('../action/ApprovalSlaService.js').ApprovalSlaService;
+    rateLimitPolicyResolver?: import('../action/RateLimitPolicy.js').RateLimitPolicyResolver;
+    /** F.4.7: enables /api/v1/tenants/:tenantId/connectors/* + /templates/* routes. */
+    connectorRegistry?: import('../connector/ConnectorRegistry.js').ConnectorRegistry;
+    tenantConnectorService?: import('../connector/PgTenantConnectorService.js').PgTenantConnectorService;
+    tenantTemplateRegistry?: import('../seed/TenantTemplateRegistry.js').TenantTemplateRegistry;
+    /** F.5.9 server side: enables POST /api/v1/_internal/memories/seed for the
+     *  HttpMemoryWriter caller. When the token + orchestrator are absent the
+     *  route stays unmounted so the path returns 404. */
+    internalApiToken?: string;
+    memoryOrchestrator?: import('@oweibo/core-contracts').IMemoryOrchestrator;
   },
   config: Partial<ServerConfig> = {},
 ): Promise<{ app: import('express').Application; port: number }> {
@@ -139,6 +189,121 @@ export async function createServer(
   v1.use('/hitl', createHITLRouter({ hitlGateway: deps.hitlGateway }));
   v1.use('/skills', createSkillsRouter());
 
+  // T.−1: action trust ladder routes. Mounted independently of the platform
+  // routes — the gate is a tenant-scoped service, not a platform-admin one.
+  if (deps.actionTrustLadder && deps.dryRunRegistry && deps.shadowExecutor) {
+    v1.use('/actions', createActionsRouter({
+      trustLadder: deps.actionTrustLadder,
+      registry: deps.dryRunRegistry,
+      shadowExecutor: deps.shadowExecutor,
+    }));
+  }
+
+  // F.4.0 (was S.4 / S.6): extended action routes (grants, approvals/votes,
+  // quotas). Mounted under `/tenants/:tenantId/actions/*` — the URL param
+  // is the source of truth, cross-checked against the JWT tenant claim by
+  // the router's own `requireTenantParamMatchesJwt` guard. Previous mount
+  // was `/actions/*` (round-5 audit) — moved here so the admin-web pages
+  // hit a single tenant-scoped base.
+  if (deps.multiPartyApproval && deps.quotaService) {
+    v1.use('/tenants/:tenantId/actions', createActionsExtendedRouter({
+      multiPartyApproval: deps.multiPartyApproval,
+      quotaService: deps.quotaService,
+    }));
+  }
+
+  // F.4.3: rollback invocation + plan-level proposal reads. Stacks at the
+  // same /tenants/:tenantId/actions mount as actionsExtended — Express
+  // walks routers in registration order, so non-overlapping verb/paths
+  // coexist cleanly. Registry alone enables the plan reads; rollback
+  // endpoints additionally require RollbackOrchestrator (else 503).
+  if (deps.dryRunRegistry) {
+    v1.use('/tenants/:tenantId/actions', createTenantActionsRouter({
+      registry: deps.dryRunRegistry,
+      ...(deps.rollbackOrchestrator ? { rollbackOrchestrator: deps.rollbackOrchestrator } : {}),
+    }));
+  }
+
+  // F.4.1: forensic packet + replay routes. Requires the HITL service and
+  // a storage adapter; replay endpoints additionally require ActionReplayService
+  // (otherwise they return 503 replay_disabled). When forensics are dormant
+  // (FORENSIC_REPLAY_ENABLED=false or no storage configured) the routes do
+  // not mount at all — the admin pages surface a load error.
+  if (deps.hitlHandoff && deps.forensicStorage) {
+    v1.use('/tenants/:tenantId/forensics', createForensicsRouter({
+      hitlHandoff:    deps.hitlHandoff,
+      storage:        deps.forensicStorage,
+      ...(deps.actionReplay ? { actionReplay: deps.actionReplay } : {}),
+    }));
+  }
+
+  // F.4.2: lineage routes (read-side admin surface).
+  if (deps.lineageRecorder) {
+    v1.use('/tenants/:tenantId/lineage', createLineageRouter({
+      lineage: deps.lineageRecorder,
+    }));
+  }
+
+  // F.4.5: domain admin surface. Needs the full set of services so the
+  // 8 endpoints behind the mount can resolve. When any are missing the
+  // mount is skipped entirely — partial wiring would yield half-working
+  // routes that crash on demand.
+  if (
+    deps.domainRegistry && deps.tenantDomainBindings && deps.tenantDomainBindingLookup
+    && deps.smeReviewService && deps.domainDepthMetrics && deps.complianceEvaluations
+  ) {
+    v1.use('/tenants/:tenantId/domains', createDomainsRouter({
+      registry:        deps.domainRegistry,
+      bindingService:  deps.tenantDomainBindings,
+      bindingLookup:   deps.tenantDomainBindingLookup,
+      smeReview:       deps.smeReviewService,
+      depthMetrics:    deps.domainDepthMetrics,
+      evaluations:     deps.complianceEvaluations,
+    }));
+  }
+
+  // F.4.6: calibration snapshot — admin badge consumer.
+  if (deps.calibrationService) {
+    v1.use('/tenants/:tenantId/calibration', createCalibrationRouter({
+      calibration: deps.calibrationService,
+    }));
+  }
+
+  // F.4.4: per-tenant policy override surface. All four services are
+  // required because the router dispatches by URL `:domain` segment.
+  // Partial wiring would yield half-working routes that fail on demand;
+  // we mount only when every dependency is present.
+  if (
+    deps.approvalSlaService && deps.multiPartyApproval
+    && deps.rateLimitPolicyResolver && deps.quotaService
+  ) {
+    v1.use('/tenants/:tenantId/actions/policies', createPoliciesRouter({
+      sla:        deps.approvalSlaService,
+      multiparty: deps.multiPartyApproval,
+      ratelimit:  deps.rateLimitPolicyResolver,
+      quota:      deps.quotaService,
+    }));
+  }
+
+  // F.4.7: connectors admin surface. Requires catalog + per-tenant
+  // service. Optional binding lookup narrows recommendations by domain.
+  if (deps.connectorRegistry && deps.tenantConnectorService) {
+    v1.use('/tenants/:tenantId/connectors', createConnectorsRouter({
+      catalog:          deps.connectorRegistry,
+      tenantConnectors: deps.tenantConnectorService,
+      ...(deps.tenantDomainBindingLookup
+        ? { bindingLookup: deps.tenantDomainBindingLookup }
+        : {}),
+    }));
+  }
+
+  // F.4.7: tenant template catalog read surface.
+  if (deps.tenantTemplateRegistry) {
+    v1.use('/tenants/:tenantId/templates', createTemplatesRouter({
+      templates: deps.tenantTemplateRegistry,
+    }));
+  }
+
   if (deps.pool && deps.operationalMode) {
     v1.use('/platform', createPlatformRouter({
       pool:            deps.pool,
@@ -149,6 +314,22 @@ export async function createServer(
       ...(deps.gepaInspector      ? { gepaInspector:      deps.gepaInspector }      : {}),
       ...(deps.privacyAudit       ? { privacyAudit:       deps.privacyAudit }       : {}),
     }));
+  }
+
+  // F.5.9 server: mount the _internal/* routes BEFORE the main v1 router
+  // so they bypass the JWT auth middleware (they use their own Bearer
+  // token comparison against OWEIBO_INTERNAL_API_TOKEN). Only mounted
+  // when both the token AND the memory orchestrator are wired; absent
+  // either, the path returns 404 -- preserving fail-loud semantics.
+  if (deps.internalApiToken && deps.memoryOrchestrator) {
+    app.use(
+      '/api/v1/_internal',
+      express.json({ limit: '4mb' }), // larger ceiling than v1 to fit batched seed payloads
+      createInternalRouter({
+        internalToken: deps.internalApiToken,
+        memoryOrchestrator: deps.memoryOrchestrator,
+      }),
+    );
   }
 
   app.use('/api/v1', v1);

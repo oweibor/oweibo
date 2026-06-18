@@ -1,0 +1,55 @@
+{
+  "connectorId": "github",
+  "displayName": "GitHub",
+  "category": "source_control",
+  "description": "Read repositories, open pull requests, and update issues on behalf of the tenant.",
+  "catalogVersion": "1",
+  "credentialSchema": {
+    "$schema": "https://json-schema.org/draft-07/schema",
+    "type": "object",
+    "required": ["personalAccessToken"],
+    "properties": {
+      "personalAccessToken": { "type": "string", "description": "Fine-grained PAT scoped to the repos the tenant wants to act on" },
+      "defaultOrg": { "type": "string", "description": "Optional default org slug" }
+    }
+  },
+  "capabilities": [
+    {
+      "capabilityId": "list_pull_requests",
+      "summary": "List open pull requests for a repository",
+      "actionClass": "read.external_api",
+      "inputSchema": {
+        "type": "object",
+        "required": ["owner", "repo"],
+        "properties": {
+          "owner": { "type": "string" },
+          "repo": { "type": "string" }
+        }
+      },
+      "outputSchema": { "type": "object", "properties": { "pullRequests": { "type": "array" } } }
+    },
+    {
+      "capabilityId": "create_pull_request",
+      "summary": "Open a new pull request",
+      "actionClass": "write.external_api.nonprod",
+      "inputSchema": {
+        "type": "object",
+        "required": ["owner", "repo", "head", "base", "title"],
+        "properties": {
+          "owner": { "type": "string" },
+          "repo": { "type": "string" },
+          "head": { "type": "string" },
+          "base": { "type": "string" },
+          "title": { "type": "string" },
+          "body": { "type": "string" }
+        }
+      },
+      "outputSchema": { "type": "object", "properties": { "number": { "type": "integer" }, "url": { "type": "string" } } },
+      "shadowTarget": {
+        "mode": "mock",
+        "config": { "note": "Shadow PRs are not actually opened upstream" }
+      }
+    }
+  ],
+  "recommendedFor": ["*", "default", "typescript-app", "nextjs-app"]
+}

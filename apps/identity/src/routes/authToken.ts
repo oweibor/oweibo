@@ -69,7 +69,7 @@ async function buildPrincipal(userId: string, preferredTenantId?: string): Promi
     prisma.user.findUnique({ where: { id: userId } }),
     prisma.tenantMembership.findMany({
       where:   { userId, tenant: { status: 'active' } },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { invitedAt: 'asc' },
     }),
   ]);
 

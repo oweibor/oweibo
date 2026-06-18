@@ -20,6 +20,7 @@ import tenantRouter     from './routes/tenant.js';
 import agentTokenRouter from './routes/agentToken.js';
 import authTokenRouter  from './routes/authToken.js';
 import gdprRouter       from './routes/gdpr.js';
+import bootstrapRouter  from './routes/bootstrap.js';
 
 const app = express();
 app.use(express.json({ limit: '256kb' }));
@@ -35,6 +36,9 @@ app.use(platformRouter);
 
 // Tenant management
 app.use('/api/v1/tenants', tenantRouter);
+
+// T.2.e: tenant bootstrap status (GET /api/v1/tenants/:tenantId/bootstrap)
+app.use(bootstrapRouter);
 
 // CLI authentication: token mint, refresh, me, logout
 app.use(authTokenRouter);

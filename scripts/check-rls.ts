@@ -68,18 +68,30 @@ function main() {
 
   const missing: string[] = [];
   for (const model of tenantModels) {
-    // Use the @map name for Postgres table (snake_case from Prisma convention)
-    const tableName = model
+    // Use the @map name for Postgres table (snake_case from Prisma convention).
+    // We don't read the @map directive directly; instead we accept any of the
+    // common plural forms (template → templates, policy → policies). Tables
+    // whose singular form is a prefix of the plural (most -s plurals) are
+    // covered by the base tableName regex; the `y → ies` case needs an
+    // explicit alternative.
+    const tableNameSingular = model
       .replace(/([A-Z])/g, '_$1')
       .toLowerCase()
       .replace(/^_/, '');
 
-    const hasRls = new RegExp(
-      `ENABLE ROW LEVEL SECURITY[^;]*${tableName}|` +
-      `${tableName}[^;]*ENABLE ROW LEVEL SECURITY|` +
-      `CREATE POLICY\\s+\\w+\\s+ON\\s+\\w+\\.${tableName}`,
-      'i'
-    ).test(allMigrationText);
+    const candidates = new Set<string>([tableNameSingular]);
+    if (tableNameSingular.endsWith('y')) {
+      candidates.add(tableNameSingular.slice(0, -1) + 'ies');
+    }
+
+    const hasRls = Array.from(candidates).some((tableName) =>
+      new RegExp(
+        `ENABLE ROW LEVEL SECURITY[^;]*${tableName}|` +
+        `${tableName}[^;]*ENABLE ROW LEVEL SECURITY|` +
+        `CREATE POLICY\\s+\\w+\\s+ON\\s+\\w+\\.${tableName}`,
+        'i'
+      ).test(allMigrationText)
+    );
 
     if (!hasRls) {
       missing.push(model);

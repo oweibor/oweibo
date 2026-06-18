@@ -1,0 +1,57 @@
+{
+  "connectorId": "slack",
+  "displayName": "Slack",
+  "category": "communication",
+  "description": "Post messages to Slack channels, react to events, and notify operators on action proposals.",
+  "catalogVersion": "1",
+  "credentialSchema": {
+    "$schema": "https://json-schema.org/draft-07/schema",
+    "type": "object",
+    "required": ["botToken"],
+    "properties": {
+      "botToken": { "type": "string", "description": "Slack bot user OAuth token (xoxb-…)" },
+      "signingSecret": { "type": "string", "description": "Optional — for verifying incoming webhooks" }
+    }
+  },
+  "capabilities": [
+    {
+      "capabilityId": "post_message",
+      "summary": "Post a message to a Slack channel",
+      "actionClass": "comm.internal",
+      "inputSchema": {
+        "type": "object",
+        "required": ["channel", "text"],
+        "properties": {
+          "channel": { "type": "string" },
+          "text": { "type": "string" }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": { "ts": { "type": "string" } }
+      },
+      "shadowTarget": {
+        "mode": "pre_declared_replica",
+        "config": { "shadowChannelPrefix": "#shadow-" }
+      }
+    },
+    {
+      "capabilityId": "read_thread",
+      "summary": "Read the messages in a Slack thread",
+      "actionClass": "read.external_api",
+      "inputSchema": {
+        "type": "object",
+        "required": ["channel", "ts"],
+        "properties": {
+          "channel": { "type": "string" },
+          "ts": { "type": "string" }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": { "messages": { "type": "array" } }
+      }
+    }
+  ],
+  "recommendedFor": ["*", "default", "nextjs-app"]
+}

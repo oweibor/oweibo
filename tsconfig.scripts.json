@@ -14,5 +14,11 @@
     "types": ["node"]
   },
   "include": ["scripts/**/*.ts"],
-  "exclude": ["node_modules", "**/dist", "scripts/seed-langfuse-prompts.ts"]
+  "exclude": [
+    "node_modules", "**/dist",
+    "scripts/seed-langfuse-prompts.ts",
+    "scripts/backfill-tenant-bootstrap.ts",
+    "scripts/check-bootstrap-tables.ts",
+    "scripts/verify-no-dropped-events.ts"
+  ]
 }

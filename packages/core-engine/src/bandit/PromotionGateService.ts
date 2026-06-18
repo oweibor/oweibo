@@ -9,7 +9,7 @@
 //   - requires_human_approval: if true, rejects unless caller passes humanApproved=true
 
 import type { Pool } from 'pg';
-import type { CanonicalRole } from '@oweibo/core-contracts';
+import { CANONICAL_ROLES, type CanonicalRole } from '@oweibo/core-contracts';
 import type { BanditService } from './BanditService.js';
 
 export interface PromotionCriteria {
@@ -239,7 +239,7 @@ export class PromotionGateService {
           `SELECT role FROM oweibo.prompt_versions WHERE hash = $1 LIMIT 1`,
           [arm.prompt_hash],
         );
-        const role = (roleRes.rows[0]?.role ?? 'architect') as CanonicalRole;
+        const role = (roleRes.rows[0]?.role ?? CANONICAL_ROLES[0]) as CanonicalRole;
 
         // Run gates with humanApproved=true to see if the only blocker is the human gate
         const result = await this.evaluate({

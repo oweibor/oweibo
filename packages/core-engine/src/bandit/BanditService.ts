@@ -96,7 +96,7 @@ export class BanditService {
     role:     CanonicalRole;
     rngSeed?: number;
   }): Promise<DrawResult> {
-    const arms = await this.loadArms(params.slotId, params.channel);
+    const arms = await this.loadArms(params.slotId, params.channel, params.role);
     if (arms.length === 0) {
       // No arms — return stable-v0 sentinel
       return { armId: 'stable-v0', promptHash: 'stable-v0', channel: params.channel };
@@ -189,7 +189,7 @@ export class BanditService {
     }
   }
 
-  private async loadArms(slotId: string, channel: string): Promise<BanditArm[]> {
+  private async loadArms(slotId: string, channel: string, role?: CanonicalRole): Promise<BanditArm[]> {
     const result = await this.pool.query<BanditArm>(
       `SELECT arm_id AS id, prompt_hash, slot_id, channel, alpha, beta
        FROM oweibo.bandit_arms
@@ -197,7 +197,33 @@ export class BanditService {
        ORDER BY arm_id`,
       [slotId, channel],
     );
-    return result.rows;
+    if (result.rows.length > 0) return result.rows;
+
+    // T.3.a: cold-start fallback — synthesize a single arm from the
+    // platform-aggregated prior when one exists for (role, slot, channel).
+    // The arm is *not* persisted; recordReward will INSERT a real row on
+    // the first observation. Feature-gated by BANDIT_USE_PLATFORM_PRIORS
+    // so the rollout can canary without affecting today's behaviour.
+    if (!role || process.env['BANDIT_USE_PLATFORM_PRIORS'] !== 'true') {
+      return [];
+    }
+    const scopeKey = `${role}:${slotId}:${channel}`;
+    const prior = await this.pool.query<{ alpha_sum: string; beta_sum: string }>(
+      `SELECT alpha_sum::text, beta_sum::text
+         FROM oweibo.platform_bandit_priors
+        WHERE scope_kind = 'prompt_slot' AND scope_key = $1`,
+      [scopeKey],
+    );
+    const row = prior.rows[0];
+    if (!row) return [];
+    return [{
+      id:         `prior:${scopeKey}`,
+      promptHash: 'stable-v0',
+      slotId,
+      channel,
+      alpha:      Number(row.alpha_sum),
+      beta:       Number(row.beta_sum),
+    } as BanditArm];
   }
 
   /**

@@ -92,7 +92,7 @@ model BaOrganization {
   createdAt DateTime
   metadata  String?
 
-  members BaMember[]
+  members     BaMember[]
   invitations BaInvitation[]
 
   @@map("organizations")
@@ -127,7 +127,7 @@ model BaInvitation {
 
 // ── oweibo schema (RLS enforced on all tenant-data tables) ─────────────────
 
-// Cross-tenant: no tenant_id; RLS keyed off app.is_platform_admin
+// Cross-tenant: no tenant_id; RLS keyed off current_user = 'platform_admin'
 model Tenant {
   id               String   @id @default(uuid()) @db.Uuid
   name             String
@@ -140,11 +140,12 @@ model Tenant {
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
   createdBy        String?  @map("created_by") @db.Uuid
 
-  memberships     TenantMembership[]
-  apiKeys         ApiKey[]
-  tasks           Task[]
-  settings        TenantSettings?
-  taskFeedback    TaskFeedback[]
+  memberships  TenantMembership[]
+  apiKeys      ApiKey[]
+  tasks        Task[]
+  settings     TenantSettings?
+  taskFeedback TaskFeedback[]
+  bootstrap    TenantBootstrap?
 
   @@map("tenants")
   @@schema("oweibo")
@@ -152,11 +153,11 @@ model Tenant {
 
 // Mirror of betterauth.users; kept in sync via Postgres trigger (see migrations/)
 model User {
-  id             String   @id @db.Uuid
-  email          String   @unique
-  status         String   @default("active")
-  platformRoles  String[] @default([]) @map("platform_roles")
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+  id            String   @id @db.Uuid
+  email         String   @unique
+  status        String   @default("active")
+  platformRoles String[] @default([]) @map("platform_roles")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   memberships TenantMembership[]
   apiKeys     ApiKey[]
@@ -205,20 +206,20 @@ model ApiKey {
 // Audit log: append-only, partitioned by month; RLS on tenant_id
 // Inserts go through oweibo.append_audit() SECURITY DEFINER function only.
 model AuditLog {
-  id               String    @id @db.Uuid
-  ts               DateTime  @db.Timestamptz
-  actorPrincipal   String    @map("actor_principal")
-  onBehalfOfUserId String?   @map("on_behalf_of_user_id") @db.Uuid
+  id               String   @id @db.Uuid
+  ts               DateTime @db.Timestamptz
+  actorPrincipal   String   @map("actor_principal")
+  onBehalfOfUserId String?  @map("on_behalf_of_user_id") @db.Uuid
   source           String
-  requestId        String?   @map("request_id")
+  requestId        String?  @map("request_id")
   ip               String?
-  tenantId         String?   @map("tenant_id") @db.Uuid
-  scopeUsed        String[]  @map("scope_used")
+  tenantId         String?  @map("tenant_id") @db.Uuid
+  scopeUsed        String[] @map("scope_used")
   action           String
-  resourceType     String?   @map("resource_type")
-  resourceId       String?   @map("resource_id")
-  beforeHash       String?   @map("before_hash")
-  afterHash        String?   @map("after_hash")
+  resourceType     String?  @map("resource_type")
+  resourceId       String?  @map("resource_id")
+  beforeHash       String?  @map("before_hash")
+  afterHash        String?  @map("after_hash")
   outcome          String
   details          Json?
 
@@ -230,29 +231,29 @@ model AuditLog {
 
 // Tenant-scoped task. All prompt-version pins are written atomically with the INSERT.
 model Task {
-  id                       String    @id @default(uuid()) @db.Uuid
-  tenantId                 String    @map("tenant_id") @db.Uuid
-  userId                   String?   @map("user_id") @db.Uuid
-  sessionId                String?   @map("session_id")
-  taskMode                 String    @default("factory") @map("task_mode")
-  goalDescription          String    @map("goal_description")
-  goalContext              String?   @map("goal_context")
-  repoPath                 String?   @map("repo_path")
-  status                   String    @default("pending")
-  result                   Json?
-  error                    String?
-  tokensUsed               Int       @default(0) @map("tokens_used")
-  ttlSeconds               Int?      @map("ttl_seconds")
-  architectAssembledHash   String?   @map("architect_assembled_hash")
-  executorAssembledHash    String?   @map("executor_assembled_hash")
-  reviewerAssembledHash    String?   @map("reviewer_assembled_hash")
-  decomposerAssembledHash  String?   @map("decomposer_assembled_hash")
-  slotPinDetail            Json?     @map("slot_pin_detail")
-  cohortChannel            String    @default("stable") @map("cohort_channel")
-  projectId                String?   @map("project_id") @db.Uuid
-  createdAt                DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  startedAt                DateTime? @map("started_at") @db.Timestamptz
-  completedAt              DateTime? @map("completed_at") @db.Timestamptz
+  id                      String    @id @default(uuid()) @db.Uuid
+  tenantId                String    @map("tenant_id") @db.Uuid
+  userId                  String?   @map("user_id") @db.Uuid
+  sessionId               String?   @map("session_id")
+  taskMode                String    @default("factory") @map("task_mode")
+  goalDescription         String    @map("goal_description")
+  goalContext             String?   @map("goal_context")
+  repoPath                String?   @map("repo_path")
+  status                  String    @default("pending")
+  result                  Json?
+  error                   String?
+  tokensUsed              Int       @default(0) @map("tokens_used")
+  ttlSeconds              Int?      @map("ttl_seconds")
+  architectAssembledHash  String?   @map("architect_assembled_hash")
+  executorAssembledHash   String?   @map("executor_assembled_hash")
+  reviewerAssembledHash   String?   @map("reviewer_assembled_hash")
+  decomposerAssembledHash String?   @map("decomposer_assembled_hash")
+  slotPinDetail           Json?     @map("slot_pin_detail")
+  cohortChannel           String    @default("stable") @map("cohort_channel")
+  projectId               String?   @map("project_id") @db.Uuid
+  createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  startedAt               DateTime? @map("started_at") @db.Timestamptz
+  completedAt             DateTime? @map("completed_at") @db.Timestamptz
 
   tenant   Tenant         @relation(fields: [tenantId], references: [id])
   feedback TaskFeedback[]
@@ -277,17 +278,17 @@ model TenantSettings {
 
 // Content-addressed prompt slot versions. hash = SHA256(role:slot_id:template_version:text)
 model PromptVersion {
-  hash             String    @id
-  role             String
-  slotId           String    @map("slot_id")
-  templateVersion  String    @default("stable-v0") @map("template_version")
-  text             String
-  parentHash       String?   @map("parent_hash")
-  mutationStatus   String    @default("stable") @map("mutation_status")
-  freezeReason     String?   @map("freeze_reason")
-  evalScore        Json?     @map("eval_score")
-  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
-  updatedBy        String?   @map("updated_by")
+  hash            String   @id
+  role            String
+  slotId          String   @map("slot_id")
+  templateVersion String   @default("stable-v0") @map("template_version")
+  text            String
+  parentHash      String?  @map("parent_hash")
+  mutationStatus  String   @default("stable") @map("mutation_status")
+  freezeReason    String?  @map("freeze_reason")
+  evalScore       Json?    @map("eval_score")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedBy       String?  @map("updated_by")
 
   parent   PromptVersion?  @relation("PromptVersionLineage", fields: [parentHash], references: [hash])
   children PromptVersion[] @relation("PromptVersionLineage")
@@ -299,13 +300,13 @@ model PromptVersion {
 
 // Per-role, per-slot channel pointer with optimistic-lock version.
 model Channel {
-  name        String    @map("name")
-  role        String
-  slotId      String    @map("slot_id")
-  promptHash  String    @map("prompt_hash")
-  version     BigInt    @default(0)
-  updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz
-  updatedBy   String?   @map("updated_by")
+  name       String   @map("name")
+  role       String
+  slotId     String   @map("slot_id")
+  promptHash String   @map("prompt_hash")
+  version    BigInt   @default(0)
+  updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz
+  updatedBy  String?  @map("updated_by")
 
   promptVersion PromptVersion @relation(fields: [promptHash], references: [hash])
 
@@ -339,5 +340,819 @@ model Outbox {
   publishedAt DateTime? @map("published_at") @db.Timestamptz
 
   @@map("outbox")
+  @@schema("oweibo")
+}
+
+// T.−1: per-(tenant, action_class) trust state for the action trust ladder.
+// Zero rows means the resolver applies the platform-default matrix.
+model TenantActionClassState {
+  tenantId     String   @map("tenant_id") @db.Uuid
+  actionClass  String   @map("action_class")
+  currentMode  String   @map("current_mode")
+  pinnedBy     String?  @map("pinned_by")
+  pinnedReason String?  @map("pinned_reason")
+  observations Int      @default(0)
+  successes    Int      @default(0)
+  rejections   Int      @default(0)
+  lastUpdated  DateTime @default(now()) @map("last_updated") @db.Timestamptz
+
+  @@id([tenantId, actionClass])
+  @@map("tenant_action_class_state")
+  @@schema("oweibo")
+}
+
+// T.3.a: cross-tenant bandit priors aggregated nightly by
+// apps/platform-priors-aggregator. Cross-tenant catalog (no tenant_id);
+// reads are public to tenants, writes are gated by the platform_priors_writer
+// DB role (NOINHERIT) so only the aggregator can populate it.
+model PlatformBanditPrior {
+  scopeKind        String   @map("scope_kind")
+  scopeKey         String   @map("scope_key")
+  // T.8: home_region is part of the composite PK so per-region rows coexist
+  // with the platform-neutral '*' fallback row.
+  homeRegion       String   @default("*") @map("home_region")
+  alphaSum         Decimal  @map("alpha_sum") @db.Decimal(14, 4)
+  betaSum          Decimal  @map("beta_sum") @db.Decimal(14, 4)
+  contributorCount Int      @map("contributor_count")
+  computedAt       DateTime @default(now()) @map("computed_at") @db.Timestamptz
+  catalogVersion   String   @map("catalog_version")
+
+  @@id([scopeKind, scopeKey, homeRegion])
+  @@map("platform_bandit_priors")
+  @@schema("oweibo")
+}
+
+// T.2.h: tenant org graph — nodes, edges, facts, stakeholder interests.
+model OrgNode {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  nodeType    String   @map("node_type")
+  label       String
+  userId      String?  @map("user_id") @db.Uuid
+  externalRef String?  @map("external_ref")
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  outgoingEdges        OrgEdge[]                @relation("OrgEdgeFromNode")
+  incomingEdges        OrgEdge[]                @relation("OrgEdgeToNode")
+  facts                OrgFact[]
+  stakeholderInterests OrgStakeholderInterest[]
+
+  @@map("org_nodes")
+  @@schema("oweibo")
+}
+
+model OrgEdge {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  fromNode  String   @map("from_node") @db.Uuid
+  toNode    String   @map("to_node") @db.Uuid
+  edgeType  String   @map("edge_type")
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  from OrgNode @relation("OrgEdgeFromNode", fields: [fromNode], references: [id])
+  to   OrgNode @relation("OrgEdgeToNode", fields: [toNode], references: [id])
+
+  @@unique([tenantId, fromNode, toNode, edgeType])
+  @@map("org_edges")
+  @@schema("oweibo")
+}
+
+model OrgFact {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  nodeId    String   @map("node_id") @db.Uuid
+  factKey   String   @map("fact_key")
+  factValue String   @map("fact_value")
+  source    String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  node OrgNode @relation(fields: [nodeId], references: [id])
+
+  @@unique([tenantId, nodeId, factKey])
+  @@map("org_facts")
+  @@schema("oweibo")
+}
+
+model OrgStakeholderInterest {
+  id       String  @id @default(uuid()) @db.Uuid
+  tenantId String  @map("tenant_id") @db.Uuid
+  nodeId   String  @map("node_id") @db.Uuid
+  domain   String
+  weight   Decimal @db.Decimal(4, 3)
+
+  node OrgNode @relation(fields: [nodeId], references: [id])
+
+  @@unique([tenantId, nodeId, domain])
+  @@map("org_stakeholder_interests")
+  @@schema("oweibo")
+}
+
+// T.2.g: per-tenant active domain intake (one row per tenant).
+model TenantDomainIntake {
+  tenantId                String    @id @map("tenant_id") @db.Uuid
+  intakeState             String    @default("pending") @map("intake_state")
+  classifiedDomain        String?   @map("classified_domain")
+  classifiedConfidence    Decimal?  @map("classified_confidence") @db.Decimal(4, 3)
+  primerDocCount          Int       @default(0) @map("primer_doc_count")
+  primerTokenCount        Int       @default(0) @map("primer_token_count")
+  repoScanSummary         Json?     @map("repo_scan_summary")
+  interviewAnswers        Json?     @map("interview_answers")
+  recommendedTemplateSlug String?   @map("recommended_template_slug")
+  recommendedConnectors   String[]  @map("recommended_connectors")
+  recommendedSeedSkills   String[]  @map("recommended_seed_skills")
+  startedAt               DateTime? @map("started_at") @db.Timestamptz
+  completedAt             DateTime? @map("completed_at") @db.Timestamptz
+  createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt               DateTime  @default(now()) @map("updated_at") @db.Timestamptz
+
+  @@map("tenant_domain_intake")
+  @@schema("oweibo")
+}
+
+// T.7: per-tenant seed install log. content_hash discriminates revisions.
+model TenantSeedInstallLog {
+  tenantId         String    @map("tenant_id") @db.Uuid
+  seedId           String    @map("seed_id")
+  catalogVersion   String    @map("catalog_version")
+  contentHash      String    @map("content_hash")
+  installedAt      DateTime  @default(now()) @map("installed_at") @db.Timestamptz
+  retiredAt        DateTime? @map("retired_at") @db.Timestamptz
+  retirementReason String?   @map("retirement_reason")
+
+  @@id([tenantId, seedId])
+  @@map("tenant_seed_install_log")
+  @@schema("oweibo")
+}
+
+// T.7: pending catalog updates surfaced to tenant admins.
+model TenantCatalogPendingUpdate {
+  tenantId           String    @map("tenant_id") @db.Uuid
+  seedId             String    @map("seed_id")
+  fromCatalogVersion String    @map("from_catalog_version")
+  toCatalogVersion   String    @map("to_catalog_version")
+  fromContentHash    String?   @map("from_content_hash")
+  toContentHash      String    @map("to_content_hash")
+  changeKind         String    @map("change_kind")
+  previewPayload     Json      @map("preview_payload")
+  detectedAt         DateTime  @default(now()) @map("detected_at") @db.Timestamptz
+  resolvedAt         DateTime? @map("resolved_at") @db.Timestamptz
+  resolution         String?
+  resolvedBy         String?   @map("resolved_by") @db.Uuid
+
+  @@id([tenantId, seedId, toContentHash])
+  @@map("tenant_catalog_pending_updates")
+  @@schema("oweibo")
+}
+
+// T.9: tenant lineage — parent/child relationships for enterprise sub-org cloning.
+// One lineage row per child; cycle prevention enforced via BEFORE INSERT trigger.
+model TenantLineage {
+  childTenantId  String   @id @map("child_tenant_id") @db.Uuid
+  parentTenantId String   @map("parent_tenant_id") @db.Uuid
+  consentGrantId String   @map("consent_grant_id") @db.Uuid
+  clonedScopes   String[] @map("cloned_scopes")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("tenant_lineage")
+  @@schema("oweibo")
+}
+
+// T.9: parent-admin consent grants. Pre-authorise one or more child-create
+// operations. uses < max_uses && expires_at > NOW() && revoked_at IS NULL &&
+// consumed_at IS NULL = claimable. Claim path is an atomic compare-and-set
+// UPDATE inside the tenant-create transaction.
+model TenantLineageConsentGrant {
+  id              String    @id @default(uuid()) @db.Uuid
+  parentTenantId  String    @map("parent_tenant_id") @db.Uuid
+  grantedByUserId String    @map("granted_by_user_id") @db.Uuid
+  scopes          String[]
+  childSlugPrefix String?   @map("child_slug_prefix")
+  maxUses         Int       @default(1) @map("max_uses")
+  uses            Int       @default(0)
+  expiresAt       DateTime  @map("expires_at") @db.Timestamptz
+  consumedAt      DateTime? @map("consumed_at") @db.Timestamptz
+  revokedAt       DateTime? @map("revoked_at") @db.Timestamptz
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("tenant_lineage_consent_grants")
+  @@schema("oweibo")
+}
+
+// T.6: platform-curated tenant templates (industry / role profiles).
+// Cross-tenant catalog. Tenants read; only platform_admin writes.
+model TenantTemplate {
+  slug            String   @id
+  displayName     String   @map("display_name")
+  description     String
+  industries      String[]
+  defaultFeatures Json     @default("{}") @map("default_features")
+  defaultQuotas   Json     @default("{}") @map("default_quotas")
+  seedMemoryTags  String[] @map("seed_memory_tags")
+  seedSkillSet    String   @default("platform-default") @map("seed_skill_set")
+  goalTemplateSet String   @default("platform-default") @map("goal_template_set")
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  @@map("tenant_templates")
+  @@schema("oweibo")
+}
+
+// T.2.f: per-tenant connector instance. Credentials live in Vault at vault_path.
+model TenantConnector {
+  id                          String    @id @default(uuid()) @db.Uuid
+  tenantId                    String    @map("tenant_id") @db.Uuid
+  connectorId                 String    @map("connector_id")
+  catalogVersion              String    @map("catalog_version")
+  instanceLabel               String    @map("instance_label")
+  vaultPath                   String    @map("vault_path")
+  /// Audit-fix (T.2.f): widened CHECK enum now includes
+  /// 'credential_invalid' (smoke-test failure) and 'credential_expired'
+  /// (TTL-driven). The admin UI surfaces these with an actionable
+  /// re-enter-credentials workflow.
+  status                      String    @default("pending")
+  installedBy                 String?   @map("installed_by") @db.Uuid
+  installedAt                 DateTime  @default(now()) @map("installed_at") @db.Timestamptz
+  lastUsedAt                  DateTime? @map("last_used_at") @db.Timestamptz
+  metadata                    Json      @default("{}")
+  /// Audit-fix (T.2.f): nightly sweeper sets `credential_expired` 14d
+  /// before this timestamp passes; tenant admin gets a notification.
+  credentialExpiresAt         DateTime? @map("credential_expires_at") @db.Timestamptz
+  smokeTestFailureReason      String?   @map("smoke_test_failure_reason")
+  expiryNotificationSentAt    DateTime? @map("expiry_notification_sent_at") @db.Timestamptz
+
+  @@unique([tenantId, connectorId, instanceLabel])
+  @@map("tenant_connectors")
+  @@schema("oweibo")
+}
+
+/// Audit-fix (T.2.f): revocation registry consulted by CredentialResolver
+/// on every cache miss, closing the pub/sub TOCTOU window where a new
+/// pod hydrated revoked credentials from Vault for up to one TTL window.
+model RevokedConnectorCredential {
+  vaultPath    String   @id @map("vault_path")
+  tenantId     String   @map("tenant_id") @db.Uuid
+  connectorId  String   @map("connector_id") @db.Uuid
+  revokedBy    String?  @map("revoked_by") @db.Uuid
+  reason       String?
+  revokedAt    DateTime @default(now()) @map("revoked_at") @db.Timestamptz
+  expiresAt    DateTime @map("expires_at") @db.Timestamptz
+
+  @@index([tenantId, revokedAt(sort: Desc)])
+  @@map("revoked_connector_credentials")
+  @@schema("oweibo")
+}
+
+// T.2.d: platform-curated goal templates (cross-tenant catalog).
+// Schema notes:
+//   - trigger_embedding column is added by the migration, not Prisma: it is
+//     either VECTOR(1536) (pgvector) or BYTEA (fallback). Prisma's type
+//     model cannot represent vector(N) so the column is intentionally absent
+//     from this model; the matcher reads/writes via raw SQL.
+model GoalTemplate {
+  templateId      String   @id @map("template_id")
+  catalogVersion  String   @map("catalog_version")
+  triggerSummary  String   @map("trigger_summary")
+  subGoalSkeleton Json     @map("sub_goal_skeleton")
+  industries      String[]
+  templates       String[]
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  @@map("goal_templates")
+  @@schema("oweibo")
+}
+
+// T.2.a: per-tenant seed feedback for the suppression loop.
+model TenantSeedFeedback {
+  tenantId    String   @map("tenant_id") @db.Uuid
+  seedId      String   @map("seed_id")
+  downCount   Int      @default(0) @map("down_count")
+  upCount     Int      @default(0) @map("up_count")
+  suppressed  Boolean  @default(false)
+  lastUpdated DateTime @default(now()) @map("last_updated") @db.Timestamptz
+
+  @@id([tenantId, seedId])
+  @@map("tenant_seed_feedback")
+  @@schema("oweibo")
+}
+
+// T.0: tenant bootstrap lifecycle state machine — one row per provisioned tenant.
+// T.5.e: seedCohort field added; 'seeded' / 'control' / 'exempt'.
+model TenantBootstrap {
+  tenantId     String    @id @map("tenant_id") @db.Uuid
+  state        String    @default("pending")
+  templateSlug String    @default("default") @map("template_slug")
+  seedCohort   String    @default("seeded") @map("seed_cohort")
+  attempts     Int       @default(0)
+  lastError    String?   @map("last_error")
+  startedAt    DateTime? @map("started_at") @db.Timestamptz
+  completedAt  DateTime? @map("completed_at") @db.Timestamptz
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@map("tenant_bootstrap")
+  @@schema("oweibo")
+}
+
+// T.0: per-step bootstrap status. PK (tenant_id, step_name) makes step retries safe.
+model TenantBootstrapStep {
+  tenantId    String    @map("tenant_id") @db.Uuid
+  stepName    String    @map("step_name")
+  status      String
+  attempts    Int       @default(0)
+  lastError   String?   @map("last_error")
+  /// Audit-fix (T.1): structured reason for skipped status. Allows the
+  /// reconciliation sweep to re-attempt 'mode_too_low' skips when the
+  /// tenant matures, without fragile last_error string-matching.
+  skipReason  String?   @map("skip_reason")
+  result      Json?
+  startedAt   DateTime? @map("started_at") @db.Timestamptz
+  completedAt DateTime? @map("completed_at") @db.Timestamptz
+
+  @@id([tenantId, stepName])
+  @@map("tenant_bootstrap_steps")
+  @@schema("oweibo")
+}
+
+// T.−1: append-only proposals for dry_run / shadow / require_approval gate decisions.
+model ActionProposal {
+  id             String    @id @default(uuid()) @db.Uuid
+  tenantId       String    @map("tenant_id") @db.Uuid
+  userId         String?   @map("user_id") @db.Uuid
+  actionClass    String    @map("action_class")
+  actionId       String    @map("action_id")
+  mode           String
+  summary        String
+  payload        Json
+  rollbackKind   String?   @map("rollback_kind")
+  rollbackDetail Json?     @map("rollback_detail")
+  state          String    @default("pending")
+  decidedBy      String?   @map("decided_by") @db.Uuid
+  decidedAt      DateTime? @map("decided_at") @db.Timestamptz
+  decisionReason String?   @map("decision_reason")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  expiresAt      DateTime  @map("expires_at") @db.Timestamptz
+
+  // S.0: plan membership. step_number=NULL means the proposal IS the plan-
+  // level approval (one row per plan when require_approval_for_plan).
+  planId                  String? @map("plan_id") @db.Uuid
+  stepNumber              Int?    @map("step_number")
+  dependsOnSteps          Int[]   @default([]) @map("depends_on_steps")
+  blastRadiusContribution Json?   @map("blast_radius_contribution")
+
+  /// Audit-fix (S.3): distinguishes recovery proposals from regular ones
+  /// without fragile `recovery.rollback.*` substring matching. The
+  /// orchestrator sets this true when creating a recovery proposal so
+  /// ApprovalSlaService can key the tightened SLA off this column.
+  isRollback              Boolean @default(false) @map("is_rollback")
+
+  @@unique([tenantId, actionId])
+  @@map("action_proposals")
+  @@schema("oweibo")
+}
+
+/// Audit-fix (S.1): backs the "≤1 notification per 5min per recipient
+/// unless urgent" mitigation that S.1's risk register listed but never
+/// schematized. NotificationDigestService.enqueue() lands rows here;
+/// ApprovalLifecycleWorker's flush hook claims due groups and dispatches
+/// a single bundled notification per (recipient, channel).
+model NotificationDigestQueue {
+  id                String    @id @default(uuid()) @db.Uuid
+  tenantId          String    @map("tenant_id") @db.Uuid
+  proposalId        String?   @map("proposal_id") @db.Uuid
+  recipientUserId   String    @map("recipient_user_id") @db.Uuid
+  channelKind       String    @map("channel_kind")
+  fireEvent         String    @map("fire_event")
+  title             String
+  body              String?
+  linkPath          String?   @map("link_path")
+  urgency           String    @default("normal")
+  state             String    @default("pending")
+  enqueuedAt        DateTime  @default(now()) @map("enqueued_at") @db.Timestamptz
+  flushedAt         DateTime? @map("flushed_at") @db.Timestamptz
+
+  @@index([recipientUserId, channelKind, enqueuedAt])
+  @@map("notification_digest_queue")
+  @@schema("oweibo")
+}
+
+// S.0 (ttv-action-safety-v2): multi-action plans with shared approval state.
+// Single-action call sites construct a one-action plan implicitly so the
+// upstream API is backwards-compat.
+model ActionPlan {
+  id                      String    @id @default(uuid()) @db.Uuid
+  tenantId                String    @map("tenant_id") @db.Uuid
+  userId                  String?   @map("user_id") @db.Uuid
+  originatingTaskId       String?   @map("originating_task_id") @db.Uuid
+  title                   String
+  atomicity               String
+  state                   String    @default("pending")
+  worstReversibility      String    @map("worst_reversibility")
+  systems                 String[]  @default([])
+  dataDomains             String[]  @default([]) @map("data_domains")
+  estimatedCostUsdCents   Int       @default(0) @map("estimated_cost_usd_cents")
+  estimatedReachUserCount Int       @default(0) @map("estimated_reach_user_count")
+  planProposalId          String?   @map("plan_proposal_id") @db.Uuid
+  createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  startedAt               DateTime? @map("started_at") @db.Timestamptz
+  completedAt             DateTime? @map("completed_at") @db.Timestamptz
+
+  @@map("action_plans")
+  @@schema("oweibo")
+}
+
+// S.0: append-only audit tree linking every decision upstream of an action.
+// Table is partitioned by recorded_at in Postgres; Prisma sees the partitioned
+// parent as a normal model. (id, recorded_at) is the composite PK so Postgres
+// can route inserts to the right monthly child partition.
+model ActionLineage {
+  id           String   @default(uuid()) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  planId       String   @map("plan_id") @db.Uuid
+  parentNodeId String?  @map("parent_node_id") @db.Uuid
+  kind         String
+  producerType String   @map("producer_type")
+  producerId   String   @map("producer_id")
+  summary      String
+  detail       Json
+  traceId      String?  @map("trace_id")
+  recordedAt   DateTime @default(now()) @map("recorded_at") @db.Timestamptz
+
+  @@id([id, recordedAt])
+  @@index([tenantId, recordedAt])
+  @@index([planId, recordedAt])
+  @@index([parentNodeId])
+  @@map("action_lineage")
+  @@schema("oweibo")
+}
+
+// S.1 (ttv-action-safety-v2): per-tenant per-class approval SLA policy.
+// action_class = '*' is the tenant default; specific classes override it.
+model ApprovalSlaPolicy {
+  id                        String   @id @default(uuid()) @db.Uuid
+  tenantId                  String   @map("tenant_id") @db.Uuid
+  actionClass               String   @map("action_class")
+  initialNotifyAfterSeconds Int      @map("initial_notify_after_seconds")
+  escalateAfterSeconds      Int[]    @default([]) @map("escalate_after_seconds")
+  hardExpireAfterSeconds    Int      @map("hard_expire_after_seconds")
+  approverResolution        String   @map("approver_resolution")
+  approverConfig            Json     @default("{}") @map("approver_config")
+  notificationChannels      Json     @default("[]") @map("notification_channels")
+  quietHours                Json?    @map("quiet_hours")
+  createdBy                 String?  @map("created_by") @db.Uuid
+  createdAt                 DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt                 DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  @@unique([tenantId, actionClass])
+  @@map("approval_sla_policies")
+  @@schema("oweibo")
+}
+
+// S.1: per-proposal FSM state. One row per pending require_approval proposal;
+// the ApprovalLifecycleWorker drives next_action_at → escalate or expire.
+model ApprovalSlaState {
+  proposalId              String    @id @map("proposal_id") @db.Uuid
+  tenantId                String    @map("tenant_id") @db.Uuid
+  policyId                String?   @map("policy_id") @db.Uuid
+  currentStage            Int       @default(0) @map("current_stage")
+  nextActionAt            DateTime  @map("next_action_at") @db.Timestamptz
+  hardExpireAt            DateTime  @map("hard_expire_at") @db.Timestamptz
+  notifiedApprovers       String[]  @default([]) @map("notified_approvers") @db.Uuid
+  escalationCount         Int       @default(0) @map("escalation_count")
+  lastNotificationAt      DateTime? @map("last_notification_at") @db.Timestamptz
+  lastNotificationDetails Json?     @map("last_notification_details")
+  createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([nextActionAt])
+  @@map("approval_sla_state")
+  @@schema("oweibo")
+}
+
+// S.1: audit trail of dispatched notifications. Append-only.
+model NotificationDispatchLog {
+  id             String    @id @default(uuid()) @db.Uuid
+  tenantId       String    @map("tenant_id") @db.Uuid
+  proposalId     String?   @map("proposal_id") @db.Uuid
+  channelKind    String    @map("channel_kind")
+  recipient      String
+  fireEvent      String    @map("fire_event")
+  deliveryStatus String    @map("delivery_status")
+  attemptCount   Int       @default(0) @map("attempt_count")
+  lastError      String?   @map("last_error")
+  dispatchedAt   DateTime? @map("dispatched_at") @db.Timestamptz
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([proposalId, createdAt(sort: Desc)])
+  @@map("notification_dispatch_log")
+  @@schema("oweibo")
+}
+
+// S.2 (ttv-action-safety-v2): per-tenant per-class rate-limit budget.
+// action_class = '*' is the tenant default. action_class = specific class
+// overrides the default.
+model RateLimitPolicy {
+  tenantId              String   @map("tenant_id") @db.Uuid
+  actionClass           String   @map("action_class")
+  perMinute             Int      @map("per_minute")
+  perHour               Int      @map("per_hour")
+  perDay                Int      @map("per_day")
+  burstAllowance        Int      @default(0) @map("burst_allowance")
+  coldStartMultiplier   Decimal  @default(1.0) @map("cold_start_multiplier") @db.Decimal(4, 3)
+  coldStartDurationDays Int      @default(0) @map("cold_start_duration_days")
+  enforcementMode       String   @default("soft") @map("enforcement_mode")
+  updatedAt             DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  @@id([tenantId, actionClass])
+  @@map("rate_limit_policies")
+  @@schema("oweibo")
+}
+
+// S.3 (ttv-action-safety-v2): rollback execution audit row.
+// One row per orchestrator invocation. Adapter idempotency may mean
+// re-runs produce multiple rows pointing at the same original_action_id;
+// the latest row is the authoritative result.
+model RollbackExecution {
+  id               String    @id @default(uuid()) @db.Uuid
+  tenantId         String    @map("tenant_id") @db.Uuid
+  originalActionId String    @map("original_action_id") @db.Uuid
+  recoveryActionId String?   @map("recovery_action_id") @db.Uuid
+  adapterName      String    @map("adapter_name")
+  reason           String
+  invokedByType    String    @map("invoked_by_type")
+  invokedById      String    @map("invoked_by_id")
+  resultState      String?   @map("result_state")
+  resultDetails    String?   @map("result_details")
+  sideEffects      String[]  @default([]) @map("side_effects")
+  costUsdCents     Int       @default(0) @map("cost_usd_cents")
+  startedAt        DateTime  @default(now()) @map("started_at") @db.Timestamptz
+  completedAt      DateTime? @map("completed_at") @db.Timestamptz
+
+  @@index([originalActionId])
+  @@index([tenantId, startedAt(sort: Desc)])
+  @@map("rollback_executions")
+  @@schema("oweibo")
+}
+
+// S.2: append-only event log for observability + tuning.
+model RateLimitEvent {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  actionClass String   @map("action_class")
+  windowKind  String   @map("window_kind")
+  eventKind   String   @map("event_kind")
+  occurredAt  DateTime @default(now()) @map("occurred_at") @db.Timestamptz
+  context     Json?
+
+  @@index([tenantId, actionClass, occurredAt(sort: Desc)])
+  @@map("rate_limit_events")
+  @@schema("oweibo")
+}
+
+// S.1: bell-icon feed for admin-web.
+model InAppNotification {
+  id              String    @id @default(uuid()) @db.Uuid
+  tenantId        String    @map("tenant_id") @db.Uuid
+  recipientUserId String    @map("recipient_user_id") @db.Uuid
+  proposalId      String?   @map("proposal_id") @db.Uuid
+  title           String
+  body            String?
+  linkPath        String?   @map("link_path")
+  unread          Boolean   @default(true)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  readAt          DateTime? @map("read_at") @db.Timestamptz
+
+  @@map("in_app_notifications")
+  @@schema("oweibo")
+}
+
+// S.4 (ttv-action-safety-v2): per-(tenant, action_class) quorum policy.
+// action_class = '*' is the tenant default; specific class overrides.
+model MultiPartyApprovalPolicy {
+  tenantId                 String   @map("tenant_id") @db.Uuid
+  actionClass              String   @map("action_class")
+  quorum                   Int      @default(1)
+  dissentVetoes            Boolean  @default(true) @map("dissent_vetoes")
+  allowGrants              Boolean  @default(false) @map("allow_grants")
+  maxGrantDurationSeconds  Int      @default(86400) @map("max_grant_duration_seconds")
+  maxGrantActionCount      Int      @default(100) @map("max_grant_action_count")
+  allowDelegation          Boolean  @default(true) @map("allow_delegation")
+  updatedAt                DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  @@id([tenantId, actionClass])
+  @@map("multi_party_approval_policies")
+  @@schema("oweibo")
+}
+
+// S.4: per-(proposal, voter) append-only vote ledger.
+model ApprovalVote {
+  proposalId       String   @map("proposal_id") @db.Uuid
+  voterUserId      String   @map("voter_user_id") @db.Uuid
+  tenantId         String   @map("tenant_id") @db.Uuid
+  vote             String
+  comment          String?
+  viaDelegation    Boolean  @default(false) @map("via_delegation")
+  delegatorUserId  String?  @map("delegator_user_id") @db.Uuid
+  votedAt          DateTime @default(now()) @map("voted_at") @db.Timestamptz
+
+  @@id([proposalId, voterUserId])
+  @@index([proposalId, vote])
+  @@map("approval_votes")
+  @@schema("oweibo")
+}
+
+// S.4: time-windowed grant authorising auto-approval for N actions / D seconds.
+model TimeWindowedGrant {
+  id                  String    @id @default(uuid()) @db.Uuid
+  tenantId            String    @map("tenant_id") @db.Uuid
+  actionClass         String    @map("action_class")
+  grantedByUserIds    String[]  @map("granted_by_user_ids") @db.Uuid
+  grantedToKind       String    @map("granted_to_kind")
+  grantedToUserId     String?   @map("granted_to_user_id") @db.Uuid
+  scopeFilter         Json?     @map("scope_filter")
+  expiresAt           DateTime  @map("expires_at") @db.Timestamptz
+  maxUses             Int       @default(1) @map("max_uses")
+  uses                Int       @default(0)
+  state               String    @default("active")
+  revokedByUserId     String?   @map("revoked_by_user_id") @db.Uuid
+  revokedAt           DateTime? @map("revoked_at") @db.Timestamptz
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([tenantId, actionClass, expiresAt])
+  @@map("time_windowed_grants")
+  @@schema("oweibo")
+}
+
+// S.4: bounded delegation of approval authority (non-transitive).
+model ApprovalDelegation {
+  delegatorUserId String    @map("delegator_user_id") @db.Uuid
+  delegateUserId  String    @map("delegate_user_id") @db.Uuid
+  tenantId        String    @map("tenant_id") @db.Uuid
+  actionClass     String    @map("action_class")
+  expiresAt       DateTime  @map("expires_at") @db.Timestamptz
+  revokedAt       DateTime? @map("revoked_at") @db.Timestamptz
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@id([delegatorUserId, delegateUserId, tenantId, actionClass])
+  @@index([delegateUserId, tenantId, actionClass, expiresAt])
+  @@map("approval_delegations")
+  @@schema("oweibo")
+}
+
+// S.5.a (ttv-action-safety-v2): per-inspector verdict audit log.
+model ContentInspectionResult {
+  id             String   @id @default(uuid()) @db.Uuid
+  tenantId       String   @map("tenant_id") @db.Uuid
+  proposalId     String?  @map("proposal_id") @db.Uuid
+  actionClass    String   @map("action_class")
+  actionId       String   @map("action_id")
+  inspectorName  String   @map("inspector_name")
+  verdict        String
+  reason         String?
+  details        Json?
+  inspectedAt    DateTime @default(now()) @map("inspected_at") @db.Timestamptz
+
+  @@index([proposalId])
+  @@index([tenantId, inspectedAt(sort: Desc)])
+  @@map("content_inspection_results")
+  @@schema("oweibo")
+}
+
+// S.5.b: post-execution verification result (immediate or deferred).
+model PostExecutionVerification {
+  id                  String   @id @default(uuid()) @db.Uuid
+  tenantId            String   @map("tenant_id") @db.Uuid
+  proposalId          String?  @map("proposal_id") @db.Uuid
+  verifierName        String   @map("verifier_name")
+  timing              String
+  driftSeverity       Int      @map("drift_severity")
+  expected            Json
+  observed            Json
+  diff                Json?
+  observedCostCents   Int?     @map("observed_cost_cents")
+  autoRollbackInvoked Boolean  @default(false) @map("auto_rollback_invoked")
+  notes               String?
+  verifiedAt          DateTime @default(now()) @map("verified_at") @db.Timestamptz
+
+  @@index([proposalId])
+  @@map("post_execution_verifications")
+  @@schema("oweibo")
+}
+
+// S.5.b: deferred-verification queue claimed by ApprovalLifecycleWorker.
+model DeferredVerification {
+  id             String    @id @default(uuid()) @db.Uuid
+  tenantId       String    @map("tenant_id") @db.Uuid
+  proposalId     String    @map("proposal_id") @db.Uuid
+  verifierName   String    @map("verifier_name")
+  verifierConfig Json      @default("{}") @map("verifier_config")
+  expected       Json
+  verifyAfter    DateTime  @map("verify_after") @db.Timestamptz
+  attempts       Int       @default(0)
+  state          String    @default("pending")
+  lastError      String?   @map("last_error")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  completedAt    DateTime? @map("completed_at") @db.Timestamptz
+
+  @@index([proposalId])
+  @@map("deferred_verifications")
+  @@schema("oweibo")
+}
+
+// S.6 (ttv-action-safety-v2): absolute caps over day / month / year.
+// Distinct from RateLimitPolicy (short-window flow control).
+model QuotaPolicy {
+  tenantId               String   @map("tenant_id") @db.Uuid
+  quotaKind              String   @map("quota_kind")
+  scope                  String   @default("*")
+  window                 String
+  limitValue             BigInt   @map("limit_value")
+  coldStartLimit         BigInt?  @map("cold_start_limit")
+  coldStartDurationDays  Int      @default(30) @map("cold_start_duration_days")
+  enforcementMode        String   @default("hard") @map("enforcement_mode")
+  updatedAt              DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  @@id([tenantId, quotaKind, scope, window])
+  @@map("quota_policies")
+  @@schema("oweibo")
+}
+
+// S.6: running counter per (tenant, kind, scope, window, window_start).
+model QuotaConsumption {
+  tenantId     String   @map("tenant_id") @db.Uuid
+  quotaKind    String   @map("quota_kind")
+  scope        String   @default("*")
+  window       String
+  windowStart  DateTime @map("window_start") @db.Date
+  consumed     BigInt   @default(0)
+  updatedAt    DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  @@id([tenantId, quotaKind, scope, window, windowStart])
+  @@index([tenantId, quotaKind, scope, window, windowStart(sort: Desc)])
+  @@map("quota_consumption")
+  @@schema("oweibo")
+}
+
+// S.6: opt-in pool that absorbs estimate-vs-actual overage on cost.
+model BudgetInsurancePool {
+  tenantId             String   @id @map("tenant_id") @db.Uuid
+  commitmentUsdCents   BigInt   @map("commitment_usd_cents")
+  poolBalanceUsdCents  BigInt   @map("pool_balance_usd_cents")
+  poolPeriod           String   @map("pool_period")
+  poolResetsAt         DateTime @map("pool_resets_at") @db.Timestamptz
+  updatedAt            DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  @@map("budget_insurance_pools")
+  @@schema("oweibo")
+}
+
+// S.7 (ttv-action-safety-v2): signed forensic packet for HITL handoff.
+// Packet body lives in object storage; this row carries the ref + sig.
+model ForensicPacket {
+  id                String    @id @default(uuid()) @db.Uuid
+  tenantId          String    @map("tenant_id") @db.Uuid
+  planId            String    @map("plan_id") @db.Uuid
+  triggerKind       String    @map("trigger_kind")
+  triggeredBy       String    @map("triggered_by")
+  summary           String?
+  packetStorageRef  String    @map("packet_storage_ref")
+  packetSignature   String    @map("packet_signature")
+  packetByteSize    Int       @default(0) @map("packet_byte_size")
+  state             String    @default("open")
+  resolution        String?
+  resolutionNotes   String?   @map("resolution_notes")
+  resolvedBy        String?   @map("resolved_by") @db.Uuid
+  resolvedAt        DateTime? @map("resolved_at") @db.Timestamptz
+  expiresAt         DateTime  @map("expires_at") @db.Timestamptz
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([planId])
+  @@map("forensic_packets")
+  @@schema("oweibo")
+}
+
+// S.7: replay run audit + queue.
+model ActionReplayRun {
+  id             String    @id @default(uuid()) @db.Uuid
+  tenantId       String    @map("tenant_id") @db.Uuid
+  planId         String    @map("plan_id") @db.Uuid
+  requestedBy    String    @map("requested_by") @db.Uuid
+  replayKind     String    @map("replay_kind")
+  mutation       Json?
+  resultSummary  Json?     @map("result_summary")
+  status         String    @default("queued")
+  failureReason  String?   @map("failure_reason")
+  startedAt      DateTime? @map("started_at") @db.Timestamptz
+  completedAt    DateTime? @map("completed_at") @db.Timestamptz
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([planId, createdAt(sort: Desc)])
+  @@map("action_replay_runs")
   @@schema("oweibo")
 }

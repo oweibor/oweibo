@@ -94,7 +94,15 @@ interface DecayPayload {
   importance?:  number;
   updated_at?:  string;
   created_at?:  string;
+  /** T.2.a: tag list. Entries carrying a `seed:` prefix are platform-curated
+   *  and exempt from decay and eviction. */
+  tags?:        readonly string[];
 }
+
+// T.2.a: predicate imported from a shared module so MemoryDecayService,
+// MemoryConsolidator, and MemoryWarmer agree on the same definition of
+// "platform-curated seed entry".
+import { isSeedTagged } from './memory/seedTags.js';
 
 // ─── Service ──────────────────────────────────────────────────────────────────
 
@@ -166,6 +174,14 @@ export class MemoryDecayService {
 
       for (const point of points) {
         const payload = point.payload as DecayPayload;
+
+        // T.2.a: skip platform-curated seed entries. They are exempt from
+        // both decay and eviction; only the explicit retirement flow (T.7)
+        // can remove them. Filed under tags, not kind, so this is a fast
+        // string-prefix check.
+        if (isSeedTagged(payload.tags)) {
+          continue;
+        }
 
         // Kind-specific decay constant: λ = ln(2) / halfLifeDays
         const kind     = (payload.kind ?? 'domain-fact') as MemoryKind;

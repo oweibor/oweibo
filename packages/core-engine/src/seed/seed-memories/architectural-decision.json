@@ -1,0 +1,23 @@
+{
+  "entries": [
+    {
+      "seedId": "architectural-decision.postgres-for-relational",
+      "catalogVersion": "1",
+      "kind": "architectural-decision",
+      "summary": "Prefer PostgreSQL over MongoDB for workloads with relational invariants and cross-entity joins.",
+      "body": "Postgres offers strong consistency, foreign-key enforcement, and rich indexing that suit transactional data. Reach for document stores only when payloads are genuinely schema-less.",
+      "importance": 0.55,
+      "tags": ["scope:starter", "topic:datastore", "role:architect"],
+      "applicableTo": { "templates": ["*"] }
+    },
+    {
+      "seedId": "architectural-decision.idempotent-side-effects",
+      "catalogVersion": "1",
+      "kind": "architectural-decision",
+      "summary": "External-side-effect calls (HTTP POSTs, DB writes that aren't naturally unique) should accept an idempotency key so retries are safe.",
+      "importance": 0.6,
+      "tags": ["scope:starter", "topic:reliability", "role:architect"],
+      "applicableTo": { "templates": ["*"] }
+    }
+  ]
+}

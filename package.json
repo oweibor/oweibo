@@ -13,8 +13,12 @@
     "assert-tests": "tsx scripts/assert-tests-exist.ts",
     "verify-contract-tests": "tsx scripts/verify-contract-tests.ts",
     "check-rls": "tsx scripts/check-rls.ts",
+    "check-bootstrap-tables": "tsx scripts/check-bootstrap-tables.ts",
+    "verify-no-dropped-events": "tsx scripts/verify-no-dropped-events.ts",
+    "check-multi-replica-safety": "tsx scripts/check-multi-replica-safety.ts",
+    "check-no-dist-tracked": "bash scripts/check-no-dist-tracked.sh",
     "type-check:scripts": "tsc --noEmit --project tsconfig.scripts.json",
-    "ci": "pnpm build && pnpm type-check && pnpm type-check:scripts && pnpm assert-tests && pnpm check-rls && pnpm test",
+    "ci": "pnpm check-no-dist-tracked && pnpm build && pnpm type-check && pnpm type-check:scripts && pnpm assert-tests && pnpm check-rls && pnpm check-multi-replica-safety && pnpm test",
     "prepare": "husky"
   },
   "devDependencies": {

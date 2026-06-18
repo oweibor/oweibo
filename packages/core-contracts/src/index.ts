@@ -32,6 +32,8 @@ export * from './interfaces/ILanguageAnalyzer.js';
 export * from './interfaces/IDocTemplate.js';
 export * from './interfaces/IVectorSearch.js';
 export * from './interfaces/ITokenBudget.js';
+export * from './interfaces/IGoalTemplateMatcher.js';
+export * from './interfaces/IPlatformLessonRecall.js';
 
 // ── Secrets ───────────────────────────────────────────────────────────────────
 export * from './secrets/ISecretsManager.js';
@@ -46,8 +48,75 @@ export * from './roles.js';
 // ── Phase B.1: cross-tenant lesson contract ───────────────────────────────────
 export * from './lesson.js';
 
+// ── T.−1: action trust ladder taxonomy + gate contract ───────────────────────
+export * from './action/ActionClass.js';
+export * from './action/IActionGate.js';
+
+// ── S.0 (action-safety-v2): plan-level approval + lineage + blast radius ─────
+export * from './action/BlastRadius.js';
+export * from './action/ActionPlan.js';
+export * from './action/ActionLineage.js';
+
+// ── S.1 (action-safety-v2): approval SLAs + notification channels ────────────
+export * from './action/ApprovalSla.js';
+
+// ── S.2 (action-safety-v2): rate limiting ────────────────────────────────────
+export * from './action/RateLimit.js';
+
+// ── S.3 (action-safety-v2): rollback execution framework ─────────────────────
+export * from './action/IRollbackAdapter.js';
+
+// ── S.4 (action-safety-v2): multi-party + time-windowed approvals ────────────
+export * from './action/ApprovalGrant.js';
+
+// ── S.5 (action-safety-v2): pre-exec content inspection + post-exec verify ───
+export * from './action/IContentInspector.js';
+export * from './action/IPostExecutionVerifier.js';
+
+// ── S.6 (action-safety-v2): action quotas + budget insurance ─────────────────
+export * from './action/Quota.js';
+
+// ── S.7 (action-safety-v2): forensic replay + HITL handoff ───────────────────
+export * from './action/ForensicPacket.js';
+
+// ── Audit-fix: task event bus seam for waking paused tasks ───────────────────
+export * from './action/ITaskEventBus.js';
+
+// ── T.2.f: connector catalog + tenant-instance contracts ─────────────────────
+export * from './connector/IConnector.js';
+
+// ── T.2.h: org-graph nodes / edges / facts / stakeholder interests ───────────
+export * from './org/OrgGraph.js';
+
+// ── D.0 (domain-depth): canonical domain registry ────────────────────────────
+export * from './domain/DomainSlug.js';
+export * from './domain/IDomainRegistry.js';
+
+// ── D.1 (domain-depth): per-domain ontology packs ────────────────────────────
+export * from './domain/IOntologyPack.js';
+
+// ── D.2 (domain-depth): per-domain eval rubrics ──────────────────────────────
+export * from './domain/IDomainRubric.js';
+
+// ── D.3 (domain-depth): per-domain compliance rule packs ─────────────────────
+export * from './domain/IComplianceRulePack.js';
+
+// ── D.5 (domain-depth): SME review loop types ────────────────────────────────
+export * from './domain/ISmeReview.js';
+
+// ── D.6 (domain-depth): multi-domain tenant bindings ─────────────────────────
+export * from './domain/ITenantDomainBinding.js';
+
+// ── D.7 (domain-depth): domain-knowledge currency ────────────────────────────
+export * from './domain/IDomainCurrency.js';
+
+// ── D.8 (domain-depth): depth measurement & reporting ────────────────────────
+export * from './domain/IDomainDepth.js';
+
 // ── Events ────────────────────────────────────────────────────────────────────
 export * from './events/billing.events.js';
 export * from './events/inventory.events.js';
 export * from './events/pos.events.js';
 export * from './events/swarm.events.js';
+// ── T.0: tenant lifecycle events ─────────────────────────────────────────────
+export * from './events/tenant.events.js';

@@ -1,0 +1,28 @@
+{
+  "entries": [
+    {
+      "templateId": "feature.add-rest-endpoint",
+      "catalogVersion": "1",
+      "triggerSummary": "Add a new REST endpoint to an existing service, including route handler, input validation, and a test that exercises the success path.",
+      "subGoalSkeleton": [
+        { "description": "Define the route shape: method, path, request body, response body, status codes" },
+        { "description": "Add the route handler and wire it to the existing router", "dependsOn": ["Define the route shape: method, path, request body, response body, status codes"] },
+        { "description": "Add input validation (zod or equivalent) and return 400 on validation error", "dependsOn": ["Add the route handler and wire it to the existing router"] },
+        { "description": "Add a test that exercises the success path and one validation failure", "dependsOn": ["Add input validation (zod or equivalent) and return 400 on validation error"] }
+      ],
+      "applicableTo": { "templates": ["*"] }
+    },
+    {
+      "templateId": "feature.add-bg-job",
+      "catalogVersion": "1",
+      "triggerSummary": "Add a new background job that consumes a queue / cron schedule and performs idempotent work.",
+      "subGoalSkeleton": [
+        { "description": "Decide trigger source: cron expression OR queue subscription" },
+        { "description": "Implement the job handler with idempotency: same input → same outcome", "dependsOn": ["Decide trigger source: cron expression OR queue subscription"] },
+        { "description": "Add metrics + structured logs around the handler", "dependsOn": ["Implement the job handler with idempotency: same input → same outcome"] },
+        { "description": "Add a test that runs the handler with a fixture input and asserts the side effect", "dependsOn": ["Implement the job handler with idempotency: same input → same outcome"] }
+      ],
+      "applicableTo": { "templates": ["*"] }
+    }
+  ]
+}

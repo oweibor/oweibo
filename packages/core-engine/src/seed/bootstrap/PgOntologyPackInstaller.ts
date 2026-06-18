@@ -45,6 +45,7 @@ export class PgOntologyPackInstaller {
     private readonly memoryWriter: IOntologyMemoryWriter,
   ) {}
 
+  /** Look up bound domains, render pack entries as memory seeds, persist installs, skip already-current versions. */
   async install(tenantId: string): Promise<OntologyInstallReport> {
     const consideredDomains = await this.resolveDomains(tenantId);
     if (consideredDomains.length === 0) {

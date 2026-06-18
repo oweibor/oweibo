@@ -36,6 +36,7 @@ export class PgConnectorRecommender {
     private readonly pool: Pool,
   ) {}
 
+  /** Compute recommendations for a tenant and persist them as `status='recommended'` rows. */
   async recommend(
     tenantId: string,
     templateSlug: string,
@@ -45,6 +46,7 @@ export class PgConnectorRecommender {
     return [...result.recommendations];
   }
 
+  /** Same as recommend(), but exposes inserted vs. skipped-existing counts for the admin UI. */
   async recommendWithCounts(
     tenantId: string,
     templateSlug: string,

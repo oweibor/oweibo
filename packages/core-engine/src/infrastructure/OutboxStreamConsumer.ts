@@ -160,6 +160,7 @@ export class OutboxStreamConsumer {
     this.claimTimer.unref?.();
   }
 
+  /** Halt the read loop + clear maintenance timers. Idempotent. */
   stop(): void {
     this.running = false;
     if (this.pruneTimer) { clearInterval(this.pruneTimer); this.pruneTimer = null; }

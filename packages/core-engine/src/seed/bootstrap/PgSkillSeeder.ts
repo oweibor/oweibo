@@ -38,6 +38,7 @@ const NOOP_TRACE: ITrace = {
 export class PgSkillSeeder {
   constructor(private readonly registry: ISkillRegistryFacade) {}
 
+  /** Discover skills under `bundlePath` then register them via `SkillRegistry.ensureEmbedded`. */
   async seedSkills(tenantId: string, bundlePath: string): Promise<SkillSeedResult> {
     let skills: ISkill[];
     try {

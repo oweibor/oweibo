@@ -57,6 +57,7 @@ export class PgDomainIntakeProcessor {
     private readonly opts: PgDomainIntakeProcessorOptions = {},
   ) {}
 
+  /** Read the current intake_state from oweibo.tenant_domain_intake; `'absent'` if no row exists. */
   async loadState(tenantId: string): Promise<IntakeStateLookup | 'absent'> {
     const r = await this.pool.query<{ intake_state: IntakeStateLookup }>(
       `SELECT intake_state FROM oweibo.tenant_domain_intake WHERE tenant_id = $1::uuid`,
@@ -65,6 +66,7 @@ export class PgDomainIntakeProcessor {
     return r.rows[0]?.intake_state ?? 'absent';
   }
 
+  /** Drive `requested -> processing -> complete | failed`, optionally invoking the sandboxed repo scan. */
   async process(tenantId: string): Promise<IntakeProcessResult> {
     const claimed = await this.claimRow(tenantId);
     if (!claimed) {

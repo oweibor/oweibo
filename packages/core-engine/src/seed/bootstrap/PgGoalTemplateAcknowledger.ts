@@ -39,6 +39,7 @@ export class PgGoalTemplateAcknowledger {
     private readonly pool: Pool,
   ) {}
 
+  /** Upsert a per-tenant ack row for every catalog template that applies to the tenant's slug + industry. */
   async acknowledge(
     tenantId: string,
     templateSlug: string,

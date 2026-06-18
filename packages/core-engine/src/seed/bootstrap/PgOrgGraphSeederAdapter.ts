@@ -36,6 +36,7 @@ export class PgOrgGraphSeederAdapter {
     this.inner = new OrgGraphSeeder(orgService);
   }
 
+  /** Resolve the tenant's earliest admin via tenant_memberships, then delegate to OrgGraphSeeder.seed(). */
   async seed(tenantId: string): Promise<OrgGraphSeedResult> {
     const creatorUserId = await this.findCreatingUser(tenantId);
     return this.inner.seed({ tenantId, creatorUserId });

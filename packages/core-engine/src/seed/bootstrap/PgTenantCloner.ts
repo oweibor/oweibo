@@ -44,6 +44,7 @@ export class PgTenantCloner {
     this.seeder = new TenantCloneSeeder(infra);
   }
 
+  /** Probe parent existence, then dispatch each requested scope through TenantCloneSeeder. */
   async clone(req: {
     readonly parentTenantId: string;
     readonly childTenantId: string;

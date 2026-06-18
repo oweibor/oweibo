@@ -29,6 +29,7 @@ export interface SeedMemoryRequest {
 export class JsonSeedCatalogProvider {
   constructor(private readonly catalog: PlatformSeedCatalog) {}
 
+  /** Pull catalog entries that match the tenant's template/industry/region, mapped to the writer's request shape. */
   forTenant(filter: { templateSlug: string; industry?: string; homeRegion?: string }): SeedMemoryRequest[] {
     const internal: CatalogFilter = {
       templateSlug: filter.templateSlug,

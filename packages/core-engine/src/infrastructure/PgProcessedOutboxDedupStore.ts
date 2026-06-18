@@ -12,6 +12,7 @@ import type { IDedupStore } from './OutboxStreamConsumer.js';
 export class PgProcessedOutboxDedupStore implements IDedupStore {
   constructor(private readonly pool: Pool) {}
 
+  /** Returns true if this consumer group has already processed `eventId`. */
   async hasBeenProcessed(consumerGroup: string, eventId: string): Promise<boolean> {
     const r = await this.pool.query<{ exists: boolean }>(
       `SELECT EXISTS (
@@ -23,6 +24,7 @@ export class PgProcessedOutboxDedupStore implements IDedupStore {
     return r.rows[0]?.exists === true;
   }
 
+  /** Idempotent record of a successful consumption (ON CONFLICT DO NOTHING). */
   async markProcessed(consumerGroup: string, eventId: string): Promise<void> {
     await this.pool.query(
       `INSERT INTO oweibo.processed_outbox_events (consumer_group, event_id)
@@ -32,6 +34,7 @@ export class PgProcessedOutboxDedupStore implements IDedupStore {
     );
   }
 
+  /** Delete dedup rows older than `days`; returns the affected row count. */
   async pruneOlderThan(days: number): Promise<number> {
     const r = await this.pool.query(
       `DELETE FROM oweibo.processed_outbox_events

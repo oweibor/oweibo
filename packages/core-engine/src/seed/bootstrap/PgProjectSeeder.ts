@@ -35,6 +35,7 @@ export interface SeedStarterProjectResult {
 export class PgProjectSeeder {
   constructor(private readonly pool: Pool) {}
 
+  /** Insert one starter project row; return `already_present` with the existing id on unique-conflict. */
   async seedStarterProject(
     tenantId: string,
     spec: StarterProjectInvariants,

@@ -49,6 +49,7 @@ export class PgBanditPriorsSeeder {
     private readonly modes: OperationalModeService,
   ) {}
 
+  /** Seed cold-start tenant_bandit_arms from the K-anonymous platform_bandit_priors table. */
   async seedPriors(tenantId: string): Promise<PriorsSeedResult> {
     const allowed = await this.modes.isAllowed('bandit_learning');
     if (!allowed) {

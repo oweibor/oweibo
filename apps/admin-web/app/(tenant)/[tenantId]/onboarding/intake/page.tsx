@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import { identityApi } from '@/lib/api';
 import { getSessionToken } from '@/lib/auth';
+import { fetchOrThrow } from '@/lib/serverFetch';
 import { PageHeader } from '@/components/PageHeader';
 
 export const metadata: Metadata = { title: 'Domain intake' };
@@ -34,7 +35,7 @@ async function submitIntake(formData: FormData): Promise<void> {
 
   const token = await getSessionToken();
   const IDENTITY_URL = process.env['IDENTITY_URL'] ?? 'http://localhost:3110';
-  await fetch(`${IDENTITY_URL}/api/v1/tenants/${tenantId}/intake`, {
+  await fetchOrThrow('submit intake', `${IDENTITY_URL}/api/v1/tenants/${tenantId}/intake`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ interviewAnswers: answers }),

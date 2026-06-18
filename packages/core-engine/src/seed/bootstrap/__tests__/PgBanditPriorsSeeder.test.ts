@@ -35,14 +35,18 @@ function makePool(priors: PriorRow[], existingArms = new Set<string>()): {
     }) as PoolClient['query'],
     release: jest.fn(),
   };
+  // F.7 review (A2): the seeder now reads tenants.home_region first,
+  // then queries priors filtered by region. Route the two SELECTs:
+  // home_region lookup returns the test fixture (homeRegion); priors
+  // lookup returns the stub rows.
+  const homeRegion: string | null = '*';
   const pool: Partial<Pool> = {
     connect: jest.fn().mockResolvedValue(client),
-    query: (jest.fn() as Pool['query']).mockResolvedValue({
-      rows: priors,
-      rowCount: priors.length,
-      command: 'SELECT',
-      oid: 0,
-      fields: [],
+    query: jest.fn().mockImplementation((text: string) => {
+      if (text.includes('FROM oweibo.tenants')) {
+        return Promise.resolve({ rows: [{ home_region: homeRegion }], rowCount: 1, command: 'SELECT', oid: 0, fields: [] });
+      }
+      return Promise.resolve({ rows: priors, rowCount: priors.length, command: 'SELECT', oid: 0, fields: [] });
     }) as Pool['query'],
   };
   return { pool: pool as Pool, queries };

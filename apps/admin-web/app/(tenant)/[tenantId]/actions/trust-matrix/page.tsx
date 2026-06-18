@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import { pipelineApi } from '@/lib/api';
 import { getSessionToken } from '@/lib/auth';
+import { fetchOrThrow } from '@/lib/serverFetch';
 import { PageHeader } from '@/components/PageHeader';
 
 export const metadata: Metadata = { title: 'Trust matrix' };
@@ -25,7 +26,7 @@ async function pinAction(formData: FormData): Promise<void> {
   const reason = (formData.get('reason') as string) || 'operator pin';
   const token = await getSessionToken();
   const PIPELINE_URL = process.env['PIPELINE_URL'] ?? 'http://localhost:3100/api/v1';
-  await fetch(`${PIPELINE_URL}/actions/trust-matrix/pin`, {
+  await fetchOrThrow('pin trust matrix', `${PIPELINE_URL}/actions/trust-matrix/pin`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ actionClass, mode, reason }),
@@ -39,7 +40,7 @@ async function unpinAction(formData: FormData): Promise<void> {
   const actionClass = formData.get('actionClass') as string;
   const token = await getSessionToken();
   const PIPELINE_URL = process.env['PIPELINE_URL'] ?? 'http://localhost:3100/api/v1';
-  await fetch(`${PIPELINE_URL}/actions/trust-matrix/unpin`, {
+  await fetchOrThrow('unpin trust matrix', `${PIPELINE_URL}/actions/trust-matrix/unpin`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ actionClass }),

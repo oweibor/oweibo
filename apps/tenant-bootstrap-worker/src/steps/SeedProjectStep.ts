@@ -12,7 +12,7 @@
  * a starter project (e.g. by tag `seed:starter-project`) and either reuse it
  * or skip. Either result counts as 'ok'.
  */
-import type { IBootstrapStep, IBootstrapStepContext, StepStatus } from './IBootstrapStep.js';
+import type { IBootstrapStep, IBootstrapStepContext, StepResult, StepStatus } from './IBootstrapStep.js';
 import { readBoolFlag } from './flags.js';
 
 export interface StarterProjectInvariants {
@@ -53,7 +53,7 @@ export class SeedProjectStep implements IBootstrapStep {
     return Boolean(this.opts.seeder && this.opts.resolveSpec);
   }
 
-  async execute(ctx: IBootstrapStepContext): Promise<StepStatus> {
+  async execute(ctx: IBootstrapStepContext): Promise<StepStatus | StepResult> {
     if (!readBoolFlag(ctx.features, 'tenant.bootstrap.seed_project.enabled')) {
       return 'skipped';
     }
@@ -84,7 +84,12 @@ export class SeedProjectStep implements IBootstrapStep {
       status: result.status,
     });
 
-    if (result.status === 'failed') return 'failed';
+    if (result.status === 'failed') {
+      // F.7 review: preserve the seeder's reason on the StepResult so
+      // BootstrapWorker.upsertStep can persist it to last_error instead
+      // of dropping the diagnostic.
+      return { status: 'failed', ...(result.reason ? { message: result.reason } : {}) };
+    }
     return 'ok';
   }
 }

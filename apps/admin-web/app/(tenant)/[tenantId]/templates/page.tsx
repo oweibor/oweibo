@@ -48,7 +48,7 @@ export default async function TemplatesPage({
     if (selectedSlug) {
       try {
         const det = await pipelineApi.get<{ template: TenantTemplate }>(
-          `/tenants/${tenantId}/templates/${selectedSlug}`,
+          `/tenants/${tenantId}/templates/${encodeURIComponent(selectedSlug)}`,
         );
         detail = det.template;
       } catch {
@@ -192,8 +192,13 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
   );
 }
 
-function JsonBlock({ obj }: { obj: Record<string, unknown> }) {
-  if (Object.keys(obj).length === 0) {
+function JsonBlock({ obj }: { obj: unknown }) {
+  // F.7 review: API JSON can be null or a primitive; guard before
+  // Object.keys (which throws on null).
+  if (obj === null || typeof obj !== 'object') {
+    return <em style={{ color: '#888' }}>{obj === null ? 'null' : String(obj)}</em>;
+  }
+  if (Object.keys(obj as Record<string, unknown>).length === 0) {
     return <em style={{ color: '#888' }}>empty</em>;
   }
   return (

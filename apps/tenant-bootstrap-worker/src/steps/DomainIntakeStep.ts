@@ -88,7 +88,12 @@ export class DomainIntakeStep implements IBootstrapStep {
       return 'skipped';
     }
 
-    const state = await this.opts.processor.loadState(ctx.tenantId).catch(() => 'absent' as const);
+    // F.7 review: previously a catch swallowed loadState errors into
+    // 'absent', which downgraded transient DB blips to a non-retriable
+    // 'skipped'. Errors now propagate -- BootstrapWorker's per-step
+    // try/catch records 'failed' with the error message, and the next
+    // tick (or reconcile sweep) retries within the maxAttempts budget.
+    const state = await this.opts.processor.loadState(ctx.tenantId);
     if (state === 'absent' || state === 'pending' || state === 'skipped' || state === 'complete') {
       ctx.logger.info('DomainIntakeStep: no requested intake; skipping', {
         tenantId: ctx.tenantId,

@@ -29,9 +29,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const CRON_EXPR = process.env['PRIORS_CRON_EXPR'] ?? '0 3 * * *';
-  const K = parseInt(process.env['PRIORS_K_ANONYMITY'] ?? '5', 10);
-  const CAP = parseInt(process.env['PRIORS_STRENGTH_CAP'] ?? '50', 10);
-  const WINDOW_DAYS = parseInt(process.env['PRIORS_WINDOW_DAYS'] ?? '90', 10);
+  const K = parsePositiveInt(process.env['PRIORS_K_ANONYMITY'], 5, 'PRIORS_K_ANONYMITY');
+  const CAP = parsePositiveInt(process.env['PRIORS_STRENGTH_CAP'], 50, 'PRIORS_STRENGTH_CAP');
+  const WINDOW_DAYS = parsePositiveInt(process.env['PRIORS_WINDOW_DAYS'], 90, 'PRIORS_WINDOW_DAYS');
   const enabled = process.env['BANDIT_USE_PLATFORM_PRIORS'] !== 'false';
 
   const pool = new Pool({ connectionString: DATABASE_URL, max: 3 });
@@ -63,6 +63,17 @@ async function main(): Promise<void> {
   };
   process.on('SIGTERM', () => void shutdown());
   process.on('SIGINT', () => void shutdown());
+}
+
+/** Parse an env var as a positive integer; exit fast on NaN/non-positive. */
+function parsePositiveInt(raw: string | undefined, fallback: number, name: string): number {
+  if (raw === undefined || raw === '') return fallback;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n <= 0) {
+    console.error(`[platform-priors-aggregator] ${name} must be a positive integer, got ${JSON.stringify(raw)}`);
+    process.exit(2);
+  }
+  return n;
 }
 
 void main().catch((err) => {

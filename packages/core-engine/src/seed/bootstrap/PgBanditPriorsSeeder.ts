@@ -56,13 +56,32 @@ export class PgBanditPriorsSeeder {
       return { reason: 'mode_too_low', armsSeeded: 0, slotsConsidered: 0 };
     }
 
-    // Read all platform priors with scope_kind='prompt_slot'. The table
-    // has a CHECK constraint that contributor_count >= 5 (K-anonymity)
-    // so any row that exists is safe to copy.
+    // F.7 review (A2): the aggregator writes per-region rows alongside
+    // the '*' fallback (T.8 migration widened the PK to include
+    // home_region). The prior implementation read every row regardless
+    // of region, so per-scope_key it would pick a non-deterministic
+    // winner. Now we read the tenant's home_region first, then
+    // DISTINCT ON (scope_key) prefer the region-specific row over '*'.
+    const tenant = await this.pool.query<{ home_region: string | null }>(
+      `SELECT home_region FROM oweibo.tenants WHERE id = $1::uuid`,
+      [tenantId],
+    );
+    const homeRegion = tenant.rows[0]?.home_region ?? '*';
+
+    // Read priors that match the tenant's region OR the '*' fallback.
+    // DISTINCT ON (scope_key) ORDER BY (home_region = $tenantRegion) DESC
+    // picks the region-specific row when present, '*' otherwise. The
+    // table's CHECK constraint enforces contributor_count >= 5
+    // (K-anonymity) so any row that exists is safe to copy.
     const rows = await this.pool.query<PriorRow>(
-      `SELECT scope_key, alpha_sum::text, beta_sum::text, contributor_count, catalog_version
+      `SELECT DISTINCT ON (scope_key)
+              scope_key, alpha_sum::text, beta_sum::text,
+              contributor_count, catalog_version
          FROM oweibo.platform_bandit_priors
-        WHERE scope_kind = 'prompt_slot'`,
+        WHERE scope_kind = 'prompt_slot'
+          AND home_region IN ($1::text, '*')
+        ORDER BY scope_key, (home_region = $1::text) DESC`,
+      [homeRegion],
     );
 
     if (rows.rows.length === 0) {

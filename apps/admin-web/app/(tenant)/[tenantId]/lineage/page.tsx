@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import { identityApi } from '@/lib/api';
 import { getSessionToken } from '@/lib/auth';
+import { fetchOrThrow } from '@/lib/serverFetch';
 import { PageHeader } from '@/components/PageHeader';
 
 export const metadata: Metadata = { title: 'Lineage' };
@@ -48,7 +49,7 @@ async function createGrantAction(formData: FormData): Promise<void> {
 
   const token = await getSessionToken();
   const IDENTITY_URL = process.env['IDENTITY_URL'] ?? 'http://localhost:3110';
-  await fetch(`${IDENTITY_URL}/api/v1/tenants/${tenantId}/lineage/grants`, {
+  await fetchOrThrow('create lineage grant', `${IDENTITY_URL}/api/v1/tenants/${tenantId}/lineage/grants`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({
@@ -67,7 +68,7 @@ async function revokeGrantAction(formData: FormData): Promise<void> {
   const grantId = formData.get('grantId') as string;
   const token = await getSessionToken();
   const IDENTITY_URL = process.env['IDENTITY_URL'] ?? 'http://localhost:3110';
-  await fetch(`${IDENTITY_URL}/api/v1/tenants/${tenantId}/lineage/grants/${grantId}/revoke`, {
+  await fetchOrThrow('revoke lineage grant', `${IDENTITY_URL}/api/v1/tenants/${tenantId}/lineage/grants/${grantId}/revoke`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
   });

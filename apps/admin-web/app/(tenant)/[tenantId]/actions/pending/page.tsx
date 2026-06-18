@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import { pipelineApi } from '@/lib/api';
 import { getSessionToken } from '@/lib/auth';
+import { fetchOrThrow } from '@/lib/serverFetch';
 import { PageHeader } from '@/components/PageHeader';
 
 export const metadata: Metadata = { title: 'Pending actions' };
@@ -27,7 +28,7 @@ async function promoteAction(formData: FormData): Promise<void> {
   const outcome = (formData.get('outcome') as string) ?? 'success';
   const token = await getSessionToken();
   const PIPELINE_URL = process.env['PIPELINE_URL'] ?? 'http://localhost:3100/api/v1';
-  await fetch(`${PIPELINE_URL}/actions/${id}/promote`, {
+  await fetchOrThrow('promote action', `${PIPELINE_URL}/actions/${id}/promote`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ outcome }),
@@ -42,7 +43,7 @@ async function rejectAction(formData: FormData): Promise<void> {
   const reason = (formData.get('reason') as string) || 'rejected by operator';
   const token = await getSessionToken();
   const PIPELINE_URL = process.env['PIPELINE_URL'] ?? 'http://localhost:3100/api/v1';
-  await fetch(`${PIPELINE_URL}/actions/${id}/reject`, {
+  await fetchOrThrow('reject action', `${PIPELINE_URL}/actions/${id}/reject`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ reason }),

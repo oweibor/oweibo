@@ -86,12 +86,13 @@ describe('DomainIntakeStep', () => {
     expect(result).toBe('failed');
   });
 
-  it('skips when loadState itself throws (defensive — never blocks pipeline)', async () => {
+  it('lets loadState errors propagate so BootstrapWorker records failed + retries', async () => {
     const p = processor({
       loadState: jest.fn().mockRejectedValue(new Error('db down')),
     });
     const step = new DomainIntakeStep({ processor: p });
-    const result = await step.execute(ctx({ features: { 'tenant.bootstrap.domain_intake.enabled': true } }));
-    expect(result).toBe('skipped');
+    await expect(
+      step.execute(ctx({ features: { 'tenant.bootstrap.domain_intake.enabled': true } })),
+    ).rejects.toThrow(/db down/);
   });
 });

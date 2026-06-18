@@ -12,6 +12,7 @@ import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import { pipelineApi } from '@/lib/api';
 import { getSessionToken } from '@/lib/auth';
+import { fetchOrThrow } from '@/lib/serverFetch';
 import { PageHeader } from '@/components/PageHeader';
 
 export const metadata: Metadata = { title: 'Approval grants' };
@@ -45,7 +46,7 @@ async function createGrantAction(formData: FormData): Promise<void> {
 
   const token = await getSessionToken();
   const PIPELINE_URL = process.env['PIPELINE_URL'] ?? 'http://localhost:3100/api/v1';
-  await fetch(`${PIPELINE_URL}/tenants/${tenantId}/approvals/grants`, {
+  await fetchOrThrow('create grant', `${PIPELINE_URL}/tenants/${tenantId}/approvals/grants`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({
@@ -67,7 +68,7 @@ async function revokeGrantAction(formData: FormData): Promise<void> {
   const grantId = formData.get('grantId') as string;
   const token = await getSessionToken();
   const PIPELINE_URL = process.env['PIPELINE_URL'] ?? 'http://localhost:3100/api/v1';
-  await fetch(`${PIPELINE_URL}/tenants/${tenantId}/approvals/grants/${grantId}/revoke`, {
+  await fetchOrThrow('revoke grant', `${PIPELINE_URL}/tenants/${tenantId}/approvals/grants/${grantId}/revoke`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
   });

@@ -246,7 +246,7 @@ export class BootstrapWorker {
           status = result;
         } else {
           status = result.status;
-          skipReason = result.skipReason;
+          if (result.status === 'skipped') skipReason = result.skipReason;
           err = result.message;
         }
       } catch (e) {

@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import { identityApi } from '@/lib/api';
 import { getSessionToken } from '@/lib/auth';
+import { fetchOrThrow } from '@/lib/serverFetch';
 import { PageHeader } from '@/components/PageHeader';
 
 export const metadata: Metadata = { title: 'Catalog updates' };
@@ -34,7 +35,7 @@ async function resolveAction(formData: FormData): Promise<void> {
   const resolution = formData.get('resolution') as string;
   const token = await getSessionToken();
   const IDENTITY_URL = process.env['IDENTITY_URL'] ?? 'http://localhost:3110';
-  await fetch(`${IDENTITY_URL}/api/v1/tenants/${tenantId}/catalog-updates/resolve`, {
+  await fetchOrThrow('resolve catalog update', `${IDENTITY_URL}/api/v1/tenants/${tenantId}/catalog-updates/resolve`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ seedId, toContentHash, resolution }),

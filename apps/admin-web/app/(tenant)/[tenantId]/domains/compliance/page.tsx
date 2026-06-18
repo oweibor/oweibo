@@ -43,10 +43,13 @@ async function refreshCacheAction(formData: FormData): Promise<void> {
   const tenantId = formData.get('tenantId') as string;
   const token = await getSessionToken();
   const PIPELINE_URL = process.env['PIPELINE_URL'] ?? 'http://localhost:3100/api/v1';
-  await fetch(`${PIPELINE_URL}/tenants/${tenantId}/domains/compliance/refresh`, {
+  const res = await fetch(`${PIPELINE_URL}/tenants/${tenantId}/domains/compliance/refresh`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
   });
+  if (!res.ok) {
+    throw new Error(`refreshCache failed: ${res.status} ${await res.text().catch(() => '')}`);
+  }
   redirect(`/t/${tenantId}/domains/compliance`);
 }
 
@@ -54,10 +57,10 @@ export default async function CompliancePage({
   params, searchParams,
 }: {
   params: Promise<{ tenantId: string }>;
-  searchParams: Promise<{ verdict?: string; limit?: string }>;
+  searchParams: Promise<{ verdict?: string; limit?: string; cursor?: string }>;
 }) {
   const { tenantId } = await params;
-  const { verdict: verdictParam, limit: limitParam } = await searchParams;
+  const { verdict: verdictParam, limit: limitParam, cursor: cursorParam } = await searchParams;
 
   // Parse comma-separated verdicts: ?verdict=warn,block → ["warn", "block"].
   const verdictFilter = verdictParam
@@ -72,6 +75,10 @@ export default async function CompliancePage({
     const query = new URLSearchParams();
     for (const v of verdictFilter) query.append('verdict', v);
     query.set('limit', String(limit));
+    // F.7 review (M7): propagate the cursor so the "Older evaluations" link
+    // actually advances; the prior code rebuilt the URL without it and
+    // re-fetched page 1 on every "Older" click.
+    if (cursorParam) query.set('cursor', cursorParam);
     const res = await pipelineApi.get<{ evaluations: EvaluationRow[]; nextCursor: string | null }>(
       `/tenants/${tenantId}/domains/compliance/evaluations?${query.toString()}`,
     );
@@ -128,6 +135,7 @@ export default async function CompliancePage({
           href={`/t/${tenantId}/domains/compliance?${new URLSearchParams({
             ...(verdictFilter.length > 0 ? { verdict: verdictFilter.join(',') } : {}),
             limit: String(limit),
+            cursor: nextCursor,
           }).toString()}`}
           style={{
             display: 'inline-block', marginTop: '1rem', color: '#1e3a8a',

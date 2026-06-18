@@ -9,6 +9,7 @@ import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import { pipelineApi } from '@/lib/api';
 import { getSessionToken } from '@/lib/auth';
+import { fetchOrThrow } from '@/lib/serverFetch';
 import { PageHeader } from '@/components/PageHeader';
 
 export const metadata: Metadata = { title: 'Approval policies' };
@@ -37,7 +38,7 @@ async function upsertPolicyAction(formData: FormData): Promise<void> {
 
   const token = await getSessionToken();
   const PIPELINE_URL = process.env['PIPELINE_URL'] ?? 'http://localhost:3100/api/v1';
-  await fetch(`${PIPELINE_URL}/tenants/${tenantId}/approvals/policies`, {
+  await fetchOrThrow('update approval policy', `${PIPELINE_URL}/tenants/${tenantId}/approvals/policies`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({

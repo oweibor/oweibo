@@ -51,13 +51,15 @@ export type StepSkipReason =
   | 'optional_step'
   | 'no_content';
 
-export interface StepResult {
-  readonly status: StepStatus;
-  /** Required when status === 'skipped'; populated to skip_reason. */
-  readonly skipReason?: StepSkipReason;
-  /** Optional free-text; persisted to last_error. */
-  readonly message?: string;
-}
+/**
+ * Discriminated union so TypeScript enforces "status === 'skipped'
+ * requires a skipReason." Constructing `{ status: 'skipped' }` without
+ * a reason is now a compile error.
+ */
+export type StepResult =
+  | { readonly status: 'ok';      readonly message?: string }
+  | { readonly status: 'failed';  readonly message?: string }
+  | { readonly status: 'skipped'; readonly skipReason: StepSkipReason; readonly message?: string };
 
 export interface IBootstrapStep {
   readonly name: string;

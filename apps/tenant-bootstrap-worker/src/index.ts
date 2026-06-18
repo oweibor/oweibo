@@ -50,10 +50,20 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const REDIS_URL = process.env['REDIS_URL'] ?? 'redis://localhost:6379';
-  const RECONCILE_INTERVAL_MS = parseInt(
-    process.env['BOOTSTRAP_RECONCILE_INTERVAL_MS'] ?? `${6 * 60 * 60 * 1000}`,
-    10,
-  );
+  const DEFAULT_RECONCILE_MS = 6 * 60 * 60 * 1000;
+  const RECONCILE_INTERVAL_MS = (() => {
+    const raw = process.env['BOOTSTRAP_RECONCILE_INTERVAL_MS'];
+    if (!raw) return DEFAULT_RECONCILE_MS;
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n) || n <= 0) {
+      console.warn(
+        `[tenant-bootstrap-worker] BOOTSTRAP_RECONCILE_INTERVAL_MS must be a positive integer, got ${JSON.stringify(raw)}; ` +
+        `falling back to default ${DEFAULT_RECONCILE_MS}ms`,
+      );
+      return DEFAULT_RECONCILE_MS;
+    }
+    return n;
+  })();
 
   // Pool size 10 covers: the live-event pipeline (one tx per step) +
   // the concurrent reconcile sweep (up to 100 tenants iterated, each
@@ -146,8 +156,13 @@ async function main(): Promise<void> {
   }
 
   // Initial reconcile + periodic sweep.
-  void reconcile(pool, worker);
-  const timer = setInterval(() => void reconcile(pool, worker), RECONCILE_INTERVAL_MS);
+  const logReconcileError = (err: unknown) => console.error('[tenant-bootstrap-worker] reconcile threw', {
+    error: err instanceof Error ? err.message : String(err),
+  });
+  void reconcile(pool, worker).catch(logReconcileError);
+  const timer = setInterval(() => {
+    void reconcile(pool, worker).catch(logReconcileError);
+  }, RECONCILE_INTERVAL_MS);
   timer.unref?.();
 
   const shutdown = async (): Promise<void> => {

@@ -64,12 +64,14 @@ describe('SeedProjectStep', () => {
     expect(await step.execute(ctx({ features: { 'tenant.bootstrap.seed_project.enabled': true } }))).toBe('ok');
   });
 
-  it("returns 'failed' when seeder reports failed", async () => {
+  it("returns 'failed' with seeder reason in message when seeder reports failed", async () => {
     const seeder: IProjectSeeder = {
       seedStarterProject: jest.fn().mockResolvedValue({ projectId: null, status: 'failed', reason: 'redis down' }),
     };
     const step = new SeedProjectStep({ seeder, resolveSpec: () => SPEC });
-    expect(await step.execute(ctx({ features: { 'tenant.bootstrap.seed_project.enabled': true } }))).toBe('failed');
+    const result = await step.execute(ctx({ features: { 'tenant.bootstrap.seed_project.enabled': true } }));
+    // F.7 review: structured StepResult preserves the seeder's reason as last_error.
+    expect(result).toEqual({ status: 'failed', message: 'redis down' });
   });
 
   it("returns 'failed' when seeder throws", async () => {

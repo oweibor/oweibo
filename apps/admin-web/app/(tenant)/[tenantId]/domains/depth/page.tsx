@@ -139,7 +139,10 @@ function formatValue(v: unknown): string {
   if (typeof v === 'number') return v.toFixed(2);
   if (typeof v === 'boolean') return String(v);
   if (typeof v === 'string') return v.length > 24 ? v.slice(0, 24) + '…' : v;
-  return JSON.stringify(v).slice(0, 28);
+  // F.7 review: JSON.stringify returns undefined for `undefined`,
+  // functions, and symbols. Guard before .slice().
+  const s = JSON.stringify(v);
+  return (s ?? '[unrepresentable]').slice(0, 28);
 }
 
 function scoreToColor(score: number): string {

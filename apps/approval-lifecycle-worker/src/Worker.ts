@@ -318,13 +318,21 @@ export class ApprovalLifecycleWorker {
     proposal: ProposalRow,
     policy: ApprovalSlaPolicy,
   ): Promise<void> {
+    // F.7 review: if a concurrent writer (e.g. manual reject via admin UI)
+    // flipped the proposal out of 'pending' between claim and expiry, the
+    // conditional UPDATE matches zero rows -- but the prior code still
+    // DELETE'd the SLA state row, published 'expired' to the task event
+    // bus, and sent an expiry notification. We now ROLLBACK on rowCount=0
+    // and short-circuit: the next tick's processRow sees the non-pending
+    // state and routes through clearState() instead.
     const client = await this.pool.connect();
+    let updatedCount = 0;
     try {
       await client.query('BEGIN');
       if (/^[0-9a-f-]{36}$/i.test(row.tenant_id)) {
         await client.query(`SET LOCAL app.tenant_id = '${row.tenant_id}'`);
       }
-      await client.query(
+      const upd = await client.query(
         `UPDATE oweibo.action_proposals
             SET state = 'expired',
                 decision_reason = 'sla_expired',
@@ -332,6 +340,11 @@ export class ApprovalLifecycleWorker {
           WHERE id = $1::uuid AND state = 'pending'`,
         [row.proposal_id],
       );
+      updatedCount = upd.rowCount ?? 0;
+      if (updatedCount === 0) {
+        await client.query('ROLLBACK');
+        return;
+      }
       await client.query(
         `DELETE FROM oweibo.approval_sla_state WHERE proposal_id = $1::uuid`,
         [row.proposal_id],
@@ -343,6 +356,7 @@ export class ApprovalLifecycleWorker {
     } finally {
       client.release();
     }
+    if (updatedCount === 0) return;
     // Audit-fix (S.1 TaskEventBus): publish a wake event so the
     // originating agent task can resume. Best-effort — publish failure
     // MUST NOT block the expire path. The proposal state in Postgres

@@ -148,14 +148,26 @@ export async function buildBootstrapPipeline(
     // sub-kinds.
     const ontologyMemoryWriter: IOntologyMemoryWriter = {
       writeSeeds: async (tenantId, seeds) => {
-        const result = await writer.writeSeeds(tenantId, seeds.map((s) => ({
-          seedId: s.seedId,
-          catalogVersion: ontologyRegistry.get(s.domainSlug as never)?.packVersion ?? 'v1',
-          kind: ontologyKindToMemoryKind(s.kind),
-          summary: s.content,
-          importance: s.importance,
-          tags: s.tags,
-        })));
+        const result = await writer.writeSeeds(tenantId, seeds.map((s) => {
+          // F.7 review: fail fast if the seed's domainSlug isn't in the
+          // registry instead of silently stamping 'v1'. Seeds are rendered
+          // by PgOntologyPackInstaller from packs already in the registry,
+          // so a miss here indicates a registry-reload or pack-retirement
+          // race -- preferable to surface it than to write divergent
+          // catalogVersion metadata.
+          const pack = ontologyRegistry.get(s.domainSlug as never);
+          if (!pack) {
+            throw new Error(`ontologyMemoryWriter: unknown domainSlug ${JSON.stringify(s.domainSlug)} (seedId=${s.seedId})`);
+          }
+          return {
+            seedId: s.seedId,
+            catalogVersion: pack.packVersion,
+            kind: ontologyKindToMemoryKind(s.kind),
+            summary: s.content,
+            importance: s.importance,
+            tags: s.tags,
+          };
+        }));
         return { inserted: result.inserted.length };
       },
     };

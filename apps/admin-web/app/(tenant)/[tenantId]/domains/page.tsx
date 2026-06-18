@@ -17,7 +17,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { pipelineApi } from '@/lib/api';
-import { getSessionToken } from '@/lib/auth';
+import { getSessionToken, requireAuth } from '@/lib/auth';
 import { PageHeader } from '@/components/PageHeader';
 
 export const metadata: Metadata = { title: 'Domains' };
@@ -48,26 +48,32 @@ type Tab = 'bindings' | 'registry';
 
 async function replaceBindingsAction(formData: FormData): Promise<void> {
   'use server';
+  // F.7 review (M6): boundBy.id must come from the authenticated server
+  // session, NOT a hidden form input -- otherwise any client can spoof
+  // the audit attribution by editing the form payload before submit.
+  const sessionUser = await requireAuth();
   const tenantId = formData.get('tenantId') as string;
   const slugs = formData.getAll('slug').filter((s): s is string => typeof s === 'string' && s.length > 0);
   const rolesRaw = formData.getAll('role').filter((s): s is string => typeof s === 'string');
   const weightsRaw = formData.getAll('rawWeight').filter((s): s is string => typeof s === 'string');
-  const userId = formData.get('userId') as string;
 
   const bindings = slugs.map((domainSlug, i) => ({
     domainSlug,
     role: (rolesRaw[i] ?? 'secondary') as 'primary' | 'secondary',
     rawWeight: Number(weightsRaw[i] ?? '1'),
-    boundBy: { type: 'admin' as const, id: userId },
+    boundBy: { type: 'admin' as const, id: sessionUser.user_id },
   })).filter((b) => Number.isFinite(b.rawWeight));
 
   const token = await getSessionToken();
   const PIPELINE_URL = process.env['PIPELINE_URL'] ?? 'http://localhost:3100/api/v1';
-  await fetch(`${PIPELINE_URL}/tenants/${tenantId}/domains/bindings`, {
+  const res = await fetch(`${PIPELINE_URL}/tenants/${tenantId}/domains/bindings`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ bindings }),
   });
+  if (!res.ok) {
+    throw new Error(`replaceBindings failed: ${res.status} ${await res.text().catch(() => '')}`);
+  }
   redirect(`/t/${tenantId}/domains?tab=bindings`);
 }
 

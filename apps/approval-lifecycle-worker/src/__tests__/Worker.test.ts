@@ -154,6 +154,10 @@ describe('ApprovalLifecycleWorker.runOnce', () => {
           user_id: 'author-1', summary: 'pay vendor',
         }],
       },
+      // F.7 review: expireProposal now reads UPDATE rowCount; supply
+      // a stub row so the mocked rowCount > 0 and the DELETE +
+      // notification side effects proceed.
+      { match: "SET state = 'expired'", rows: [{ id: PROPOSAL }] },
     ]);
     const { svc } = makeSla();
     const esc = makeEsc({ approverUserIds: [] });
@@ -281,5 +285,98 @@ describe('ApprovalLifecycleWorker.runOnce', () => {
     expect(r.skipped).toBe(1);
     const park = calls.find((c) => c.sql.includes('SET next_action_at = hard_expire_at'));
     expect(park).toBeDefined();
+  });
+
+  // F.7 review (K): two failure/race scenarios in the expiry path.
+
+  it('does NOT clear SLA state when the proposal load query fails', async () => {
+    const now = new Date('2026-05-23T10:00:00Z');
+    const expired = new Date('2026-05-23T09:00:00Z');
+    const stubs: QueryStub[] = [
+      {
+        match: 'FOR UPDATE SKIP LOCKED',
+        rows: [{
+          proposal_id: PROPOSAL,
+          tenant_id: TENANT,
+          current_stage: 0,
+          hard_expire_at: expired,
+          notified_approvers: [],
+        }],
+      },
+    ];
+    const calls: { sql: string; params: unknown[] }[] = [];
+    // Inline pool: throw on action_proposals SELECT after running the
+    // claim, so loadProposal propagates the error (per the F.7-review
+    // re-throw fix in loadProposal's catch).
+    const queryFn = (sql: string, params?: unknown[]): Promise<QueryResult<QueryResultRow>> => {
+      calls.push({ sql, params: params ?? [] });
+      if (sql.includes('FROM oweibo.action_proposals')) {
+        return Promise.reject(new Error('connection terminated'));
+      }
+      const stub = stubs.find((s) => sql.includes(s.match));
+      return Promise.resolve({
+        rows: stub ? stub.rows : [],
+        rowCount: stub ? stub.rows.length : 0,
+        command: '', oid: 0, fields: [],
+      });
+    };
+    const client = { query: jest.fn().mockImplementation(queryFn), release: jest.fn() } as unknown as PoolClient;
+    const pool = { connect: jest.fn().mockResolvedValue(client) } as unknown as Pool;
+
+    const { svc } = makeSla();
+    const esc = makeEsc({ approverUserIds: [] });
+    const { router, calls: routerCalls } = makeRouter();
+    const w = new ApprovalLifecycleWorker(pool, svc, esc, router, {
+      isEnabled: () => true, now: () => now, logger: silent,
+    });
+    const r = await w.runOnce();
+    // runOnce's per-row catch swallows the throw; the row stays under
+    // its lease and the next tick retries. Critically, neither the
+    // DELETE nor any router.route call should have fired.
+    expect(r.processed).toBe(0);
+    const del = calls.find((c) => c.sql.includes('DELETE FROM oweibo.approval_sla_state'));
+    expect(del).toBeUndefined();
+    expect(routerCalls).toHaveLength(0);
+  });
+
+  it('UPDATE matches zero rows (race): no DELETE, no expiry router event', async () => {
+    const now = new Date('2026-05-23T10:00:00Z');
+    const expired = new Date('2026-05-23T09:00:00Z');
+    const { pool, calls } = makePool([
+      {
+        match: 'FOR UPDATE SKIP LOCKED',
+        rows: [{
+          proposal_id: PROPOSAL,
+          tenant_id: TENANT,
+          current_stage: 0,
+          hard_expire_at: expired,
+          notified_approvers: ['u1'],
+        }],
+      },
+      {
+        match: 'FROM oweibo.action_proposals',
+        rows: [{
+          id: PROPOSAL, state: 'pending',
+          action_class: 'financial.payment',
+          user_id: 'author-1', summary: 'pay vendor',
+        }],
+      },
+      // UPDATE SET state='expired' matches 0 rows -- a concurrent
+      // writer flipped the proposal out of 'pending' before we got
+      // here. The default stub return (rows: []) gives rowCount=0.
+      { match: "SET state = 'expired'", rows: [] },
+    ]);
+    const { svc } = makeSla();
+    const esc = makeEsc({ approverUserIds: [] });
+    const { router, calls: routerCalls } = makeRouter();
+    const w = new ApprovalLifecycleWorker(pool, svc, esc, router, {
+      isEnabled: () => true, now: () => now, logger: silent,
+    });
+    await w.runOnce();
+    // Critical: no DELETE on approval_sla_state, no expiry notification.
+    const del = calls.find((c) => c.sql.includes('DELETE FROM oweibo.approval_sla_state'));
+    expect(del).toBeUndefined();
+    const expiryRoute = (routerCalls as { fireEvent?: string }[]).find((c) => c.fireEvent === 'expiry');
+    expect(expiryRoute).toBeUndefined();
   });
 });

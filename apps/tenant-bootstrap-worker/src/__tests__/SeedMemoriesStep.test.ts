@@ -111,6 +111,19 @@ describe('SeedMemoriesStep', () => {
     expect(catalog.forTenant).toHaveBeenCalledWith({ templateSlug: 'fintech-starter', industry: 'fintech' });
   });
 
+  it('forwards homeRegion from context into the catalog filter', async () => {
+    const catalog = makeCatalog(TWO_SEEDS);
+    const writer: ISeedMemoryWriter = {
+      writeSeeds: jest.fn().mockResolvedValue({ inserted: ['s1'], skipped: [], failed: [] }),
+    };
+    const step = new SeedMemoriesStep({ writer, catalog });
+    await step.execute(ctx({
+      features: { 'tenant.bootstrap.seed_memories.enabled': true },
+      homeRegion: 'eu-west-1',
+    }));
+    expect(catalog.forTenant).toHaveBeenCalledWith(expect.objectContaining({ homeRegion: 'eu-west-1' }));
+  });
+
   // ── T.5.e: seed-cohort gate ─────────────────────────────────────────────
 
   it("returns 'skipped' for control-cohort tenants even when fully wired", async () => {

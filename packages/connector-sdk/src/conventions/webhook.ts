@@ -23,6 +23,10 @@ export function computeWebhookSignature(rawBody: string | Buffer, secret: string
  * first because timingSafeEqual throws on mismatch — and the attacker
  * controls the received value, so that exception must not become the
  * timing leak.
+ *
+ * Hex is case-insensitive: several sources emit uppercase digests, so
+ * the received value is lowercased before comparison (a fixed
+ * per-character map independent of the secret — no timing surface).
  */
 export function verifyWebhookSignature(
   rawBody: string | Buffer,
@@ -30,6 +34,6 @@ export function verifyWebhookSignature(
   secret: string,
 ): boolean {
   const expected = Buffer.from(computeWebhookSignature(rawBody, secret), 'utf8');
-  const received = Buffer.from(receivedSignatureHex, 'utf8');
+  const received = Buffer.from(receivedSignatureHex.toLowerCase(), 'utf8');
   return expected.length === received.length && timingSafeEqual(expected, received);
 }

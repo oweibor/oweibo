@@ -44,10 +44,23 @@ export interface ManifestTruthfulnessReport {
   readonly undeclared: readonly SupportFlag[];
 }
 
-const ALL_FLAGS: readonly SupportFlag[] = [
+/**
+ * The canonical flag list. Exported (K.1) so the certification harness
+ * can reject *unknown* declared keys — this predicate iterates known
+ * flags only, so a typo'd key (`webhoks`) would otherwise be silently
+ * unchecked for authors outside TypeScript's protection (JS, JSON).
+ */
+export const SUPPORT_FLAGS: readonly SupportFlag[] = [
   'changeFeed', 'content', 'acl', 'principals', 'activity',
   'actions', 'deltaSync', 'webhooks', 'groups', 'activitySignals',
 ];
+
+/** Type guard for SupportFlag, for callers holding untyped manifest keys. */
+export function isSupportFlag(key: string): key is SupportFlag {
+  return (SUPPORT_FLAGS as readonly string[]).includes(key);
+}
+
+const ALL_FLAGS: readonly SupportFlag[] = SUPPORT_FLAGS;
 
 /**
  * INV-15 checker. Compares what the manifest declares against what

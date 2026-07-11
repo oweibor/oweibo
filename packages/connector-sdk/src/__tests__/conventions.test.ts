@@ -57,6 +57,43 @@ describe('paginate', () => {
     for await (const i of paginate(pagesOf([1, 2, 3, 4], 2, false), { cursor: '2' })) seen.push(i);
     expect(seen).toEqual([3, 4]);
   });
+
+  it('settles on a timestamp-style tail (fresh cursor per empty poll) instead of throwing', async () => {
+    // After the data, every page is empty with a NEW cursor — the shape
+    // of ts-encoded cursors. Must conclude "caught up", not spin to
+    // maxPages.
+    let ts = 0;
+    const feed = async (cursor: Cursor | null): Promise<Page<number>> => {
+      if (cursor === null) return { items: [7, 8], nextCursor: 'end' };
+      ts += 1;
+      return { items: [], nextCursor: `ts:${ts}` };
+    };
+    const seen: number[] = [];
+    const gen = paginate(feed, { maxConsecutiveEmptyPages: 5 });
+    let r = await gen.next();
+    while (!r.done) {
+      seen.push(r.value);
+      r = await gen.next();
+    }
+    expect(seen).toEqual([7, 8]);
+    expect(r.value).toBe('ts:5');
+    expect(ts).toBe(5); // bounded — did not spin to maxPages
+  });
+
+  it('tolerates empty pages mid-stream below the bound', async () => {
+    // page 1: items; pages 2-3: empty (filtered batches); page 4: items; end.
+    const script: Page<number>[] = [
+      { items: [1], nextCursor: 'a' },
+      { items: [], nextCursor: 'b' },
+      { items: [], nextCursor: 'c' },
+      { items: [2], nextCursor: 'd' },
+      { items: [], nextCursor: null },
+    ];
+    let i = 0;
+    const seen: number[] = [];
+    for await (const n of paginate(async () => script[i++]!)) seen.push(n);
+    expect(seen).toEqual([1, 2]);
+  });
 });
 
 describe('withRetry', () => {
@@ -123,5 +160,11 @@ describe('webhook signature verification', () => {
 
   it('rejects a wrong-length signature without throwing (no timing oracle)', () => {
     expect(verifyWebhookSignature('body', 'deadbeef', 's')).toBe(false);
+  });
+
+  it('accepts uppercase hex (several sources emit uppercase digests)', () => {
+    const body = 'payload';
+    const sig = computeWebhookSignature(body, 'k').toUpperCase();
+    expect(verifyWebhookSignature(body, sig, 'k')).toBe(true);
   });
 });

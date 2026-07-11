@@ -437,22 +437,29 @@ async function main(): Promise<void> {
       console.log('[oweibo] PartitionMaintenance cron disabled (PARTITION_MAINTENANCE_CRON=off)');
     } else {
       const partitionMaintenance = new PartitionMaintenance(pgPool);
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const cron = require('node-cron') as { schedule(expr: string, fn: () => void): unknown };
-      cron.schedule(partitionCronExpr, () => {
+      const partitionTick = (): void => {
         void runWithAdvisoryLock(pgPool!, 'partition_maintenance_tick', async () => {
           const r = await partitionMaintenance.tick();
           console.log('[oweibo] PartitionMaintenance.tick():', {
             ensured: r.rows.length,
             created: r.created,
             skippedDefaultRows: r.skippedDefaultRows,
+            skippedLockTimeout: r.skippedLockTimeout,
           });
         }).catch((err: unknown) => {
           console.error('[oweibo] PartitionMaintenance.tick() failed:',
             err instanceof Error ? err.message : String(err));
         });
-      });
-      console.log(`[oweibo] PartitionMaintenance cron scheduled: ${partitionCronExpr}`);
+      };
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const cron = require('node-cron') as { schedule(expr: string, fn: () => void): unknown };
+      cron.schedule(partitionCronExpr, partitionTick);
+      // Boot tick: a fixed-time daily cron never fires on a process that
+      // isn't running at that time (dev machines, spot workers). Running
+      // once at startup guarantees the window is ensured on every boot;
+      // the advisory lock de-dupes replicas booting together.
+      partitionTick();
+      console.log(`[oweibo] PartitionMaintenance cron scheduled: ${partitionCronExpr} (+boot tick)`);
     }
 
     actionTrustLadder = new ActionTrustLadder(pgPool, {

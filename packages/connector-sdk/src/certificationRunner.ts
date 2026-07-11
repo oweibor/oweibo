@@ -29,7 +29,7 @@ import type {
   CertificationHarness,
   DomainCertificationBattery,
 } from './domainBattery.js';
-import { checkManifestTruthfulness } from './contract/manifestTruthfulness.js';
+import { checkManifestTruthfulness, isSupportFlag } from './contract/manifestTruthfulness.js';
 import { runPortContractTests } from './portContracts.js';
 
 export type CertificationTier = 'experimental' | 'community' | 'verified' | 'enterprise';
@@ -269,10 +269,20 @@ export async function runCertificationSuite(
       ...portReport.demonstrated,
       ...(actionsDemonstrated ? { actions: true } : {}),
     });
+    // Unknown declared keys: the predicate iterates known flags only, so
+    // a typo'd flag (`webhoks`) from a JS/JSON author would be silently
+    // unchecked — surface it as a hard violation, since the author's
+    // declared intent cannot be verified. (A connector built against a
+    // NEWER SDK with genuinely new flags is refused earlier by the
+    // sdkVersion window, §3.7 — this catch is for typos, not skew.)
+    const unknownFlags = Object.keys(bundle.spec.supports ?? {}).filter((k) => !isSupportFlag(k));
     steps.push({
       step: 'manifest_truthfulness',
-      passed: truthfulness.ok,
-      violations: truthfulness.violations.map((v) => v.message),
+      passed: truthfulness.ok && unknownFlags.length === 0,
+      violations: [
+        ...truthfulness.violations.map((v) => v.message),
+        ...unknownFlags.map((k) => `manifest declares unknown supports flag '${k}' — not a capability this SDK defines (typo?)`),
+      ],
       ...(truthfulness.undeclared.length > 0
         ? {
             findings: truthfulness.undeclared.map(

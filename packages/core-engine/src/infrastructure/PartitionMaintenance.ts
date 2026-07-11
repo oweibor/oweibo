@@ -21,13 +21,16 @@ import type { Pool } from 'pg';
 export interface PartitionOutcomeRow {
   readonly parent_table: string;
   readonly partition_name: string;
-  readonly outcome: 'created' | 'exists' | 'skipped_default_rows';
+  readonly outcome: 'created' | 'exists' | 'skipped_default_rows' | 'skipped_lock_timeout';
 }
 
 export interface PartitionMaintenanceReport {
   readonly rows: readonly PartitionOutcomeRow[];
   readonly created: number;
   readonly skippedDefaultRows: number;
+  /** Couldn't get the DDL lock within the function's lock_timeout —
+   *  transient under write pressure; the next tick retries. */
+  readonly skippedLockTimeout: number;
 }
 
 export interface PartitionMaintenanceOptions {
@@ -55,6 +58,7 @@ export class PartitionMaintenance {
     );
     const created = r.rows.filter((x) => x.outcome === 'created');
     const skipped = r.rows.filter((x) => x.outcome === 'skipped_default_rows');
+    const lockTimeouts = r.rows.filter((x) => x.outcome === 'skipped_lock_timeout');
 
     for (const row of created) {
       this.log('info', `created partition ${row.partition_name} of ${row.parent_table}`);
@@ -68,8 +72,18 @@ export class PartitionMaintenance {
         `partition ${row.partition_name} not created: rows for that month already sit in ` +
         `${row.parent_table}_default (manual row-move required to repartition)`);
     }
+    for (const row of lockTimeouts) {
+      this.log('warn',
+        `partition ${row.partition_name} not created: DDL lock unavailable within lock_timeout ` +
+        `(write pressure on ${row.parent_table}) — will retry next tick`);
+    }
 
-    return { rows: r.rows, created: created.length, skippedDefaultRows: skipped.length };
+    return {
+      rows: r.rows,
+      created: created.length,
+      skippedDefaultRows: skipped.length,
+      skippedLockTimeout: lockTimeouts.length,
+    };
   }
 }
 

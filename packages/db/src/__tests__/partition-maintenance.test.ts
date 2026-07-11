@@ -15,7 +15,7 @@ const describeOrSkip = TEST_DB_URL ? describe : describe.skip;
 interface OutcomeRow {
   parent_table: string;
   partition_name: string;
-  outcome: 'created' | 'exists' | 'skipped_default_rows';
+  outcome: 'created' | 'exists' | 'skipped_default_rows' | 'skipped_lock_timeout';
 }
 
 describeOrSkip('ensure_month_partitions (000063)', () => {
@@ -84,5 +84,27 @@ describeOrSkip('ensure_month_partitions (000063)', () => {
       .rejects.toThrow(/must be in \[0, 24\]/);
     await expect(pool.query(`SELECT * FROM oweibo.ensure_month_partitions(-1)`))
       .rejects.toThrow(/must be in \[0, 24\]/);
+  });
+
+  it('rejects a NULL horizon with a clear error, not a loop-bound crash (000064)', async () => {
+    await expect(pool.query(`SELECT * FROM oweibo.ensure_month_partitions(NULL::int)`))
+      .rejects.toThrow(/must be in \[0, 24\], got NULL/);
+  });
+
+  it('concurrent callers both succeed — a lost create race reports exists, never errors (000064)', async () => {
+    // Two sessions race the same horizon. Pre-000064, the loser of a
+    // create race died on an uncaught duplicate_table error. With every
+    // window month already ensured this mostly exercises the read path,
+    // but a month rollover between suite runs makes it a genuine race —
+    // either way both calls MUST resolve.
+    const [a, b] = await Promise.all([
+      pool.query<OutcomeRow>(`SELECT * FROM oweibo.ensure_month_partitions(3)`),
+      pool.query<OutcomeRow>(`SELECT * FROM oweibo.ensure_month_partitions(3)`),
+    ]);
+    expect(a.rows).toHaveLength(8);
+    expect(b.rows).toHaveLength(8);
+    for (const row of [...a.rows, ...b.rows]) {
+      expect(['created', 'exists', 'skipped_default_rows', 'skipped_lock_timeout']).toContain(row.outcome);
+    }
   });
 });

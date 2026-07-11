@@ -220,6 +220,101 @@ describe('K.1 exit gate', () => {
     expect(report.demonstrated.changeFeed).not.toBe(true);
   });
 
+  it('a typo’d supports flag fails certification instead of being silently unchecked', async () => {
+    const source = seededSource();
+    const spec = mockConnectorSpec(source);
+    const bundle = declareConnector({
+      ...spec,
+      // TS would catch this; JS/JSON authors get no such protection —
+      // the cast simulates an untyped manifest.
+      supports: { ...spec.supports, webhoks: true } as unknown as typeof spec.supports,
+    });
+    const report = await runCertificationSuite({
+      bundle,
+      tier: 'community',
+      portContext: makeMockContext(),
+    });
+    expect(report.passed).toBe(false);
+    const truth = report.steps.find((s) => s.step === 'manifest_truthfulness');
+    expect(truth?.violations.join('\n')).toMatch(/unknown supports flag 'webhoks'/);
+  });
+
+  it('a feed that re-crawls on resume passes — as long as it does not claim deltaSync', async () => {
+    const source = seededSource();
+    const spec = mockConnectorSpec(source);
+    const honest = source.changeFeedPort();
+    // Re-crawl-on-resume shape: the listing itself drains normally (the
+    // first hit on the tail returns the caught-up empty page), but a
+    // LATER poll of that same tail cursor replays the feed from the top
+    // — the source treats "resume" as "fresh crawl".
+    const tailSeen = new Set<string>();
+    const recrawling = {
+      ...honest,
+      listChanges: async (ctx: ReturnType<typeof makeMockContext>, cursor: string | null) => {
+        const page = await honest.listChanges(ctx, cursor);
+        if (cursor !== null && page.items.length === 0 && page.nextCursor === cursor) {
+          if (!tailSeen.has(cursor)) {
+            tailSeen.add(cursor);      // the drain's own caught-up hit
+            return page;
+          }
+          return honest.listChanges(ctx, null);  // the harness's tail poll: replay
+        }
+        return page;
+      },
+    };
+    const bundle = declareConnector({
+      ...spec,
+      supports: { changeFeed: true, content: true, acl: true, principals: true, groups: true, activity: true, activitySignals: true, actions: true, webhooks: true },  // no deltaSync claim
+      ports: { ...spec.ports, changeFeed: recrawling },
+    });
+    const report = await runCertificationSuite({
+      bundle,
+      tier: 'community',
+      portContext: makeMockContext(),
+    });
+    // The replay leaves deltaSync undemonstrated (soft) — and since the
+    // manifest never claimed it, certification passes.
+    const truth = report.steps.find((s) => s.step === 'manifest_truthfulness');
+    expect(truth?.passed).toBe(true);
+    expect(report.passed).toBe(true);
+  });
+
+  it('timestamp-style cursors (fresh cursor on every empty poll) drain cleanly', async () => {
+    const source = seededSource();
+    const spec = mockConnectorSpec(source);
+    const honest = source.changeFeedPort();
+    let pollCount = 0;
+    const freshTsPage = () => {
+      pollCount += 1;
+      return { items: [], nextCursor: `ts:${1_700_000_000 + pollCount}` };
+    };
+    const timestampTail = {
+      ...honest,
+      listChanges: async (ctx: ReturnType<typeof makeMockContext>, cursor: string | null) => {
+        // Once at the tail, every cursor is a ts-encoded "now" the mock
+        // never issued — intercept before delegating.
+        if (cursor?.startsWith('ts:')) return freshTsPage();
+        const page = await honest.listChanges(ctx, cursor);
+        if (page.items.length === 0 && page.nextCursor === cursor) {
+          // Tail mints a fresh cursor every poll, like ts-encoded cursors.
+          return freshTsPage();
+        }
+        return page;
+      },
+    };
+    const bundle = declareConnector({
+      ...spec,
+      supports: { changeFeed: true, deltaSync: true },
+      ports: { changeFeed: timestampTail },
+    });
+    const report = await runPortContractTests(bundle, makeMockContext());
+    // Bounded: no "did not progress" false violation, feed demonstrated,
+    // and the tail poll (empty) demonstrates deltaSync.
+    expect(report.violations).toEqual([]);
+    expect(report.demonstrated.changeFeed).toBe(true);
+    expect(report.demonstrated.deltaSync).toBe(true);
+  });
+
   it('pre-K.1 (D.4) bundles skip the new steps entirely', async () => {
     const bundle = declareConnector({
       connectorId: 'legacy-d4',

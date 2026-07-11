@@ -39,12 +39,30 @@ describe('PartitionMaintenance', () => {
     expect(calls[0]!.values).toEqual([3]);
     expect(report.created).toBe(2);
     expect(report.skippedDefaultRows).toBe(1);
+    expect(report.skippedLockTimeout).toBe(0);
     expect(report.rows).toHaveLength(4);
 
     expect(logs.filter((l) => l.level === 'info')).toHaveLength(2);
     const warns = logs.filter((l) => l.level === 'warn');
     expect(warns).toHaveLength(1);
     expect(warns[0]!.line).toMatch(/audit_log_2026_07.*audit_log_default/);
+  });
+
+  it('surfaces lock-timeout skips as warnings and counts them (000064)', async () => {
+    const { pool } = stubPool([
+      { parent_table: 'audit_log', partition_name: 'audit_log_2026_08', outcome: 'skipped_lock_timeout' },
+      { parent_table: 'action_lineage', partition_name: 'action_lineage_y2026m08', outcome: 'exists' },
+    ]);
+    const logs: Array<{ level: string; line: string }> = [];
+    const pm = new PartitionMaintenance(pool, { log: (level, line) => logs.push({ level, line }) });
+
+    const report = await pm.tick();
+
+    expect(report.skippedLockTimeout).toBe(1);
+    expect(report.created).toBe(0);
+    const warns = logs.filter((l) => l.level === 'warn');
+    expect(warns).toHaveLength(1);
+    expect(warns[0]!.line).toMatch(/audit_log_2026_08.*lock_timeout.*retry next tick/);
   });
 
   it('defaults to 2 months ahead and stays quiet when everything exists', async () => {

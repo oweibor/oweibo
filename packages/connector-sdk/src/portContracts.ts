@@ -37,6 +37,16 @@ export interface PortContractReport {
 
 /** Pages a contract drain will walk before declaring the cursor broken. */
 const MAX_CONTRACT_PAGES = 1_000;
+/**
+ * Consecutive empty pages before the drain concludes "caught up". Covers
+ * two real source shapes: filtered feeds that emit a few empty pages
+ * MID-stream with more data behind (keep going), and timestamp-style
+ * cursors whose tail returns an empty page with a FRESH cursor on every
+ * poll (stop — polling that in a loop is never right, and without this
+ * bound the drain would spin to MAX_CONTRACT_PAGES and mis-report a
+ * healthy feed as broken).
+ */
+const MAX_CONSECUTIVE_EMPTY_PAGES = 10;
 
 interface DrainResult<T> {
   readonly items: T[];
@@ -52,6 +62,7 @@ async function drain<T>(
   const violations: string[] = [];
   const seenCursors = new Set<string>();
   let cursor: Cursor | null = null;
+  let consecutiveEmpty = 0;
 
   for (let pages = 0; ; pages++) {
     if (pages >= MAX_CONTRACT_PAGES) {
@@ -76,14 +87,24 @@ async function drain<T>(
       violations.push(`${name}: nextCursor must be an opaque non-empty string or null`);
       return { items, tailCursor: null, violations };
     }
-    // Caught-up delta feed: empty page re-issuing its own cursor is the
-    // standing resume point — the legitimate terminal state.
-    if (page.items.length === 0 && page.nextCursor === cursor) {
-      return { items, tailCursor: page.nextCursor, violations };
-    }
-    if (seenCursors.has(page.nextCursor)) {
-      violations.push(`${name}: cursor ${page.nextCursor} repeated with items — the feed loops`);
-      return { items, tailCursor: page.nextCursor, violations };
+    if (page.items.length === 0) {
+      // Caught-up delta feed, immediate form: an empty page re-issuing
+      // its own cursor is the standing resume point.
+      if (page.nextCursor === cursor) {
+        return { items, tailCursor: page.nextCursor, violations };
+      }
+      // Timestamp-cursor form: empty pages with fresh cursors. Tolerate
+      // a bounded run (mid-stream filtered batches), then call it a tail.
+      consecutiveEmpty += 1;
+      if (consecutiveEmpty >= MAX_CONSECUTIVE_EMPTY_PAGES) {
+        return { items, tailCursor: page.nextCursor, violations };
+      }
+    } else {
+      consecutiveEmpty = 0;
+      if (seenCursors.has(page.nextCursor)) {
+        violations.push(`${name}: cursor ${page.nextCursor} repeated with items — the feed loops`);
+        return { items, tailCursor: page.nextCursor, violations };
+      }
     }
     seenCursors.add(page.nextCursor);
     cursor = page.nextCursor;
@@ -146,10 +167,15 @@ export async function runPortContractTests(
           exercised.push('deltaSync');
           try {
             const again = await cf.listChanges(ctx, d.tailCursor);
+            // Empty poll = true delta feed. A poll that replays items is
+            // NOT a violation — a source that re-crawls on resume is
+            // legitimate as long as it doesn't CLAIM deltaSync; leaving
+            // the flag undemonstrated lets truthfulness make that call.
             if (again.items.length === 0) demonstrated.deltaSync = true;
-            else violations.push('deltaSync: polling the tail cursor replayed items — not a delta feed');
           } catch (err) {
-            violations.push(`deltaSync: tail-cursor poll threw: ${err instanceof Error ? err.message : String(err)}`);
+            // Rejecting a cursor the port itself issued IS a hard
+            // violation — checkpoints must survive restarts (ADR-013).
+            violations.push(`deltaSync: tail-cursor poll threw: ${err instanceof Error ? err.message : String(err)} — a port must accept cursors it previously emitted`);
           }
         }
       }

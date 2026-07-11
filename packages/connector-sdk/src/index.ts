@@ -11,3 +11,5 @@ export * from './declareConnector.js';
 export * from './contractValidator.js';
 export * from './certificationRunner.js';
 export * from './domainBattery.js';
+// ADR-012 contract predicate (INV-15). Ports + certification harness land at K.1.
+export * from './contract/manifestTruthfulness.js';

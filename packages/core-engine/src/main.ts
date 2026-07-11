@@ -96,6 +96,7 @@ import { DomainDepthMetrics }        from './domain/DomainDepthMetrics.js';
 import { SmeFeedbackAggregator }     from './domain/SmeFeedbackAggregator.js';
 import { SmeReviewService }          from './domain/SmeReviewService.js';
 import { runWithAdvisoryLock }       from './infrastructure/runWithAdvisoryLock.js';
+import { PartitionMaintenance }      from './infrastructure/PartitionMaintenance.js';
 import {
   HmacSnapshotSigner,
   HmacSnapshotVerifier,
@@ -425,6 +426,33 @@ async function main(): Promise<void> {
         });
       });
       console.log(`[oweibo] DomainCurrencyMonitor cron scheduled: ${cronExpr}`);
+    }
+
+    // Daily partition-maintenance tick (000063): keeps audit_log +
+    // action_lineage monthly partitions created ahead of rollover so the
+    // 000062 DEFAULT partitions stay empty. Idempotent DDL behind a
+    // SECURITY DEFINER function; the advisory lock only de-dupes replicas.
+    const partitionCronExpr = process.env['PARTITION_MAINTENANCE_CRON'] ?? '30 2 * * *';  // daily 02:30 UTC
+    if (partitionCronExpr.toLowerCase() === 'off' || partitionCronExpr === '') {
+      console.log('[oweibo] PartitionMaintenance cron disabled (PARTITION_MAINTENANCE_CRON=off)');
+    } else {
+      const partitionMaintenance = new PartitionMaintenance(pgPool);
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const cron = require('node-cron') as { schedule(expr: string, fn: () => void): unknown };
+      cron.schedule(partitionCronExpr, () => {
+        void runWithAdvisoryLock(pgPool!, 'partition_maintenance_tick', async () => {
+          const r = await partitionMaintenance.tick();
+          console.log('[oweibo] PartitionMaintenance.tick():', {
+            ensured: r.rows.length,
+            created: r.created,
+            skippedDefaultRows: r.skippedDefaultRows,
+          });
+        }).catch((err: unknown) => {
+          console.error('[oweibo] PartitionMaintenance.tick() failed:',
+            err instanceof Error ? err.message : String(err));
+        });
+      });
+      console.log(`[oweibo] PartitionMaintenance cron scheduled: ${partitionCronExpr}`);
     }
 
     actionTrustLadder = new ActionTrustLadder(pgPool, {

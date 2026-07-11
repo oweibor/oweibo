@@ -45,15 +45,19 @@ CREATE TABLE IF NOT EXISTS oweibo.quota_policies (
                                 'blast_radius_user_count'
                               )),
   scope                      TEXT         NOT NULL DEFAULT '*',
-  window                     TEXT         NOT NULL
-                              CHECK (window IN ('day', 'month', 'year')),
+  -- Named window_kind, not window: WINDOW is a reserved word in Postgres and
+  -- an unquoted `window` column is a syntax error (defect found 2026-07-10 —
+  -- this migration could never have applied as originally written, so the
+  -- rename is compat-safe: no database anywhere has the old shape).
+  window_kind                TEXT         NOT NULL
+                              CHECK (window_kind IN ('day', 'month', 'year')),
   limit_value                BIGINT       NOT NULL CHECK (limit_value > 0),
   cold_start_limit           BIGINT       CHECK (cold_start_limit IS NULL OR cold_start_limit > 0),
   cold_start_duration_days   INTEGER      NOT NULL DEFAULT 30 CHECK (cold_start_duration_days >= 0),
   enforcement_mode           TEXT         NOT NULL DEFAULT 'hard'
                               CHECK (enforcement_mode IN ('soft', 'hard')),
   updated_at                 TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-  PRIMARY KEY (tenant_id, quota_kind, scope, window)
+  PRIMARY KEY (tenant_id, quota_kind, scope, window_kind)
 );
 
 ALTER TABLE oweibo.quota_policies ENABLE ROW LEVEL SECURITY;
@@ -78,11 +82,11 @@ CREATE TABLE IF NOT EXISTS oweibo.quota_consumption (
   tenant_id     UUID         NOT NULL REFERENCES oweibo.tenants(id) ON DELETE CASCADE,
   quota_kind    TEXT         NOT NULL,
   scope         TEXT         NOT NULL DEFAULT '*',
-  window        TEXT         NOT NULL CHECK (window IN ('day', 'month', 'year')),
+  window_kind   TEXT         NOT NULL CHECK (window_kind IN ('day', 'month', 'year')),
   window_start  DATE         NOT NULL,
   consumed      BIGINT       NOT NULL DEFAULT 0 CHECK (consumed >= 0),
   updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-  PRIMARY KEY (tenant_id, quota_kind, scope, window, window_start)
+  PRIMARY KEY (tenant_id, quota_kind, scope, window_kind, window_start)
 );
 
 ALTER TABLE oweibo.quota_consumption ENABLE ROW LEVEL SECURITY;
@@ -101,7 +105,7 @@ CREATE POLICY quota_consumption_platform_admin
 GRANT SELECT, INSERT, UPDATE ON oweibo.quota_consumption TO oweibo_app;
 
 CREATE INDEX IF NOT EXISTS idx_quota_consumption_window
-  ON oweibo.quota_consumption (tenant_id, quota_kind, scope, window, window_start DESC);
+  ON oweibo.quota_consumption (tenant_id, quota_kind, scope, window_kind, window_start DESC);
 
 -- ── budget_insurance_pools ─────────────────────────────────────────────
 -- Opt-in commit-and-protect pool. One row per tenant. The pool covers

@@ -35,6 +35,7 @@ import type {
 } from '@oweibo/core-contracts';
 import { isCoreActionClass, type CoreActionClass } from '@oweibo/core-contracts';
 import { withServiceSpan } from '@oweibo/observability';
+import { isFloorClass } from './ActionClassFloor.js';
 
 // ── Trust modes ────────────────────────────────────────────────────────────
 
@@ -61,13 +62,10 @@ interface ResolvedState {
 // require_approval; demotion requires an explicit operator workflow that is
 // itself audited (RFC-marked, out of scope here).
 
-const CLASSES_ALWAYS_REQUIRE_APPROVAL: ReadonlySet<CoreActionClass> = new Set<CoreActionClass>([
-  'financial.payment',
-  'personnel.access_grant',
-  'personnel.access_revoke',
-  'irreversible.delete_resource',
-  'irreversible.public_publish',
-]);
+// The high-risk "always require approval" set is the platform floor and now
+// lives in ActionClassFloor (single source of truth, also enforced on the pin
+// write path in DryRunRegistry). isFloorClass() is used below to bar
+// auto-promotion of these classes to execute.
 
 interface DefaultRow {
   young: TrustMode;
@@ -926,7 +924,7 @@ async function tryAutoPromote(
   if (state.observations === 0) return null;
   const rate = state.successes / state.observations;
   if (rate < AUTO_PROMOTE_MIN_RATE) return null;
-  if (isCoreActionClass(ctx.actionClass) && CLASSES_ALWAYS_REQUIRE_APPROVAL.has(ctx.actionClass)) {
+  if (isFloorClass(ctx.actionClass)) {
     return null;
   }
   // Atomic compare-and-set: only promote if the row is still in the

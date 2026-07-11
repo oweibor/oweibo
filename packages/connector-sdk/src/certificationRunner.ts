@@ -23,11 +23,14 @@
  * enterprise tier and a warning otherwise.
  */
 import type { ConnectorBundle } from './declareConnector.js';
+import type { ConnectorContext } from './context.js';
 import { validateBundle, type ValidationViolation } from './contractValidator.js';
 import type {
   CertificationHarness,
   DomainCertificationBattery,
 } from './domainBattery.js';
+import { checkManifestTruthfulness } from './contract/manifestTruthfulness.js';
+import { runPortContractTests } from './portContracts.js';
 
 export type CertificationTier = 'experimental' | 'community' | 'verified' | 'enterprise';
 
@@ -35,6 +38,12 @@ export interface CertificationStepReport {
   readonly step: string;
   readonly passed: boolean;
   readonly violations: readonly string[];
+  /**
+   * K.1: non-fatal review findings (complexity gate §3.6, undeclared
+   * capabilities). A finding never flips `passed` — it is surfaced for
+   * human review, not auto-rejected.
+   */
+  readonly findings?: readonly string[];
 }
 
 export interface CertificationReport {
@@ -66,7 +75,24 @@ export interface CertificationRunInput {
     invokeInput: unknown;
     bundle: ConnectorBundle;
   }) => Promise<{ output: unknown; auditRow?: Record<string, unknown> }>;
+
+  // ── K.1 additions ──────────────────────────────────────────────────────
+
+  /**
+   * Context the port contract tests call ports with. Defaults to a
+   * synthetic certification context (no real tenant behind it).
+   */
+  readonly portContext?: ConnectorContext;
+  /**
+   * Authored-code line count for the §3.6 complexity gate. Supplied by
+   * the CI caller (the runner holds a runtime object and cannot count
+   * source lines itself). Omitted → the gate step is skipped.
+   */
+  readonly sourceLineCount?: number;
 }
+
+/** §3.6 review-trigger threshold (Expected to evolve — ops-tunable). */
+export const COMPLEXITY_GATE_LINES = 5_000;
 
 const TIER_ORDER: Record<CertificationTier, number> = {
   experimental: 0,
@@ -216,6 +242,67 @@ export async function runCertificationSuite(
     });
   }
 
+  // ── K.1 steps — presence-gated, tier-independent. A bundle that opts
+  // into the ADR-012 surface (ports and/or supports{}) is held to it at
+  // EVERY tier: even 'experimental' code must not lie in its manifest
+  // (INV-15). Pre-K.1 bundles declare neither field and skip both steps,
+  // so every D.4 connector certifies unchanged.
+  const isK1Bundle = bundle.spec.ports !== undefined || bundle.spec.supports !== undefined;
+  if (isK1Bundle) {
+    const ctx = input.portContext ?? defaultPortContext();
+
+    // Step: per-port contract tests (battery item c).
+    const portReport = await runPortContractTests(bundle, ctx, input.fixtures ?? {});
+    steps.push({
+      step: 'port_contract_tests',
+      passed: portReport.violations.length === 0,
+      violations: portReport.violations,
+    });
+
+    // Step: manifest truthfulness (INV-15, battery item b). The Action
+    // face's demonstration comes from the existing sandbox step — the
+    // runner owns that result, so it is added to `demonstrated` here.
+    const sandboxStep = steps.find((s) => s.step === 'sandbox_round_trip');
+    const actionsDemonstrated =
+      bundle.spec.capabilities.length > 0 && (sandboxStep ? sandboxStep.passed : true);
+    const truthfulness = checkManifestTruthfulness(bundle.spec.supports ?? {}, {
+      ...portReport.demonstrated,
+      ...(actionsDemonstrated ? { actions: true } : {}),
+    });
+    steps.push({
+      step: 'manifest_truthfulness',
+      passed: truthfulness.ok,
+      violations: truthfulness.violations.map((v) => v.message),
+      ...(truthfulness.undeclared.length > 0
+        ? {
+            findings: truthfulness.undeclared.map(
+              (f) => `capability '${f}' is demonstrated but not declared in supports{} (informational)`,
+            ),
+          }
+        : {}),
+    });
+  }
+
+  // Step: complexity gate (§3.6) — a review finding, NEVER an automatic
+  // reject; SharePoint-class sources may exceed budget for defensible
+  // reasons. Runs only when the CI caller supplies a line count.
+  if (input.sourceLineCount !== undefined) {
+    const over = input.sourceLineCount > COMPLEXITY_GATE_LINES;
+    steps.push({
+      step: 'complexity_gate',
+      passed: true,
+      violations: [],
+      ...(over
+        ? {
+            findings: [
+              `connector is ${input.sourceLineCount} lines (> ${COMPLEXITY_GATE_LINES}) — certification review trigger: ` +
+                'a missing SDK capability is built once in the platform, not shipped in the connector',
+            ],
+          }
+        : {}),
+    });
+  }
+
   const passed = steps.every((s) => s.passed);
   return {
     bundle: {
@@ -227,6 +314,16 @@ export async function runCertificationSuite(
     steps,
     violations,
     testSuiteHash: hashSteps(bundle, tier, steps),
+  };
+}
+
+/** Synthetic context for port contract tests when the caller supplies none. */
+function defaultPortContext(): ConnectorContext {
+  return {
+    tenantId: '00000000-0000-0000-0000-00000000ce27',        // synthetic — not a real tenant
+    tenantConnectorId: '00000000-0000-0000-0000-00000000ce28',
+    credentials: {},
+    now: () => new Date(),
   };
 }
 

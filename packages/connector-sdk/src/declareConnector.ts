@@ -46,18 +46,22 @@ import type {
   ConnectorCatalogEntry,
   ConnectorCategory,
 } from '@oweibo/core-contracts';
+import type { ConnectorContext } from './context.js';
+import type { SupportMap } from './contract/manifestTruthfulness.js';
+// Individual port modules, NOT the ports barrel: ports/action.ts imports
+// CapabilityDeclaration from this file, so importing the barrel here would
+// create a cycle. These five have no back-edge.
+import type { ChangeFeedPort } from './ports/changeFeed.js';
+import type { ContentPort } from './ports/content.js';
+import type { AclPort } from './ports/acl.js';
+import type { PrincipalsPort } from './ports/principals.js';
+import type { ActivityPort } from './ports/activity.js';
+
+// Moved to ./context.ts at K.1 (the port modules need it without a cycle);
+// re-exported so pre-K.1 imports from this module keep compiling.
+export type { ConnectorContext } from './context.js';
 
 export type ConnectorSandboxMode = 'mock' | 'sandbox_endpoint' | 'pre_declared_replica';
-
-export interface ConnectorContext {
-  readonly tenantId: string;
-  /** Tenant connector instance id (for credential lookup). */
-  readonly tenantConnectorId: string;
-  /** Resolved credentials — already secrets-manager-decrypted. */
-  readonly credentials: Readonly<Record<string, unknown>>;
-  /** Free-form trace hook authors can use for observability. */
-  readonly trace?: (event: string, attrs?: Record<string, unknown>) => void;
-}
 
 export interface CapabilityResult {
   readonly status: 'ok' | 'failed';
@@ -125,6 +129,37 @@ export interface CapabilityDeclaration {
   readonly rollback?: RollbackAdapterDeclaration;
 }
 
+/**
+ * K.1 source-adapter bindings (ADR-012 §3.1 `ports:`). Mirrors
+ * ports/index.ts `PortBindings`; declared structurally here to keep this
+ * module cycle-free (see the import comment above).
+ */
+export interface ConnectorPortBindings {
+  readonly changeFeed?: ChangeFeedPort;
+  readonly content?: ContentPort;
+  readonly acl?: AclPort;
+  readonly principals?: PrincipalsPort;
+  readonly activity?: ActivityPort;
+}
+
+/**
+ * K.1 lifecycle hooks (ADR-012 §3.1). Hooks, not ports: the lifecycle
+ * state machine they feed is ADR-004's, and everything else a "connector
+ * lifecycle" needs — scheduling, retries, health evaluation, bootstrap,
+ * token refresh — is platform runtime (P9), never author surface.
+ */
+export interface ValidateConnectionResult {
+  readonly ok: boolean;
+  /**
+   * The *instance's* demonstrated capability subset — what this tenant's
+   * scopes/license actually allow, which may be less than the manifest's
+   * maximum claim (`supports{}` governs the catalog claim; this governs
+   * the install — ADR-012 §3.3).
+   */
+  readonly effectiveSupports: SupportMap;
+  readonly detail?: string;
+}
+
 export interface DeclareConnectorSpec {
   readonly connectorId: string;
   readonly displayName: string;
@@ -136,6 +171,37 @@ export interface DeclareConnectorSpec {
   readonly recommendedFor?: readonly string[];
   readonly certificationTarget: CertificationTier;
   readonly certifiedFor?: readonly string[];
+
+  // ── K.1 (ADR-012 §3.1) additive manifest extension — all optional; ────
+  // every D.4 connector keeps validating unchanged.
+
+  /** SDK compatibility declaration; checked at load (N/N−1 window, §3.7). */
+  readonly sdkVersion?: string;
+  /** §10.4 tenant-install axis. NOT certificationTarget (two axes, §3.4). */
+  readonly enablementTier?: 0 | 1 | 2;
+  /** Liveness cadence handed to the scheduler (ADR-013). Default 300. */
+  readonly heartbeatSeconds?: number;
+  /** Region constraint (§18.3); carried, enforced by governance. */
+  readonly dataResidency?: string;
+  /**
+   * The manifest's capability claim set (INV-15). Deliberately NOT
+   * cross-checked against `ports` here: certification is the honesty
+   * gate — a lying manifest must reach the harness and FAIL there
+   * (the K.1 exit gate), not fail to construct.
+   */
+  readonly supports?: SupportMap;
+  /** Source-adapter implementations (§3.2). */
+  readonly ports?: ConnectorPortBindings;
+  /** Field → freshness class. Carried; semantics are ADR-008's. */
+  readonly freshnessClasses?: Readonly<Record<string, string>>;
+
+  // Lifecycle hooks (§3.1) — the ONLY author-side lifecycle surface.
+
+  /** Install-time check driving tenant_connectors.status pending → active. */
+  validateConnection?(ctx: ConnectorContext): Promise<ValidateConnectionResult>;
+  /** Present iff supports.webhooks — both or neither (webhook truthfulness). */
+  registerWebhook?(ctx: ConnectorContext): Promise<void>;
+  unregisterWebhook?(ctx: ConnectorContext): Promise<void>;
 }
 
 export interface ConnectorBundle {
@@ -175,6 +241,33 @@ export function declareConnector(spec: DeclareConnectorSpec): ConnectorBundle {
     }
   }
 
+  // ── K.1 structural invariants. Deliberately NOT here: supports↔ports
+  // consistency — that is certification's honesty gate (INV-15), and a
+  // lying manifest must construct fine and then FAIL the harness.
+
+  // Invariant 4: enablementTier, when declared, is 0|1|2 (§10.4 axis).
+  if (spec.enablementTier !== undefined && ![0, 1, 2].includes(spec.enablementTier)) {
+    throw new Error(
+      `declareConnector(${spec.connectorId}): enablementTier must be 0, 1, or 2 — got ${String(spec.enablementTier)}`,
+    );
+  }
+  // Invariant 5: heartbeatSeconds, when declared, is a positive integer.
+  if (
+    spec.heartbeatSeconds !== undefined &&
+    (!Number.isInteger(spec.heartbeatSeconds) || spec.heartbeatSeconds <= 0)
+  ) {
+    throw new Error(
+      `declareConnector(${spec.connectorId}): heartbeatSeconds must be a positive integer — got ${String(spec.heartbeatSeconds)}`,
+    );
+  }
+  // Invariant 6: webhook hooks come as a pair (registration without a
+  // teardown path leaks source-side subscriptions on uninstall).
+  if (Boolean(spec.registerWebhook) !== Boolean(spec.unregisterWebhook)) {
+    throw new Error(
+      `declareConnector(${spec.connectorId}): registerWebhook and unregisterWebhook must both be declared or both be omitted`,
+    );
+  }
+
   return {
     spec,
     catalogEntry: {
@@ -202,6 +295,16 @@ export function declareConnector(spec: DeclareConnectorSpec): ConnectorBundle {
       recommendedFor: spec.recommendedFor ?? [],
       certification: spec.certificationTarget,
       certifiedFor: spec.certifiedFor ?? [],
+      // K.1 additive manifest fields — emitted only when declared, so
+      // pre-K.1 .connector.json snapshots stay byte-identical.
+      ...(spec.sdkVersion !== undefined ? { sdkVersion: spec.sdkVersion } : {}),
+      ...(spec.enablementTier !== undefined ? { enablementTier: spec.enablementTier } : {}),
+      ...(spec.heartbeatSeconds !== undefined ? { heartbeatSeconds: spec.heartbeatSeconds } : {}),
+      ...(spec.dataResidency !== undefined ? { dataResidency: spec.dataResidency } : {}),
+      ...(spec.supports !== undefined
+        ? { supports: Object.fromEntries(Object.entries(spec.supports).filter(([, v]) => typeof v === 'boolean')) }
+        : {}),
+      ...(spec.freshnessClasses !== undefined ? { freshnessClasses: spec.freshnessClasses } : {}),
     },
   };
 }

@@ -25,6 +25,7 @@ import { createConnectorsRouter } from './routes/connectors.routes.js';
 import { createTemplatesRouter } from './routes/templates.routes.js';
 import { createInternalRouter } from './routes/internal.routes.js';
 import { createAuthMiddleware } from './middleware/authenticate.js';
+import { requireScopes } from './middleware/authorize.js';
 import { openapiSpec } from './openapi.js';
 import type { SecretsManager } from '../secrets/SecretsManager.js';
 import type { Pool } from 'pg';
@@ -170,37 +171,36 @@ export async function createServer(
     }),
   );
 
-  // Auth + rate limiting for all API routes
-  const jwtCreds = await deps.secrets.getInfraCredentials('jwt');
-  const jwtSecret = jwtCreds['JWT_SECRET'] ?? 'dev-secret-change-me';
-  // Fail-closed if a real deployment ever boots with the placeholder secret.
-  // Tokens signed with this value are forgeable by anyone reading the source.
-  if (jwtSecret === 'dev-secret-change-me' && process.env['NODE_ENV'] === 'production') {
-    throw new Error(
-      'JWT_SECRET is the development placeholder. ' +
-      'Set a real secret in the secrets manager before starting in production.',
-    );
-  }
-  const auth = createAuthMiddleware({ jwtSecret });
+  // Auth + rate limiting for all API routes.
+  // Tokens are RS256, minted by apps/identity and verified against its JWKS
+  // endpoint (no shared secret). Config is read from the same env vars the
+  // identity service uses so issuer/audience/kid line up.
+  const identityUrl = process.env['IDENTITY_URL'] ?? 'http://localhost:3110';
+  const auth = createAuthMiddleware({
+    jwksUri:     process.env['JWKS_URI'] ?? `${identityUrl}/.well-known/jwks.json`,
+    issuer:      process.env['JWT_ISSUER']   ?? 'https://identity.oweibo.io',
+    audience:    process.env['JWT_AUDIENCE'] ?? 'oweibo-api',
+    allowedKids: [process.env['JWT_KEY_ID'] ?? 'oweibo-rs256-v1'],
+  });
   const rateLimiter = createRateLimiter(cfg.rateLimitWindowMs, cfg.rateLimitMax);
 
   // API v1 routes
   const v1 = express.Router();
   v1.use(rateLimiter);
   v1.use(auth);
-  v1.use('/tasks', createTasksRouter({
+  v1.use('/tasks', requireScopes({ read: ['tasks:read'], write: ['tasks:write'] }), createTasksRouter({
     intentPipeline: deps.intentPipeline,
     taskEventBus: deps.taskEventBus,
     interventionGateway: deps.interventionGateway,
     taskStore: deps.taskStore,
   }));
-  v1.use('/hitl', createHITLRouter({ hitlGateway: deps.hitlGateway }));
-  v1.use('/skills', createSkillsRouter());
+  v1.use('/hitl', requireScopes({ read: ['hitl:read'], write: ['hitl:decide'] }), createHITLRouter({ hitlGateway: deps.hitlGateway }));
+  v1.use('/skills', requireScopes({ read: ['tasks:read'], write: ['tasks:write'] }), createSkillsRouter());
 
   // T.−1: action trust ladder routes. Mounted independently of the platform
   // routes — the gate is a tenant-scoped service, not a platform-admin one.
   if (deps.actionTrustLadder && deps.dryRunRegistry && deps.shadowExecutor) {
-    v1.use('/actions', createActionsRouter({
+    v1.use('/actions', requireScopes({ read: ['tasks:read'], write: ['tasks:write'] }), createActionsRouter({
       trustLadder: deps.actionTrustLadder,
       registry: deps.dryRunRegistry,
       shadowExecutor: deps.shadowExecutor,
@@ -214,7 +214,7 @@ export async function createServer(
   // was `/actions/*` (round-5 audit) — moved here so the admin-web pages
   // hit a single tenant-scoped base.
   if (deps.multiPartyApproval && deps.quotaService) {
-    v1.use('/tenants/:tenantId/actions', createActionsExtendedRouter({
+    v1.use('/tenants/:tenantId/actions', requireScopes({ read: ['hitl:read', 'tenant:settings:read'], write: ['hitl:decide', 'tenant:settings:write'] }), createActionsExtendedRouter({
       multiPartyApproval: deps.multiPartyApproval,
       quotaService: deps.quotaService,
     }));
@@ -226,7 +226,7 @@ export async function createServer(
   // coexist cleanly. Registry alone enables the plan reads; rollback
   // endpoints additionally require RollbackOrchestrator (else 503).
   if (deps.dryRunRegistry) {
-    v1.use('/tenants/:tenantId/actions', createTenantActionsRouter({
+    v1.use('/tenants/:tenantId/actions', requireScopes({ read: ['hitl:read', 'tenant:settings:read'], write: ['hitl:decide', 'tenant:settings:write'] }), createTenantActionsRouter({
       registry: deps.dryRunRegistry,
       ...(deps.rollbackOrchestrator ? { rollbackOrchestrator: deps.rollbackOrchestrator } : {}),
     }));
@@ -238,7 +238,7 @@ export async function createServer(
   // (FORENSIC_REPLAY_ENABLED=false or no storage configured) the routes do
   // not mount at all — the admin pages surface a load error.
   if (deps.hitlHandoff && deps.forensicStorage) {
-    v1.use('/tenants/:tenantId/forensics', createForensicsRouter({
+    v1.use('/tenants/:tenantId/forensics', requireScopes({ read: ['tenant:audit:read'], write: ['hitl:decide'] }), createForensicsRouter({
       hitlHandoff:    deps.hitlHandoff,
       storage:        deps.forensicStorage,
       ...(deps.actionReplay ? { actionReplay: deps.actionReplay } : {}),
@@ -247,7 +247,7 @@ export async function createServer(
 
   // F.4.2: lineage routes (read-side admin surface).
   if (deps.lineageRecorder) {
-    v1.use('/tenants/:tenantId/lineage', createLineageRouter({
+    v1.use('/tenants/:tenantId/lineage', requireScopes({ read: ['tenant:audit:read'], write: ['tenant:audit:read'] }), createLineageRouter({
       lineage: deps.lineageRecorder,
     }));
   }
@@ -260,7 +260,7 @@ export async function createServer(
     deps.domainRegistry && deps.tenantDomainBindings && deps.tenantDomainBindingLookup
     && deps.smeReviewService && deps.domainDepthMetrics && deps.complianceEvaluations
   ) {
-    v1.use('/tenants/:tenantId/domains', createDomainsRouter({
+    v1.use('/tenants/:tenantId/domains', requireScopes({ read: ['tenant:settings:read'], write: ['tenant:settings:write'] }), createDomainsRouter({
       registry:        deps.domainRegistry,
       bindingService:  deps.tenantDomainBindings,
       bindingLookup:   deps.tenantDomainBindingLookup,
@@ -272,7 +272,7 @@ export async function createServer(
 
   // F.4.6: calibration snapshot — admin badge consumer.
   if (deps.calibrationService) {
-    v1.use('/tenants/:tenantId/calibration', createCalibrationRouter({
+    v1.use('/tenants/:tenantId/calibration', requireScopes({ read: ['tenant:settings:read'], write: ['tenant:settings:write'] }), createCalibrationRouter({
       calibration: deps.calibrationService,
     }));
   }
@@ -285,7 +285,7 @@ export async function createServer(
     deps.approvalSlaService && deps.multiPartyApproval
     && deps.rateLimitPolicyResolver && deps.quotaService
   ) {
-    v1.use('/tenants/:tenantId/actions/policies', createPoliciesRouter({
+    v1.use('/tenants/:tenantId/actions/policies', requireScopes({ read: ['tenant:settings:read'], write: ['tenant:settings:write'] }), createPoliciesRouter({
       sla:        deps.approvalSlaService,
       multiparty: deps.multiPartyApproval,
       ratelimit:  deps.rateLimitPolicyResolver,
@@ -296,7 +296,7 @@ export async function createServer(
   // F.4.7: connectors admin surface. Requires catalog + per-tenant
   // service. Optional binding lookup narrows recommendations by domain.
   if (deps.connectorRegistry && deps.tenantConnectorService) {
-    v1.use('/tenants/:tenantId/connectors', createConnectorsRouter({
+    v1.use('/tenants/:tenantId/connectors', requireScopes({ read: ['tenant:settings:read'], write: ['tenant:settings:write'] }), createConnectorsRouter({
       catalog:          deps.connectorRegistry,
       tenantConnectors: deps.tenantConnectorService,
       ...(deps.tenantDomainBindingLookup
@@ -307,13 +307,13 @@ export async function createServer(
 
   // F.4.7: tenant template catalog read surface.
   if (deps.tenantTemplateRegistry) {
-    v1.use('/tenants/:tenantId/templates', createTemplatesRouter({
+    v1.use('/tenants/:tenantId/templates', requireScopes({ read: ['tenant:settings:read'], write: ['tenant:settings:write'] }), createTemplatesRouter({
       templates: deps.tenantTemplateRegistry,
     }));
   }
 
   if (deps.pool && deps.operationalMode) {
-    v1.use('/platform', createPlatformRouter({
+    v1.use('/platform', requireScopes({ read: ['platform:tenants:read'], write: ['platform:config:write'] }), createPlatformRouter({
       pool:            deps.pool,
       operationalMode: deps.operationalMode,
       ...(deps.promotionGate      ? { promotionGate:      deps.promotionGate }      : {}),

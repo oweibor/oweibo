@@ -27,6 +27,16 @@ export const auth = betterAuth({
     updateAge:  3600, // re-issue cookie after 1 h of activity
   },
 
+  // Force UUID primary keys. oweibo.users.id is UUID and the
+  // betterauth_user_sync trigger casts NEW.id::uuid on every insert —
+  // BetterAuth's default id generator produces non-UUID strings, which
+  // would make that cast (and therefore every sign-up) fail.
+  advanced: {
+    database: {
+      generateId: 'uuid',
+    },
+  },
+
   plugins: [
     organization(),
   ],

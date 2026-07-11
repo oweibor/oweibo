@@ -25,6 +25,27 @@ module.exports = {
       to:   { path: '^packages/module-' },
     },
     {
+      // ADR-000 / INV-17: connectors load only via the composition root
+      // (packages/connectors/src/index.ts); the engine never imports one.
+      name: 'core-engine-cannot-import-connectors',
+      severity: 'error',
+      comment: 'INV-17 (ADR-000) — core-engine never imports an individual connector; ' +
+               'connectors are loaded via the registry/composition root only.',
+      from: { path: '^packages/core-engine' },
+      to:   { path: '^packages/connectors($|/)' },
+    },
+    {
+      // ADR-000 / INV-17: connectors depend ONLY on the SDK. The composition root
+      // (src/index.ts) is the single exemption — it registers connectors against the
+      // engine-provided registry. Vacuously green until packages/connectors/ exists (K.1).
+      name: 'connectors-import-only-sdk',
+      severity: 'error',
+      comment: 'INV-17 (ADR-000) — connectors depend only on connector-sdk; ' +
+               'only the composition root (src/index.ts) may touch anything else.',
+      from: { path: '^packages/connectors($|/)', pathNot: '/__tests__/|^packages/connectors/src/index\\.ts$' },
+      to:   { path: '^packages/(?!connector-sdk($|/)|connectors($|/))' },
+    },
+    {
       name: 'core-contracts-cannot-import-core-engine',
       severity: 'error',
       comment: 'core-contracts is the zero-dependency contract layer.',

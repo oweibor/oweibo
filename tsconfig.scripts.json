@@ -19,6 +19,8 @@
     "scripts/seed-langfuse-prompts.ts",
     "scripts/backfill-tenant-bootstrap.ts",
     "scripts/check-bootstrap-tables.ts",
-    "scripts/verify-no-dropped-events.ts"
+    "scripts/verify-no-dropped-events.ts",
+    "scripts/db-setup.ts",
+    "scripts/seed-admin.ts"
   ]
 }

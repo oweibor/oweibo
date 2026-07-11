@@ -19,6 +19,14 @@
     "check-no-dist-tracked": "bash scripts/check-no-dist-tracked.sh",
     "type-check:scripts": "tsc --noEmit --project tsconfig.scripts.json",
     "ci": "pnpm check-no-dist-tracked && pnpm build && pnpm type-check && pnpm type-check:scripts && pnpm assert-tests && pnpm check-rls && pnpm check-multi-replica-safety && pnpm test",
+    "dev:up": "docker compose -f docker-compose.dev.yml up -d",
+    "dev:down": "docker compose -f docker-compose.dev.yml down",
+    "gen:keys": "bash scripts/gen-jwt-keys.sh",
+    "db:setup": "node --env-file=.env.dev --import tsx scripts/db-setup.ts",
+    "seed:admin": "node --env-file=.env.dev --import tsx scripts/seed-admin.ts",
+    "dev:identity": "node --env-file=.env.dev --import tsx apps/identity/src/index.ts",
+    "dev:engine": "node --env-file=.env.dev --import tsx packages/core-engine/src/main.ts",
+    "dev:web": "pnpm --filter @oweibo/admin-web dev",
     "prepare": "husky"
   },
   "devDependencies": {

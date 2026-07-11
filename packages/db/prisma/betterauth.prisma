@@ -1,0 +1,137 @@
+// betterauth.prisma — creation-only schema for the betterauth.* tables.
+//
+// WHY THIS FILE EXISTS
+// --------------------
+// BetterAuth's Prisma adapter does NOT create its own tables at runtime; it
+// expects them to already exist. The oweibo.* tables are created by the raw
+// SQL migrations (they carry RLS, partitioning, triggers, and functions that
+// `prisma db push` cannot express), so a full `prisma db push` of the main
+// schema is not viable. This file contains ONLY the betterauth models, so
+// `db-setup` can run:
+//
+//     prisma db push --schema packages/db/prisma/betterauth.prisma --skip-generate
+//
+// to create exactly the betterauth.* tables — with the precise (camelCase)
+// column names and types BetterAuth queries — and nothing else. 001's
+// betterauth_user_sync trigger then has a real betterauth.users table to
+// attach to.
+//
+// KEEP IN SYNC with the Ba* models in schema.prisma (which exist there only
+// so the generated @oweibo/db client is type-safe). Both must match the
+// BetterAuth version in apps/identity (better-auth + organization plugin).
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
+  output          = "../node_modules/.prisma/betterauth-client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["betterauth"]
+}
+
+model BaUser {
+  id            String   @id
+  name          String
+  email         String   @unique
+  emailVerified Boolean
+  image         String?
+  createdAt     DateTime
+  updatedAt     DateTime
+
+  sessions BaSession[]
+  accounts BaAccount[]
+
+  @@map("users")
+  @@schema("betterauth")
+}
+
+model BaSession {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime
+  updatedAt DateTime
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      BaUser   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+  @@schema("betterauth")
+}
+
+model BaAccount {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  BaUser    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime
+  updatedAt             DateTime
+
+  @@map("accounts")
+  @@schema("betterauth")
+}
+
+model BaVerification {
+  id         String    @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime?
+  updatedAt  DateTime?
+
+  @@map("verifications")
+  @@schema("betterauth")
+}
+
+model BaOrganization {
+  id        String   @id
+  name      String
+  slug      String?  @unique
+  logo      String?
+  createdAt DateTime
+  metadata  String?
+
+  members     BaMember[]
+  invitations BaInvitation[]
+
+  @@map("organizations")
+  @@schema("betterauth")
+}
+
+model BaMember {
+  id             String         @id
+  organizationId String
+  organization   BaOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String
+  role           String
+  createdAt      DateTime
+
+  @@map("members")
+  @@schema("betterauth")
+}
+
+model BaInvitation {
+  id             String         @id
+  organizationId String
+  organization   BaOrganization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  email          String
+  role           String?
+  status         String
+  expiresAt      DateTime
+  inviterId      String
+
+  @@map("invitations")
+  @@schema("betterauth")
+}

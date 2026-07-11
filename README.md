@@ -413,68 +413,87 @@ Single beefy host (e.g. Hetzner AX52: 8c/16t, 64 GiB RAM, 2× 1 TiB NVMe) costs 
 
 ### Prerequisites
 
-- Docker and Docker Compose
-- Node.js >= 20, pnpm >= 9
-- A running Postgres 16 instance (or use the compose stack)
+- Docker + Docker Compose (for the dev data plane)
+- Node.js >= 20 (22 recommended), pnpm >= 9
+- OpenSSL on `PATH` (to generate the JWT keypair)
 
-### 1. Clone and install
+### Quick start — the web UI
+
+This brings the platform up far enough to **log into the admin UI at
+http://localhost:3120**. It needs three long-running processes — Postgres/Redis
+(Docker), the identity service, and admin-web — plus a one-time database, key,
+and admin-user setup. Every step below is a root `package.json` script.
 
 ```bash
-git clone git@github.com:oweibor/oweibo.git
-cd oweibo
+# 1. Install, generate the Prisma client, build the workspace packages
 pnpm install
+pnpm --filter @oweibo/db exec prisma generate
+pnpm build
+
+# 2. Start the dev data plane (Postgres 16 + Redis 7)
+pnpm dev:up
+
+# 3. Create the local env file, then generate an RS256 JWT keypair into it
+cp .env.dev.example .env.dev
+pnpm gen:keys
+
+# 4. Create the schema:
+#      - betterauth.* tables via a scoped `prisma db push`
+#      - every oweibo.* SQL migration, in order, tracked in schema_migrations
+pnpm db:setup
+
+# 5. Start the identity service (port 3110) — leave it running
+pnpm dev:identity
+
+# 6. In a second terminal, seed the first platform_admin
+#    (defaults: admin@oweibo.local / ChangeMe-12345! — override via .env.dev)
+pnpm seed:admin
+
+# 7. In a third terminal, start the admin UI (port 3120)
+pnpm dev:web
 ```
 
-### 2. Configure
+Open http://localhost:3120, sign in with the seeded admin, and you land on the
+platform **Tenants** page.
+
+> **Note:** the legacy `docker-compose.yml` (Ollama, Qdrant, SearXNG,
+> observability) is the agent/execution stack and is **not** required to reach
+> the web UI. The platform data plane lives in `docker-compose.dev.yml`, and
+> `.env.dev` is loaded per-service via Node's `--env-file` (see the `dev:*`
+> scripts). `.env.dev` is git-ignored — never commit real secrets.
+
+### The core-engine API (tenant + task pages, CLI, REST)
+
+The tenant-scoped pages (tasks, actions, domains) and the CLI/REST surfaces
+call the **core-engine API** on port 3100 (`packages/core-engine/src/main.ts`).
+It uses the same `.env.dev` (`DATABASE_URL`, `REDIS_URL`, and the `IDENTITY_URL`
+/ `JWT_ISSUER` / `JWT_AUDIENCE` / `JWT_KEY_ID` used to verify RS256 tokens
+against identity's JWKS). Start it as a fourth process:
 
 ```bash
-cp config.env.template config.env
-# Edit config.env — see Environment variables section below
+# 4th terminal — identity must be up (core-engine fetches its JWKS)
+pnpm dev:engine
 ```
 
-### 3. Start the infrastructure stack
+Then, in the admin UI, use the tenant switcher to select a tenant and the
+tenant-scoped pages will load from core-engine. The CLI and REST API use the
+same tokens:
 
 ```bash
-docker compose up -d
-```
-
-This starts Ollama, Qdrant, Redis, SearXNG, and a Docker socket proxy. Postgres and NATS are added in v1 compose updates.
-
-### 4. Run database migrations
-
-```bash
-# Apply the initial oweibo schema and RLS policies
-psql $DATABASE_URL -f packages/db/migrations/001_initial_schema.sql
-
-# Generate the Prisma client
-pnpm --filter @oweibo/db db:generate
-```
-
-### 5. Start the services
-
-```bash
-# Identity service (port 3110)
-pnpm --filter @oweibo/identity dev
-
-# Orchestration pipeline (port 3100)
-pnpm --filter kilo-pipeline dev
-```
-
-### 6. Log in and submit a task
-
-```bash
-# Authenticate — stores credentials in ~/.oweibo/credentials
-oweibo login --email you@example.com
-
-# Submit a task and stream events
+# CLI — stores credentials in ~/.oweibo/credentials
+oweibo login --email admin@oweibo.local
 oweibo task submit "Add a /healthz endpoint to the Express app" --wait
 
-# Or use the REST API directly
-curl -X POST http://localhost:3100/task \
+# …or the REST API directly (RS256 Bearer minted by identity)
+curl -X POST http://localhost:3100/api/v1/tasks \
   -H "Authorization: Bearer $OWEIBO_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"instruction": "Add a /healthz endpoint to the Express app in workspace/my-project"}'
+  -d '{"instruction": "Add a /healthz endpoint to the Express app"}'
 ```
+
+> core-engine verifies tokens against identity's JWKS (RS256) — there is no
+> shared JWT secret. It fetches `IDENTITY_URL/.well-known/jwks.json` lazily on
+> the first authenticated request, so identity should be running first.
 
 ### CLI quick-reference
 

@@ -26,24 +26,34 @@ describeOrSkip('RLS belt-and-suspenders', () => {
   beforeAll(async () => {
     db = new PrismaClient({ datasources: { db: { url: TEST_DB_URL } } });
 
-    // Seed two tenants directly as superuser (bypasses RLS)
-    const a = await db.$queryRaw<[{ id: string }]>`
-      INSERT INTO oweibo.tenants (name, slug, quotas)
-      VALUES ('Tenant A', 'tenant-a-rls-test', '{}')
-      RETURNING id
-    `;
-    const b = await db.$queryRaw<[{ id: string }]>`
-      INSERT INTO oweibo.tenants (name, slug, quotas)
-      VALUES ('Tenant B', 'tenant-b-rls-test', '{}')
-      RETURNING id
-    `;
-    tenantAId = (a[0] as { id: string }).id;
-    tenantBId = (b[0] as { id: string }).id;
+    // Seed two tenants under platform_admin. Since migration 000015 the
+    // tenants bypass policy requires CURRENT_USER = 'platform_admin' (not the
+    // GUC), so a plain oweibo_app connection cannot insert directly — and the
+    // suite must connect as oweibo_app or RLS would not bind at all.
+    const seeded = await db.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL ROLE platform_admin`);
+      const a = await tx.$queryRaw<[{ id: string }]>`
+        INSERT INTO oweibo.tenants (name, slug, quotas)
+        VALUES ('Tenant A', 'tenant-a-rls-test', '{}')
+        RETURNING id
+      `;
+      const b = await tx.$queryRaw<[{ id: string }]>`
+        INSERT INTO oweibo.tenants (name, slug, quotas)
+        VALUES ('Tenant B', 'tenant-b-rls-test', '{}')
+        RETURNING id
+      `;
+      return { a: (a[0] as { id: string }).id, b: (b[0] as { id: string }).id };
+    });
+    tenantAId = seeded.a;
+    tenantBId = seeded.b;
   });
 
   afterAll(async () => {
-    // Clean up test tenants
-    await db.$executeRaw`DELETE FROM oweibo.tenants WHERE slug IN ('tenant-a-rls-test','tenant-b-rls-test')`;
+    // Clean up test tenants (platform_admin — same reason as beforeAll)
+    await db.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL ROLE platform_admin`);
+      await tx.$executeRaw`DELETE FROM oweibo.tenants WHERE slug IN ('tenant-a-rls-test','tenant-b-rls-test')`;
+    });
     await db.$disconnect();
   });
 
@@ -58,9 +68,24 @@ describeOrSkip('RLS belt-and-suspenders', () => {
     expect(rows).toHaveLength(0);
   });
 
-  it('platform_admin_bypass allows cross-tenant SELECT', async () => {
+  it('the app.is_platform_admin GUC does NOT bypass RLS (000015 hardening)', async () => {
+    // Pre-000015 this GUC granted bypass — which any oweibo_app transaction
+    // could SET LOCAL, making it a privilege-escalation hole. 000015 replaced
+    // it with a role check. The original version of this test asserted the
+    // GUC bypass WORKED, i.e. it asserted the vulnerability (found 2026-07-10
+    // when the suite first ran against a post-000015 database).
     const rows = await db.$transaction(async (tx) => {
       await tx.$executeRawUnsafe(`SET LOCAL app.is_platform_admin = 'true'`);
+      return tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM oweibo.tenants WHERE id = ${tenantBId}::uuid
+      `;
+    });
+    expect(rows).toHaveLength(0);
+  });
+
+  it('SET LOCAL ROLE platform_admin allows cross-tenant SELECT (the sanctioned bypass)', async () => {
+    const rows = await db.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`SET LOCAL ROLE platform_admin`);
       return tx.$queryRaw<{ id: string }[]>`
         SELECT id FROM oweibo.tenants WHERE id = ${tenantBId}::uuid
       `;

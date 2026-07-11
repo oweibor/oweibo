@@ -21,8 +21,14 @@ interface Frontmatter {
   applies_to?: unknown;
 }
 
-function parseFrontmatter(raw: string): { fm: Frontmatter; body: string } {
-  if (!raw.startsWith('---\n') && !raw.startsWith('---\r\n')) {
+function parseFrontmatter(rawInput: string): { fm: Frontmatter; body: string } {
+  // Normalize CRLF: on Windows checkouts (core.autocrlf) every line carries a
+  // trailing \r, which the (.*)$ key regex below cannot anchor past — every
+  // frontmatter key silently parsed as missing (found 2026-07-10). The real
+  // SkillRegistry parser uses a YAML library and is not affected; this
+  // structural mirror must be equally line-ending-agnostic.
+  const raw = rawInput.replace(/\r\n/g, '\n');
+  if (!raw.startsWith('---\n')) {
     throw new Error('missing leading --- delimiter');
   }
   const end = raw.indexOf('\n---', 3);

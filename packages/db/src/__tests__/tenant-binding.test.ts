@@ -8,6 +8,7 @@
  *   - TEST_DATABASE_URL configured
  *   - All migrations applied (through 20260519_000018_tenant_binding_lookup.sql)
  */
+import './test-env.js'; // MUST precede withTenantContext (hoisted PrismaClient reads DATABASE_URL)
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { Pool } from 'pg';
 import {

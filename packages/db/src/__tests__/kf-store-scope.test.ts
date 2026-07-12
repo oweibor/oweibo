@@ -40,6 +40,8 @@ const TENANT_SCOPED: string[] = [
   // ADR-010 schema chapter
   'kf_acl_snapshots',
   'kf_membership_records',
+  // ADR-010 full (ratified 2026-07-11) §3.4 — K.2 principal seeds
+  'kf_principal_seeds',
   // ADR-007 schema chapter
   'kf_provenance',
   // ADR-013 §3.1

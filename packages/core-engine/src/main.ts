@@ -494,7 +494,11 @@ async function main(): Promise<void> {
         err instanceof Error ? err.message : String(err));
       connectorRegistry = ConnectorRegistry.fromEntries([]);
     }
-    tenantConnectorService = new PgTenantConnectorService(pgPool);
+    // K.2 (arch §9.5): install-order enforcement — content connectors
+    // refuse to install until an identity connector is active.
+    tenantConnectorService = new PgTenantConnectorService(pgPool, {
+      identityConnectorIds: ['google-workspace-idp'],
+    });
     tenantTemplateRegistry = new TenantTemplateRegistry(pgPool);
 
     // ── F.2.3: forensic packet pipeline + HITL handoff ────────────────────

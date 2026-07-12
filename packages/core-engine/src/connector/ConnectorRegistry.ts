@@ -137,8 +137,21 @@ function validateEntry(e: unknown, source: string): asserts e is ConnectorCatalo
   if (!o.credentialSchema || typeof o.credentialSchema !== 'object') {
     throw new Error(`ConnectorRegistry: ${source} missing credentialSchema`);
   }
-  if (!Array.isArray(o.capabilities) || o.capabilities.length === 0) {
-    throw new Error(`ConnectorRegistry: ${source} has no capabilities`);
+  if (!Array.isArray(o.capabilities)) {
+    throw new Error(`ConnectorRegistry: ${source} has no capabilities array`);
+  }
+  // K.2 amendment (ADR-012 §3.2 / arch §9.5): a source-adapter-only entry
+  // (the identity-only IdP connector is the canonical case) legally has
+  // zero capabilities — but then it MUST claim at least one supports{}
+  // flag, or the entry has no surface at all.
+  if (o.capabilities.length === 0) {
+    const supports = (o.supports ?? {}) as Record<string, unknown>;
+    const claimed = Object.values(supports).some((v) => v === true);
+    if (!claimed) {
+      throw new Error(
+        `ConnectorRegistry: ${source} has neither capabilities nor supports{} claims — a connector must have SOME surface`,
+      );
+    }
   }
   for (const cap of o.capabilities) {
     const c = cap as Record<string, unknown>;

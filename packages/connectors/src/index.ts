@@ -20,8 +20,26 @@ export type {
   DirectoryPage,
 } from './google-workspace-idp/directoryClient.js';
 
+export {
+  googleDriveBundle,
+  makeGoogleDriveBundle,
+} from './google-drive/connector.js';
+export { InMemoryDriveClient } from './google-drive/driveClient.js';
+export type {
+  DriveClient,
+  DriveFileMeta,
+  DriveChange,
+  DriveChangePage,
+  DrivePermission,
+} from './google-drive/driveClient.js';
+export { mapPermissions, hashGrants } from './google-drive/ports.js';
+
 import type { ConnectorBundle } from '@oweibo/connector-sdk';
 import { googleWorkspaceIdpBundle } from './google-workspace-idp/connector.js';
+import { googleDriveBundle } from './google-drive/connector.js';
 
 /** Every first-party bundle, in registry-load order (IdP first — §9.5). */
-export const allConnectorBundles: readonly ConnectorBundle[] = [googleWorkspaceIdpBundle];
+export const allConnectorBundles: readonly ConnectorBundle[] = [
+  googleWorkspaceIdpBundle,
+  googleDriveBundle,
+];

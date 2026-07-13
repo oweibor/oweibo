@@ -161,9 +161,17 @@ export class LivePathService {
     );
     const live = reads.filter((r): r is NonNullable<typeof r> => r !== null);
 
-    // No live read completed within budget → fall back to the index copy for
-    // the live fields' most recent indexed values (they were gate-approved).
+    // No live read completed within budget. A Critical/compliance-flagged
+    // document is LIVE-ONLY (§5.2) — it MUST NOT fall back to the stale index
+    // when live validation could not happen (§6.6): withhold, never serve
+    // stale. Transactional/operational may serve the index copy (§6.6 table).
     if (live.length === 0) {
+      if (worst === 'critical' || (input.complianceFlagged ?? false)) {
+        return {
+          retrievalId, composed: null, fieldPaths: {}, verdict: 'withheld',
+          withheldConnectors, stragglerCuts, conflictsHealed: 0, servedRevision: null,
+        };
+      }
       return {
         retrievalId, composed: input.indexFields, fieldPaths: allIndex(input.indexFields),
         verdict: 'served', withheldConnectors, stragglerCuts, conflictsHealed: 0, servedRevision: null,
@@ -173,14 +181,19 @@ export class LivePathService {
     // Highest live revision wins (§16.1 metadata / §16.2 live-wins).
     const winner = live.reduce((a, b) => (a.revision >= b.revision ? a : b));
 
-    // ── §16.2 conflict: live revision ahead of index → serve live, mark
-    // stale, emit ReindexRequested. The user gets the live answer; the system
-    // heals async; the conflict is never surfaced as ambiguity. ────────────
+    // ── §16.2 conflict. ONLY `index_stale` (live ahead of index) self-heals:
+    // serve live, emit ReindexRequested (the Knowledge Runtime marks stale).
+    // `monotonicity_breach` (live BEHIND index) is NEVER healed by lowering
+    // the index (ADR-003 §3.3) — the live answer is still served (live is the
+    // source of truth for status, §16.1), but no downward reindex is
+    // requested; the breach is surfaced as its own signal, not a heal. ─────
     let conflictsHealed = 0;
     const cls = classifyConflict(winner.revision, input.indexRevision);
-    if (cls !== 'consistent') {
+    if (cls === 'index_stale') {
       conflictsHealed = 1;
       await this.emitReindexRequested(input, winner.revision, cls);
+    } else if (cls === 'monotonicity_breach') {
+      await this.emitConsistencyBreach(input, winner.revision);
     }
 
     // ── Compose field-disjoint (ADR-008 §3.4): live fields override index ──
@@ -216,6 +229,26 @@ export class LivePathService {
           tenantId: input.tenantId, source: input.source, document_id: input.documentId,
           live_revision: liveRevision, index_revision: input.indexRevision,
           conflict, path: 'live', timestamp: new Date().toISOString(),
+        })],
+      ),
+    );
+  }
+
+  /**
+   * §16.2 / ADR-003 §3.3: live revision is BEHIND the index — an anomaly the
+   * index should never produce from a live source of truth. The live answer
+   * is still served (source of truth for status), but the index is NEVER
+   * lowered to match; the breach is surfaced for quarantine/alert instead of
+   * a self-heal that would dead-letter downstream.
+   */
+  private async emitConsistencyBreach<Ctx>(input: LivePathInput<Ctx>, liveRevision: number): Promise<void> {
+    await this.withTenant(input.tenantId, (c) =>
+      c.query(
+        `INSERT INTO oweibo.outbox (subject, payload) VALUES ('IndexConsistencyBreach', $1::jsonb)`,
+        [JSON.stringify({
+          tenantId: input.tenantId, source: input.source, document_id: input.documentId,
+          live_revision: liveRevision, index_revision: input.indexRevision,
+          conflict: 'monotonicity_breach', path: 'live', timestamp: new Date().toISOString(),
         })],
       ),
     );

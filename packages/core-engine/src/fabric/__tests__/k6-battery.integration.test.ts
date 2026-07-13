@@ -208,4 +208,19 @@ describeOrSkip('K.6 live-path battery (ADR-004 + ADR-008 armed)', () => {
     expect(res.stragglerCuts).toContain('sap-slow'); // cut past budget
     expect(res.servedRevision).toBe(7);              // the fast connector's answer won
   });
+
+  it('(6) Critical live-read failure WITHHOLDS — never falls back to the stale index (§5.2/§6.6)', async () => {
+    // Connector is Healthy (gate passes) but the only live read straggles past
+    // the budget → no live value for the Critical `status` field. A Critical
+    // doc is live-only: it must withhold, not serve the stale index 'pending'.
+    const slow = new FixtureLivePort({ status: 'approved', revision: 9 }, 200);
+    const res = await live().livePathQuery({
+      tenantId: tenant, source: SOURCE, documentId: 'invoice-491', knowledgeObjectId: objectId,
+      fields, indexFields: { title: 'Invoice 491', status: 'pending' }, indexRevision: 7,
+      connectors: [healthy(slow)], perReadBudgetMs: 50,
+    });
+    expect(res.verdict).toBe('withheld');
+    expect(res.composed).toBeNull();          // NOT the stale index 'pending'
+    expect(res.stragglerCuts).toContain(CONNECTOR);
+  });
 });

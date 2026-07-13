@@ -62,6 +62,15 @@ export interface IndexDocumentInput<Ctx> {
 
 export type IndexOutcome = 'indexed' | 'purged' | 'ignored' | 'dead_lettered';
 
+/** A chunk's identity + content, surfaced so the K.5 embedding layer re-embeds ONLY what changed. */
+export interface ChangedChunk {
+  readonly fieldName: string;
+  readonly spanStart: number;
+  readonly spanEnd: number;
+  readonly freshnessClass: string;
+  readonly content: string;
+}
+
 export interface IndexDocumentResult {
   readonly outcome: IndexOutcome;
   readonly knowledgeObjectId?: string;
@@ -69,6 +78,10 @@ export interface IndexDocumentResult {
   readonly chunksDeleted?: number;
   readonly backfillEnqueued?: boolean;
   readonly aclVersionBumped?: boolean;
+  /** Chunk-diff (§3.5): the chunks whose content changed — the K.5 re-embed set. */
+  readonly changedChunks?: readonly ChangedChunk[];
+  /** Chunk identities removed this update — their vectors must be dropped. */
+  readonly deletedChunks?: readonly Omit<ChangedChunk, 'content'>[];
   readonly detail?: string;
 }
 
@@ -244,6 +257,14 @@ export class IndexingService {
         chunksDeleted: diff.toDelete.length,
         backfillEnqueued,
         aclVersionBumped: hashChanged,
+        changedChunks: diff.toUpsert.map((ch) => ({
+          fieldName: ch.fieldName, spanStart: ch.spanStart, spanEnd: ch.spanEnd,
+          freshnessClass: ch.freshnessClass, content: ch.content,
+        })),
+        deletedChunks: diff.toDelete.map((ch) => {
+          const c = ch as { fieldName: string; spanStart: number; spanEnd: number; freshnessClass?: string };
+          return { fieldName: c.fieldName, spanStart: c.spanStart, spanEnd: c.spanEnd, freshnessClass: c.freshnessClass ?? 'operational' };
+        }),
       };
     });
   }

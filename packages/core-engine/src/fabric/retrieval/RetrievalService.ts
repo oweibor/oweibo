@@ -90,6 +90,13 @@ export interface RetrieveInput<Ctx> {
   readonly connectorLastHeartbeatMs?: Readonly<Record<string, number>>;
   /** This connector's declared heartbeat interval (§10.1); default 300s. */
   readonly connectorHeartbeatSeconds?: number;
+  /**
+   * K.8 graph-proximity signal per knowledge_object_id, in [0,1] (ADR-002 §3.6).
+   * Absent ⇒ 0 for every candidate; combined with the default hybrid weights
+   * (graphProximity weight 0) this is a no-op — a caller arms it by supplying
+   * both the map and a hybridWeights with a non-zero graphProximity weight.
+   */
+  readonly graphProximity?: Readonly<Record<string, number>>;
 }
 
 interface Candidate {
@@ -340,6 +347,7 @@ export class RetrievalService {
           vector: s.vector,
           updatedAtMs: s.updatedAtMs,
           source: s.source,
+          graphProximity: input.graphProximity?.[s.item.citation.knowledgeObjectId] ?? 0,
         })),
         {
           ...(this.opts.hybridWeights ? { weights: this.opts.hybridWeights } : {}),

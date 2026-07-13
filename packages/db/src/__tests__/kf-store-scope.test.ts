@@ -47,6 +47,10 @@ const TENANT_SCOPED: string[] = [
   // ADR-013 §3.1
   'kf_jobs',
   'kf_leases',
+  // ADR-002 full (ratified 2026-07-13) — K.8 identity + knowledge graph
+  'kf_canonical_identities',
+  'kf_identity_links',
+  'kf_graph_edges',
 ];
 
 const PLATFORM_SCOPED: string[] = ['processed_outbox_events'];

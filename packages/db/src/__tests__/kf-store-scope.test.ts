@@ -51,6 +51,10 @@ const TENANT_SCOPED: string[] = [
   'kf_canonical_identities',
   'kf_identity_links',
   'kf_graph_edges',
+  // ADR-006 full (K.9) — tenant policy system
+  'kf_tenant_policies',
+  // ADR-004 §3.7 armed (K.9) — connector upgrade rollout
+  'kf_connector_deployments',
 ];
 
 const PLATFORM_SCOPED: string[] = ['processed_outbox_events'];

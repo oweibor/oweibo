@@ -24,3 +24,4 @@ export * from './portContracts.js';
 export * from './ports/index.js';
 export * from './conventions/index.js';
 export * from './testing/mockSource.js';
+export * from './testing/connectorSimulator.js';

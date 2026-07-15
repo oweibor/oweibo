@@ -34,12 +34,26 @@ export type {
 } from './google-drive/driveClient.js';
 export { mapPermissions, hashGrants } from './google-drive/ports.js';
 
+export { slackBundle, makeSlackBundle } from './slack/connector.js';
+export { InMemorySlackClient, messageRef, parseMessageRef } from './slack/slackClient.js';
+export type { SlackClient, SlackMessage, SlackChange, SlackChangePage } from './slack/slackClient.js';
+export { membersToGrants } from './slack/ports.js';
+
+export { githubBundle, makeGithubBundle } from './github/connector.js';
+export { InMemoryGithubClient } from './github/githubClient.js';
+export type { GithubClient, GithubIssue, GithubChange, GithubChangePage } from './github/githubClient.js';
+export { collaboratorsToGrants } from './github/ports.js';
+
 import type { ConnectorBundle } from '@oweibo/connector-sdk';
 import { googleWorkspaceIdpBundle } from './google-workspace-idp/connector.js';
 import { googleDriveBundle } from './google-drive/connector.js';
+import { slackBundle } from './slack/connector.js';
+import { githubBundle } from './github/connector.js';
 
 /** Every first-party bundle, in registry-load order (IdP first — §9.5). */
 export const allConnectorBundles: readonly ConnectorBundle[] = [
   googleWorkspaceIdpBundle,
   googleDriveBundle,
+  slackBundle,
+  githubBundle,
 ];

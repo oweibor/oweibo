@@ -38,6 +38,15 @@ interface Deployment {
   canaryCohort?: string;
 }
 
+interface RelaxationProposal {
+  id: string;
+  proposerUserId: string;
+  summary: string;
+  state: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
 // ── Server actions ─────────────────────────────────────────────────────────
 
 async function proposePolicyAction(formData: FormData): Promise<void> {
@@ -64,8 +73,10 @@ async function proposePolicyAction(formData: FormData): Promise<void> {
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
 
   let flash: string;
-  if (res.status === 409 && body['error'] === 'needs_dual_control') {
-    flash = `Relaxation refused: needs dual control (quorum ${String(body['quorum'])}) — a second authorized approver must approve.`;
+  if (res.status === 202 && body['kind'] === 'pending_approval') {
+    flash = `Relaxation ballot opened (quorum ${String(body['quorum'])}). A second authorized approver must approve it below.`;
+  } else if (res.status === 409 && body['error'] === 'needs_dual_control') {
+    flash = `Relaxation refused: needs dual control (quorum ${String(body['quorum'])}) — the ballot flow is not configured on this deployment.`;
   } else if (!res.ok) {
     flash = `${mode} failed (${res.status}): ${JSON.stringify(body).slice(0, 300)}`;
   } else if (mode === 'simulate') {
@@ -74,6 +85,40 @@ async function proposePolicyAction(formData: FormData): Promise<void> {
     flash = 'No change: the proposed value is semantically identical to the current policy.';
   } else {
     flash = `Applied at policy version ${String(body['policyVersion'])}${body['backfillRequired'] ? ' — mandatory backfill scheduled' : ''}.`;
+  }
+  redirect(`/t/${tenantId}/fabric?flash=${encodeURIComponent(flash)}`);
+}
+
+async function voteRelaxationAction(formData: FormData): Promise<void> {
+  'use server';
+  const tenantId = formData.get('tenantId') as string;
+  const proposalId = formData.get('proposalId') as string;
+  const vote = formData.get('vote') as string; // 'approve' | 'reject'
+
+  const token = await getSessionToken();
+  const res = await fetch(
+    `${PIPELINE_URL}/tenants/${tenantId}/fabric/policy/relaxations/${encodeURIComponent(proposalId)}/votes`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ vote }),
+    },
+  );
+  const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+
+  let flash: string;
+  if (!res.ok) {
+    flash = body['error'] === 'already_resolved'
+      ? `Ballot already resolved (${String(body['state'])}).`
+      : `Vote failed (${res.status}): ${JSON.stringify(body).slice(0, 300)}`;
+  } else if (body['kind'] === 'applied') {
+    flash = `Quorum reached — relaxation APPLIED at policy version ${String(body['policyVersion'])}.`;
+  } else if (body['kind'] === 'vetoed') {
+    flash = 'Dissent veto — the relaxation was rejected.';
+  } else if (body['kind'] === 'no_change') {
+    flash = 'Quorum reached, but the change was already effective (no-op).';
+  } else {
+    flash = `Vote recorded — ${String(body['approvals'])}/${String(body['quorum'])} approvals. Awaiting another authorized approver.`;
   }
   redirect(`/t/${tenantId}/fabric?flash=${encodeURIComponent(flash)}`);
 }
@@ -127,6 +172,20 @@ export default async function FabricPage({
     dimensions = res.dimensions ?? [];
   } catch (err) {
     fetchError = err instanceof Error ? err.message : String(err);
+  }
+
+  let relaxations: RelaxationProposal[] = [];
+  let relaxationsNote: string | null = null;
+  try {
+    const res = await pipelineApi.get<{ proposals: RelaxationProposal[] }>(
+      `/tenants/${tenantId}/fabric/policy/relaxations`,
+    );
+    relaxations = res.proposals ?? [];
+  } catch (err) {
+    const status = (err as { status?: number }).status;
+    relaxationsNote = status === 503
+      ? 'Ballot flow not configured on this deployment.'
+      : `Failed to load ballots: ${err instanceof Error ? err.message : String(err)}`;
   }
 
   let deployment: Deployment | null = null;
@@ -223,6 +282,56 @@ export default async function FabricPage({
             </button>
           </div>
         </form>
+      </section>
+
+      {/* ── Pending relaxation ballots (dual control, ADR-006 §3.4) ── */}
+      <section style={{ marginBottom: '2.5rem', border: '1px solid #e5e5e5', borderRadius: 6, padding: '1rem' }}>
+        <h3 style={{ marginBottom: '0.25rem', fontSize: 14, color: '#525252' }}>
+          Pending relaxations ({relaxations.length})
+        </h3>
+        <p style={{ fontSize: 12, color: '#737373', marginBottom: '0.75rem' }}>
+          Each vote is cast as <strong>you</strong> — the signed-in principal. The proposer counts as
+          at most one vote, so a relaxation applies only when a second authorized approver approves.
+          One dissent vetoes.
+        </p>
+        {relaxationsNote && <p style={{ fontSize: 13, color: '#a16207' }}>{relaxationsNote}</p>}
+        {!relaxationsNote && relaxations.length === 0 && (
+          <p style={{ color: '#666', fontSize: 13 }}>No relaxation ballots are awaiting approval.</p>
+        )}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          {relaxations.map((p) => (
+            <div key={p.id} style={{ border: '1px solid #e5e5e5', borderRadius: 6, padding: '0.6rem 1rem' }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.75rem', flexWrap: 'wrap' }}>
+                <span style={{
+                  background: '#92400e', color: '#fff', fontSize: 10,
+                  padding: '2px 6px', borderRadius: 3, textTransform: 'uppercase',
+                }}>pending</span>
+                <span style={{ fontSize: 13, fontWeight: 600, color: '#262626' }}>{p.summary}</span>
+                <span style={{ fontSize: 11, color: '#737373' }}>
+                  proposed by {p.proposerUserId.slice(0, 8)}… · expires {new Date(p.expiresAt).toLocaleString()}
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                <form action={voteRelaxationAction}>
+                  <input type="hidden" name="tenantId" value={tenantId} />
+                  <input type="hidden" name="proposalId" value={p.id} />
+                  <input type="hidden" name="vote" value="approve" />
+                  <button type="submit" style={{ padding: '0.3rem 0.8rem', fontSize: 12, fontWeight: 600, color: '#065f46' }}>
+                    Approve
+                  </button>
+                </form>
+                <form action={voteRelaxationAction}>
+                  <input type="hidden" name="tenantId" value={tenantId} />
+                  <input type="hidden" name="proposalId" value={p.id} />
+                  <input type="hidden" name="vote" value="reject" />
+                  <button type="submit" style={{ padding: '0.3rem 0.8rem', fontSize: 12, color: '#7c2d12' }}>
+                    Reject (veto)
+                  </button>
+                </form>
+              </div>
+            </div>
+          ))}
+        </div>
       </section>
 
       {/* ── Rollout plane ── */}

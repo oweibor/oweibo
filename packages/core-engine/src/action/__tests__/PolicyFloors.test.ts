@@ -22,6 +22,7 @@ import {
   MULTI_PARTY_PLATFORM_MIN_MATRIX,
   multiPartyFloorsApplyTo,
   checkMultiPartyPolicyAgainstFloor,
+  platformDefaultMultiPartyPolicy,
 } from '../MultiPartyApprovalService.js';
 import {
   RATE_LIMIT_PLATFORM_MIN_MATRIX,
@@ -126,6 +127,48 @@ describe('F.4.4 multi-party floor', () => {
       quorum: 1, maxGrantDurationSeconds: 7 * 86400,
     });
     expect(v).toHaveLength(2);
+  });
+
+  // ── ADR-006 §3.4: the reserved policy-relaxation class ────────────────
+
+  it('governance.policy_relaxation is a floored class', () => {
+    expect(multiPartyFloorsApplyTo('governance.policy_relaxation')).toBe(true);
+  });
+
+  it('reserved class: allowGrants=true violates the floor — a grant is pre-approval, i.e. single control', () => {
+    const v = checkMultiPartyPolicyAgainstFloor('governance.policy_relaxation', {
+      ...safePolicy, allowGrants: true, allowDelegation: false,
+    });
+    expect(v.map((x) => x.field)).toEqual(['allowGrants']);
+  });
+
+  it('reserved class: allowDelegation=true violates the floor — one admin must not hold both votes', () => {
+    const v = checkMultiPartyPolicyAgainstFloor('governance.policy_relaxation', {
+      ...safePolicy, allowGrants: false, allowDelegation: true,
+    });
+    expect(v.map((x) => x.field)).toEqual(['allowDelegation']);
+  });
+
+  it('reserved class: the ADR floor itself passes (quorum 2, no grants, no delegation)', () => {
+    const v = checkMultiPartyPolicyAgainstFloor('governance.policy_relaxation', {
+      ...safePolicy, allowGrants: false, allowDelegation: false,
+    });
+    expect(v).toEqual([]);
+  });
+
+  it('other floored classes are NOT subject to the reserved-class extras (grants stay cappable, not banned)', () => {
+    const v = checkMultiPartyPolicyAgainstFloor('financial.payment', {
+      ...safePolicy, allowGrants: true, allowDelegation: true,
+    });
+    expect(v).toEqual([]);
+  });
+
+  it('the platform DEFAULT for the reserved class already sits at the ADR floor (A-2: the fallback default must not apply)', () => {
+    const p = platformDefaultMultiPartyPolicy('11111111-1111-4111-a111-111111111111', 'governance.policy_relaxation' as never);
+    expect(p.quorum).toBeGreaterThanOrEqual(2);
+    expect(p.allowGrants).toBe(false);
+    expect(p.allowDelegation).toBe(false);
+    expect(p.dissentVetoes).toBe(true);
   });
 });
 

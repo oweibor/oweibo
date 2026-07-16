@@ -47,10 +47,18 @@ function makeStubs() {
     promote:     jest.fn().mockResolvedValue({ ok: true }),
     rollback:    jest.fn().mockResolvedValue({ ok: true, retagged: 2 }),
   };
-  return { policy, upgrade };
+  const relaxations = {
+    propose:     jest.fn().mockResolvedValue({ kind: 'pending_approval', proposalId: 'prop-1', quorum: 2 }),
+    vote:        jest.fn().mockResolvedValue({ kind: 'pending', approvals: 1, quorum: 2 }),
+    status:      jest.fn().mockResolvedValue({
+      proposal: { id: 'prop-1', state: 'pending' }, votes: [], quorum: 2, approvals: 0,
+    }),
+    listPending: jest.fn().mockResolvedValue([{ id: 'prop-1', summary: 'Policy relaxation: indexing_scope' }]),
+  };
+  return { policy, upgrade, relaxations };
 }
 
-function makeApp(jwtTenant: string) {
+function makeApp(jwtTenant: string, opts: { withFlow?: boolean } = { withFlow: true }) {
   const stubs = makeStubs();
   const app = express();
   app.use(express.json());
@@ -58,6 +66,9 @@ function makeApp(jwtTenant: string) {
   app.use('/tenants/:tenantId/fabric', createFabricRouter({
     policy:  stubs.policy  as unknown as Parameters<typeof createFabricRouter>[0]['policy'],
     upgrade: stubs.upgrade as unknown as Parameters<typeof createFabricRouter>[0]['upgrade'],
+    ...(opts.withFlow !== false
+      ? { relaxations: stubs.relaxations as unknown as NonNullable<Parameters<typeof createFabricRouter>[0]['relaxations']> }
+      : {}),
   }));
   return { app, ...stubs };
 }
@@ -89,8 +100,9 @@ describe('fabric routes — policy plane', () => {
     );
   });
 
-  it('POST /policy/propose applies a tightening', async () => {
-    const { app } = makeApp(TENANT);
+  it('POST /policy/propose applies a tightening (through the flow when wired)', async () => {
+    const { app, relaxations } = makeApp(TENANT);
+    relaxations.propose.mockResolvedValueOnce({ kind: 'applied', policyVersion: '1', backfillRequired: true });
     const res = await request(app)
       .post(`/tenants/${TENANT}/fabric/policy/propose`)
       .send({ changes: [{ dimension: 'indexing_scope', value: { kind: 'indexing_scope', scope: 'metadata' } }] });
@@ -99,8 +111,22 @@ describe('fabric routes — policy plane', () => {
     expect(res.body.backfillRequired).toBe(true);
   });
 
-  it('POST /policy/propose surfaces a relaxation as 409 needs_dual_control', async () => {
-    const { app, policy } = makeApp(TENANT);
+  it('POST /policy/propose opens a ballot for a relaxation — 202 pending_approval with the proposal id', async () => {
+    const { app, relaxations } = makeApp(TENANT);
+    const res = await request(app)
+      .post(`/tenants/${TENANT}/fabric/policy/propose`)
+      .send({ changes: [{ dimension: 'indexing_scope', value: { kind: 'indexing_scope', scope: 'full_content' } }] });
+    expect(res.status).toBe(202);
+    expect(res.body.kind).toBe('pending_approval');
+    expect(res.body.proposalId).toBe('prop-1');
+    expect(res.body.quorum).toBe(2);
+    expect(relaxations.propose).toHaveBeenCalledWith(
+      expect.objectContaining({ tenantId: TENANT, proposerId: USER }),
+    );
+  });
+
+  it('POST /policy/propose WITHOUT the ballot flow stays fail-closed: 409 needs_dual_control', async () => {
+    const { app, policy } = makeApp(TENANT, { withFlow: false });
     policy.propose.mockResolvedValueOnce({ kind: 'needs_dual_control', classification: 'relaxation', quorum: 2 });
     const res = await request(app)
       .post(`/tenants/${TENANT}/fabric/policy/propose`)
@@ -126,12 +152,82 @@ describe('fabric routes — policy plane', () => {
     expect(mismatch.body.error).toBe('invalid_change');
   });
 
-  it('there is NO HTTP route that applies a relaxation — votes in a body would let one caller fabricate its second approver', async () => {
+  it('there is NO HTTP route that applies a relaxation directly — apply happens server-side on quorum', async () => {
     const { app } = makeApp(TENANT);
     const res = await request(app)
       .post(`/tenants/${TENANT}/fabric/policy/relaxations/apply`)
       .send({ votes: [{ principalId: 'a', approve: true }, { principalId: 'b', approve: true }] });
+    // '/policy/relaxations/apply' matches the :proposalId GET pattern for
+    // reads, but there is no POST at that shape other than /votes — 404.
     expect(res.status).toBe(404);
+  });
+});
+
+describe('fabric routes — relaxation ballots (ADR-006 §3.4)', () => {
+  it('lists pending ballots', async () => {
+    const { app } = makeApp(TENANT);
+    const res = await request(app).get(`/tenants/${TENANT}/fabric/policy/relaxations`);
+    expect(res.status).toBe(200);
+    expect(res.body.count).toBe(1);
+    expect(res.body.proposals[0].id).toBe('prop-1');
+  });
+
+  it('returns a single ballot status, 404 when unknown', async () => {
+    const { app, relaxations } = makeApp(TENANT);
+    const ok = await request(app).get(`/tenants/${TENANT}/fabric/policy/relaxations/prop-1`);
+    expect(ok.status).toBe(200);
+    expect(ok.body.quorum).toBe(2);
+
+    relaxations.status.mockResolvedValueOnce(null);
+    const missing = await request(app).get(`/tenants/${TENANT}/fabric/policy/relaxations/nope`);
+    expect(missing.status).toBe(404);
+  });
+
+  it('casts the vote as the JWT principal — voter identity is never a body field', async () => {
+    const { app, relaxations } = makeApp(TENANT);
+    const res = await request(app)
+      .post(`/tenants/${TENANT}/fabric/policy/relaxations/prop-1/votes`)
+      .send({ vote: 'approve', voterUserId: 'someone-else' }); // ignored field
+    expect(res.status).toBe(200);
+    expect(relaxations.vote).toHaveBeenCalledWith(
+      expect.objectContaining({ voterUserId: USER, vote: 'approve' }),
+    );
+  });
+
+  it('rejects onBehalfOf outright — delegation is structurally unavailable (§3.4 rule 2)', async () => {
+    const { app, relaxations } = makeApp(TENANT);
+    const res = await request(app)
+      .post(`/tenants/${TENANT}/fabric/policy/relaxations/prop-1/votes`)
+      .send({ vote: 'approve', onBehalfOf: '99999999-9999-4999-a999-999999999999' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('delegation_prohibited');
+    expect(relaxations.vote).not.toHaveBeenCalled();
+  });
+
+  it('maps flow outcomes: applied passes through; already_resolved → 409; not_found → 404', async () => {
+    const { app, relaxations } = makeApp(TENANT);
+    relaxations.vote.mockResolvedValueOnce({ kind: 'applied', policyVersion: '3', backfillRequired: false });
+    const applied = await request(app)
+      .post(`/tenants/${TENANT}/fabric/policy/relaxations/prop-1/votes`).send({ vote: 'approve' });
+    expect(applied.status).toBe(200);
+    expect(applied.body.kind).toBe('applied');
+
+    relaxations.vote.mockResolvedValueOnce({ kind: 'already_resolved', state: 'promoted' });
+    const resolved = await request(app)
+      .post(`/tenants/${TENANT}/fabric/policy/relaxations/prop-1/votes`).send({ vote: 'approve' });
+    expect(resolved.status).toBe(409);
+
+    relaxations.vote.mockResolvedValueOnce({ kind: 'not_found' });
+    const missing = await request(app)
+      .post(`/tenants/${TENANT}/fabric/policy/relaxations/nope/votes`).send({ vote: 'approve' });
+    expect(missing.status).toBe(404);
+  });
+
+  it('answers 503 fail-closed on every ballot endpoint when the flow is unconfigured', async () => {
+    const { app } = makeApp(TENANT, { withFlow: false });
+    expect((await request(app).get(`/tenants/${TENANT}/fabric/policy/relaxations`)).status).toBe(503);
+    expect((await request(app).get(`/tenants/${TENANT}/fabric/policy/relaxations/x`)).status).toBe(503);
+    expect((await request(app).post(`/tenants/${TENANT}/fabric/policy/relaxations/x/votes`).send({ vote: 'approve' })).status).toBe(503);
   });
 });
 

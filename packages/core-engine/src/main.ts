@@ -259,6 +259,7 @@ async function main(): Promise<void> {
   let rollbackOrchestrator: RollbackOrchestrator | undefined;
   let tenantPolicyService: import('./fabric/policy/TenantPolicyService.js').TenantPolicyService | undefined;
   let connectorUpgradeService: import('./fabric/upgrade/ConnectorUpgradeService.js').ConnectorUpgradeService | undefined;
+  let policyRelaxationFlow: import('./fabric/policy/PolicyRelaxationFlow.js').PolicyRelaxationFlow | undefined;
   if (process.env['DATABASE_URL']) {
     pgPool = new Pool({ connectionString: process.env['DATABASE_URL'] });
 
@@ -268,6 +269,8 @@ async function main(): Promise<void> {
     const { ConnectorUpgradeService } = await import('./fabric/upgrade/ConnectorUpgradeService.js');
     tenantPolicyService = new TenantPolicyService(pgPool);
     connectorUpgradeService = new ConnectorUpgradeService(pgPool);
+    // ADR-006 §3.4: relaxation ballots through the shipped multi-party vote
+    // ledger. The flow is constructed after multiPartyApproval exists (below).
     const promptRegistry = new PromptRegistry(
       pgPool,
       process.env['LANGFUSE_SECRET_KEY'],
@@ -291,6 +294,18 @@ async function main(): Promise<void> {
     // byte-identical-to-today when ACTION_TRUST_LADDER_ENABLED=false.
     slaService = new ApprovalSlaService(pgPool);
     multiPartyApproval = new MultiPartyApprovalService(pgPool);
+    // ADR-006 §3.4: the relaxation-approval leg — durable ballots in
+    // action_proposals, votes through the multi-party ledger, apply on the
+    // platform-floor quorum (never the tenant-configurable one).
+    {
+      const { PolicyRelaxationProposals } = await import('./action/PolicyRelaxationProposals.js');
+      const { PolicyRelaxationFlow } = await import('./fabric/policy/PolicyRelaxationFlow.js');
+      policyRelaxationFlow = new PolicyRelaxationFlow(
+        tenantPolicyService!,
+        new PolicyRelaxationProposals(pgPool),
+        multiPartyApproval,
+      );
+    }
     quotaService = new QuotaService(pgPool);
     const budgetEstimator = new BudgetEstimator(pgPool);
     // In-memory token bucket is per-process — multi-replica deployments
@@ -784,6 +799,7 @@ async function main(): Promise<void> {
     ...(tenantPolicyService && connectorUpgradeService
       ? { tenantPolicyService, connectorUpgradeService }
       : {}),
+    ...(policyRelaxationFlow ? { policyRelaxationFlow } : {}),
     // F.5.9 server: enables POST /api/v1/_internal/memories/seed when both
     // the token AND a memory orchestrator are available. The token is the
     // shared internal secret -- workers (tenant-bootstrap-worker) hold

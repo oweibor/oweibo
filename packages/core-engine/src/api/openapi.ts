@@ -1115,6 +1115,15 @@ export const openapiSpec = {
     '/tenants/{tenantId}/fabric/policy/propose': {
       post: { summary: 'Propose a policy change: a tightening applies; a relaxation needs dual control', operationId: 'proposeFabricPolicy', tags: ['Fabric'], parameters: [tenantIdParam()], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object' } } } }, responses: { '200': { description: 'Applied or no-change' }, '400': { description: 'Invalid change set' }, '409': { description: 'Relaxation requires a second authorized approver' } } },
     },
+    '/tenants/{tenantId}/fabric/policy/relaxations': {
+      get: { summary: 'Pending policy-relaxation ballots awaiting a second approver', operationId: 'listFabricRelaxations', tags: ['Fabric'], parameters: [tenantIdParam()], responses: { '200': { description: 'OK' }, '503': { description: 'Ballot flow not configured' } } },
+    },
+    '/tenants/{tenantId}/fabric/policy/relaxations/{proposalId}': {
+      get: { summary: 'One relaxation ballot with its vote tally', operationId: 'getFabricRelaxation', tags: ['Fabric'], parameters: [tenantIdParam(), proposalIdParam()], responses: { '200': { description: 'OK' }, '404': { description: 'Not found' }, '503': { description: 'Ballot flow not configured' } } },
+    },
+    '/tenants/{tenantId}/fabric/policy/relaxations/{proposalId}/votes': {
+      post: { summary: "Cast the authenticated principal's vote (no delegation, ADR-006 §3.4)", operationId: 'voteFabricRelaxation', tags: ['Fabric'], parameters: [tenantIdParam(), proposalIdParam()], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['vote'], properties: { vote: { type: 'string', enum: ['approve', 'reject'] }, comment: { type: 'string' } } } } } }, responses: { '200': { description: 'Vote recorded; returns pending | applied | no_change | vetoed' }, '400': { description: 'Invalid body or delegation attempted' }, '404': { description: 'Not found' }, '409': { description: 'Ballot already resolved' }, '503': { description: 'Ballot flow not configured' } } },
+    },
     '/tenants/{tenantId}/fabric/connectors/{connectorId}/deployment': {
       get: { summary: 'Connector rollout state + the version new jobs mint at', operationId: 'getFabricDeployment', tags: ['Fabric'], parameters: [tenantIdParam(), connectorIdParam()], responses: { '200': { description: 'OK' }, '404': { description: 'Connector not registered' } } },
     },
@@ -1139,6 +1148,9 @@ function idParam() {
 }
 function connectorIdParam() {
   return { name: 'connectorId', in: 'path', required: true, schema: { type: 'string' } } as const;
+}
+function proposalIdParam() {
+  return { name: 'proposalId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } } as const;
 }
 function policyDomainParam() {
   return { name: 'domain', in: 'path', required: true, schema: { type: 'string', enum: ['sla', 'multiparty', 'ratelimit', 'quota'] } } as const;

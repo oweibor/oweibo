@@ -71,7 +71,12 @@ export type PolicyValue =
   | { readonly kind: 'freshness_sla'; readonly maxAgeMs: Readonly<Record<string, number>> }
   | { readonly kind: 'retrieval_preference'; readonly mode: Readonly<Record<string, 'index' | 'live' | 'hybrid'>> };
 
-/** ADR-006 §3.1 defaults. `indexing_scope: metadata` preserves K.5 behavior exactly. */
+/**
+ * ADR-006 §3.1 defaults. `indexing_scope: metadata` preserves K.5 behavior
+ * exactly. `connector_enablement: {}` means NO connector is policy-enabled
+ * (§3.3 absent ⇒ disabled) — enabling one is a relaxation and takes dual
+ * control, which is the pinned §22 posture, not an oversight.
+ */
 export const POLICY_DEFAULTS: { readonly [K in PolicyDimension]: Extract<PolicyValue, { kind: K }> } = {
   data_persistence:          { kind: 'data_persistence', allowed: true },
   indexing_scope:            { kind: 'indexing_scope', scope: 'metadata' },
@@ -246,9 +251,11 @@ export function evaluateQuorum(
   quorum: number = POLICY_RELAXATION_FLOOR.quorum,
 ): QuorumVerdict {
   // Distinct principals only — one principal voting twice is one vote (§3.4).
+  // A principal's dissent overrides their own earlier approval: dissentVetoes
+  // would be defeatable by racing an approval in first otherwise.
   const seen = new Map<string, boolean>();
   for (const v of votes) {
-    if (!seen.has(v.principalId)) seen.set(v.principalId, v.approve);
+    seen.set(v.principalId, (seen.get(v.principalId) ?? true) && v.approve);
   }
   for (const [principalId, approve] of seen) {
     if (!approve) return { kind: 'vetoed', by: principalId };

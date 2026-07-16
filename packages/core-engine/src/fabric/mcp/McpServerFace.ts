@@ -107,6 +107,13 @@ export interface McpFaceOptions {
   readonly maxLimit?: number;
 }
 
+/** The ONE error whose message is client-facing: identical for denied and nonexistent (§3.3). */
+class McpNotFoundError extends Error {
+  constructor() {
+    super('not found');
+  }
+}
+
 function isCredentialShaped(key: string): boolean {
   return /token|secret|password|api[_-]?key|private[_-]?key|authorization|bearer|credential/i.test(key);
 }
@@ -191,7 +198,11 @@ export class McpServerFace {
       await this.quota.record({ tenantId: binding.tenantId, tool: toolName, dedupeKey: requestId });
       return { ok: true, value };
     } catch (e) {
-      return { ok: false, error: { code: MCP_ERR.INTERNAL, message: (e as Error).message } };
+      // Only the deliberate not-found message crosses the face; any other
+      // error's text is internal detail an external client must not see
+      // (backend exception messages can name tables, hosts, or invariants).
+      const message = e instanceof McpNotFoundError ? e.message : 'internal error';
+      return { ok: false, error: { code: MCP_ERR.INTERNAL, message } };
     }
   }
 
@@ -216,7 +227,7 @@ export class McpServerFace {
         if ('notFoundOrDenied' in r) {
           // §3.3 — a denied fetch and a nonexistent object return the SAME error.
           // Distinguishing them turns fetch into an existence oracle across ACL.
-          throw new Error('not found');
+          throw new McpNotFoundError();
         }
         return r;
       }

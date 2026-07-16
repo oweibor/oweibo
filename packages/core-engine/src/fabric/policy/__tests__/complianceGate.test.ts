@@ -16,8 +16,13 @@ import {
 } from '../CompliancePolicyGate';
 import type { PolicyValue } from '../contract';
 
+// Every test policy enables the connector under test unless a case overrides
+// it: §3.3 reads an absent enablement key as DISABLED, so a truly empty policy
+// blocks on connector_enablement before any other dimension can be exercised.
 const pol = (...vals: PolicyValue[]): EffectivePolicy => {
-  const out: Record<string, PolicyValue> = {};
+  const out: Record<string, PolicyValue> = {
+    connector_enablement: { kind: 'connector_enablement', enabled: { 'google-drive': true } },
+  };
   for (const v of vals) out[v.kind] = v;
   return out as EffectivePolicy;
 };
@@ -62,6 +67,20 @@ describe('ADR-006 §3.2 — the dimension checks', () => {
   it('blocks a write from a policy-disabled connector (§18.2 "absent, not deprioritized")', () => {
     const v = evaluateCompliance(
       pol({ kind: 'connector_enablement', enabled: { 'google-drive': false } }),
+      write({ connectorId: 'google-drive' }),
+    );
+    expect(v.kind).toBe('block');
+    if (v.kind === 'block') expect(v.dimension).toBe('connector_enablement');
+  });
+
+  it('blocks a connector ABSENT from the enablement map — §3.3 absent ⇒ disabled, and the gate must agree with the lattice', () => {
+    // The lattice holds `{}` ≡ `{x: false}` (absent = disabled). If the gate
+    // read absent as ENABLED, that equality would make disabling a connector
+    // from the default state an unwritable no_change while the gate kept
+    // admitting its writes — classification and enforcement disagreeing about
+    // what a policy means.
+    const v = evaluateCompliance(
+      pol({ kind: 'connector_enablement', enabled: { slack: true } }),
       write({ connectorId: 'google-drive' }),
     );
     expect(v.kind).toBe('block');
@@ -115,8 +134,20 @@ describe('ADR-006 §3.2 — the dimension checks', () => {
     expect(v.kind).toBe('allow');
   });
 
-  it('allows a compliant metadata write under default policy', () => {
+  it('allows a compliant metadata write once the connector is enabled', () => {
     expect(evaluateCompliance(pol(), write()).kind).toBe('allow');
+  });
+
+  it('the TRUE default policy (no rows at all) blocks — fail-closed until a connector is enabled', () => {
+    const v = evaluateCompliance({}, write());
+    expect(v.kind).toBe('block');
+    if (v.kind === 'block') expect(v.dimension).toBe('connector_enablement');
+  });
+
+  it('blocks when a region is pinned but the write declares no target region (fail-closed)', () => {
+    const v = evaluateCompliance(pol(), write(), 'us-east-1');
+    expect(v.kind).toBe('block');
+    if (v.kind === 'block') expect(v.dimension).toBe('data_residency');
   });
 });
 

@@ -230,7 +230,7 @@ export class MembershipSyncService {
 }
 
 function edgeKey(principalRef: string, groupRef: string): string {
-  return `${principalRef} ${groupRef}`;
+  return `${principalRef}\u0000${groupRef}`;
 }
 
 function edgesOf(groups: readonly SyncSourceGroup[]): Array<{ principalRef: string; groupRef: string }> {

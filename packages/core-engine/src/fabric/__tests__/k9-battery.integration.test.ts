@@ -157,9 +157,15 @@ describeOrSkip('K.9 hardening + scale-out battery', () => {
     // The compliance gate blocks an excluded-tag write, at the storage layer,
     // with no planner in the call path.
     const gate = new CompliancePolicyGate(
-      async () => ({ classification_exclusions: { kind: 'classification_exclusions', excludeTags: ['Confidential'] } }),
+      async () => ({
+        // Enable the connector so the block below is attributable to the
+        // exclusions dimension (absent ⇒ disabled would block first, §3.3).
+        connector_enablement: { kind: 'connector_enablement', enabled: { 'google-drive': true } },
+        classification_exclusions: { kind: 'classification_exclusions', excludeTags: ['Confidential'] },
+      }),
     );
     const verdict = await gate.check({ tenantId: tenant, connectorId: 'google-drive', tags: ['Confidential'] });
     expect(verdict.kind).toBe('block');
+    if (verdict.kind === 'block') expect(verdict.dimension).toBe('classification_exclusions');
   });
 });

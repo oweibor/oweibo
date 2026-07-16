@@ -30,6 +30,12 @@ export interface EnqueueInput {
   readonly idempotencyKey: string;
   readonly partitionKey?: string;
   readonly checkpoint?: unknown;
+  /**
+   * ADR-004 §3.7 blue/green tag: the connector version whose worker must
+   * process this job (from ConnectorUpgradeService.jobVersionFor). Omitted =
+   * legacy untagged, claimable by any worker.
+   */
+  readonly connectorVersion?: string;
 }
 
 export interface ClaimedJob {
@@ -41,6 +47,7 @@ export interface ClaimedJob {
   readonly idempotencyKey: string;
   readonly checkpoint: unknown;
   readonly attempts: number;
+  readonly connectorVersion: string | null;
 }
 
 export class JobQueue {
@@ -50,8 +57,8 @@ export class JobQueue {
   async enqueue(input: EnqueueInput): Promise<{ enqueued: boolean; id?: string }> {
     const r = await this.db.query(
       `INSERT INTO oweibo.kf_jobs
-         (tenant_id, connector_id, job_class, partition_key, idempotency_key, checkpoint)
-       VALUES ($1, $2, $3, $4, $5, $6)
+         (tenant_id, connector_id, job_class, partition_key, idempotency_key, checkpoint, connector_version)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
        RETURNING id`,
       [
@@ -61,6 +68,7 @@ export class JobQueue {
         input.partitionKey ?? null,
         input.idempotencyKey,
         input.checkpoint === undefined ? null : JSON.stringify(input.checkpoint),
+        input.connectorVersion ?? null,
       ],
     );
     return r.rowCount === 1 ? { enqueued: true, id: r.rows[0].id } : { enqueued: false };
@@ -69,12 +77,18 @@ export class JobQueue {
   /**
    * Claim up to batchSize runnable jobs (state → leased, attempts + 1).
    * Priority = job_class ASC; FIFO within class = created_at ASC.
+   *
+   * Blue/green (ADR-004 §3.7, the SQL twin of rolloutContract.workerCanClaim):
+   * a version-tagged job is claimable ONLY by a worker declaring the same
+   * version. Untagged (legacy) jobs are claimable by anyone. A worker that
+   * declares no version can claim only untagged jobs.
    */
-  async claim(batchSize: number): Promise<ClaimedJob[]> {
+  async claim(batchSize: number, workerVersion?: string): Promise<ClaimedJob[]> {
     const r = await this.db.query(
       `WITH picked AS (
          SELECT id FROM oweibo.kf_jobs
          WHERE state = 'queued' AND run_after <= NOW()
+           AND (connector_version IS NULL OR connector_version = $2)
          ORDER BY job_class ASC, created_at ASC
          LIMIT $1
          FOR UPDATE SKIP LOCKED
@@ -84,8 +98,8 @@ export class JobQueue {
        FROM picked
        WHERE j.id = picked.id
        RETURNING j.id, j.tenant_id, j.connector_id, j.job_class, j.partition_key,
-                 j.idempotency_key, j.checkpoint, j.attempts`,
-      [batchSize],
+                 j.idempotency_key, j.checkpoint, j.attempts, j.connector_version`,
+      [batchSize, workerVersion ?? null],
     );
     return r.rows.map((row) => ({
       id: row.id,
@@ -96,6 +110,7 @@ export class JobQueue {
       idempotencyKey: row.idempotency_key,
       checkpoint: row.checkpoint,
       attempts: Number(row.attempts),
+      connectorVersion: row.connector_version ?? null,
     }));
   }
 

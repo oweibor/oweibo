@@ -113,6 +113,29 @@ describeOrSkip('K.0 scheduler battery (ADR-013)', () => {
     });
   });
 
+  it('(b2) blue/green claim: a version-tagged job is claimable only by a matching worker (ADR-004 §3.7)', async () => {
+    await withTenant(tenantA, async (c) => {
+      const q = new JobQueue(c);
+      const { id } = await q.enqueue({
+        tenantId: tenantA, connectorId: 'battery', jobClass: 2,
+        idempotencyKey: 'bluegreen-tagged-1', connectorVersion: '1.4.0',
+      });
+
+      // A worker at the WRONG version (and a legacy version-less worker) must
+      // not claim it — the SQL filter is the enforcement, not the pure rule.
+      const wrong = await q.claim(50, '9.9.9');
+      expect(wrong.find((j) => j.id === id)).toBeUndefined();
+      const legacy = await q.claim(50);
+      expect(legacy.find((j) => j.id === id)).toBeUndefined();
+
+      // The matching worker claims it, and the tag rides along on the claim.
+      const right = await q.claim(50, '1.4.0');
+      const claimed = right.find((j) => j.id === id);
+      expect(claimed).toBeDefined();
+      expect(claimed!.connectorVersion).toBe('1.4.0');
+    });
+  });
+
   it('(a) lease lapse re-queues the job with its checkpoint intact', async () => {
     await withTenant(tenantA, async (c) => {
       const q = new JobQueue(c);

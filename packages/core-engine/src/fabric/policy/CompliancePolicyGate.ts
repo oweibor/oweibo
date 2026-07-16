@@ -63,14 +63,16 @@ export function evaluateCompliance(
   provisionedRegion?: string,
 ): ComplianceVerdict {
   // 1. Connector enablement — a disabled connector is ABSENT, not deprioritized
-  //    (§18.2). Enforced here so a disabled connector cannot write even if some
-  //    caller negotiated it by mistake.
+  //    (§18.2). §3.3 reads an absent key as DISABLED (the lattice's equality
+  //    depends on it: `{}` ≡ `{x: false}`), so the gate must agree: only an
+  //    explicit `true` admits the connector. Anything else and classification
+  //    vs enforcement would disagree about what a policy MEANS.
   const enablement = valueOf(policy, 'connector_enablement');
-  if (enablement.enabled[write.connectorId] === false) {
+  if (enablement.enabled[write.connectorId] !== true) {
     return {
       kind: 'block',
       dimension: 'connector_enablement',
-      reason: `connector ${write.connectorId} is disabled by tenant policy`,
+      reason: `connector ${write.connectorId} is not enabled by tenant policy (absent ⇒ disabled, §3.3)`,
     };
   }
 
@@ -112,12 +114,24 @@ export function evaluateCompliance(
   //    block — never a planner hint").
   const residency = valueOf(policy, 'data_residency');
   const requiredRegion = residency.region || provisionedRegion;
-  if (requiredRegion && write.targetRegion && write.targetRegion !== requiredRegion) {
-    return {
-      kind: 'block',
-      dimension: 'data_residency',
-      reason: `write targets region ${write.targetRegion}; tenant is pinned to ${requiredRegion}`,
-    };
+  if (requiredRegion) {
+    // Fail-closed: with a region pinned, a write that does not DECLARE its
+    // target region cannot be verified against the pin — and an unverifiable
+    // compliance check that passes is a pass-through (§18.3 forbids those).
+    if (!write.targetRegion) {
+      return {
+        kind: 'block',
+        dimension: 'data_residency',
+        reason: `tenant is pinned to ${requiredRegion} but the write declares no target region`,
+      };
+    }
+    if (write.targetRegion !== requiredRegion) {
+      return {
+        kind: 'block',
+        dimension: 'data_residency',
+        reason: `write targets region ${write.targetRegion}; tenant is pinned to ${requiredRegion}`,
+      };
+    }
   }
 
   return { kind: 'allow' };

@@ -12,7 +12,9 @@
  *
  *  2. A relaxation cannot apply without dual control (§3.4). Classification is
  *     fail-closed (contract.ts): anything not provably a tightening routes to
- *     approval.
+ *     approval. Classification happens INSIDE the commit transaction, under a
+ *     per-tenant advisory lock — a change classified against a stale policy
+ *     could otherwise apply as a relaxation of the current one (TOCTOU).
  */
 import type { Pool, PoolClient } from 'pg';
 import {
@@ -42,6 +44,8 @@ export type ApplyResult =
   | { readonly kind: 'no_change' }
   | { readonly kind: 'needs_dual_control'; readonly classification: ChangeClass; readonly quorum: number };
 
+export type RelaxationOutcome = ApplyResult | { readonly kind: 'rejected'; readonly reason: string };
+
 export interface ImpactReport {
   readonly classification: ChangeClass;
   readonly dualControlRequired: boolean;
@@ -50,27 +54,35 @@ export interface ImpactReport {
   readonly pathsChanged: readonly PolicyDimension[];
 }
 
+/** How the caller has authorized a would-be relaxation when commit classifies one. */
+type RelaxationAuth =
+  | { readonly kind: 'approved' }
+  | { readonly kind: 'vetoed'; readonly by: string }
+  | { readonly kind: 'pending' };
+
 export class TenantPolicyService {
   constructor(private readonly pool: Pool) {}
 
   private async withTenant<T>(tenantId: string, fn: (c: PoolClient) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
     try {
-      await client.query(`SET app.tenant_id = '${tenantId}'`);
-      return await fn(client);
+      await client.query('BEGIN');
+      await client.query(`SELECT set_config('app.tenant_id', $1, true)`, [tenantId]);
+      const out = await fn(client);
+      await client.query('COMMIT');
+      return out;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
     } finally {
-      await client.query(`RESET app.tenant_id`).catch(() => undefined);
       client.release();
     }
   }
 
-  /** The tenant's effective policy — stored rows over §3.1 defaults. */
-  async effectivePolicy(tenantId: string): Promise<EffectivePolicy> {
-    const rows = await this.withTenant(tenantId, (c) =>
-      c.query(
-        `SELECT dimension, value FROM oweibo.kf_tenant_policies WHERE tenant_id = $1::uuid`,
-        [tenantId],
-      ),
+  private async effectivePolicyWith(c: PoolClient, tenantId: string): Promise<EffectivePolicy> {
+    const rows = await c.query(
+      `SELECT dimension, value FROM oweibo.kf_tenant_policies WHERE tenant_id = $1::uuid`,
+      [tenantId],
     );
     const out: Record<string, PolicyValue> = {};
     for (const d of POLICY_DIMENSIONS) out[d] = POLICY_DEFAULTS[d];
@@ -78,19 +90,29 @@ export class TenantPolicyService {
     return out as EffectivePolicy;
   }
 
-  /** Current monotonic version; 1 when the tenant has never set a policy. */
+  /** The tenant's effective policy — stored rows over §3.1 defaults. */
+  async effectivePolicy(tenantId: string): Promise<EffectivePolicy> {
+    return this.withTenant(tenantId, (c) => this.effectivePolicyWith(c, tenantId));
+  }
+
+  /**
+   * Current monotonic version; '0' when the tenant has never committed a
+   * policy. The never-set sentinel MUST differ from the first committed
+   * version (1): they are different policies for cache-key purposes, and a
+   * shared value would leave pre-change cache entries reachable after the
+   * tenant's first policy commit.
+   */
   async currentVersion(tenantId: string): Promise<string> {
     const r = await this.withTenant(tenantId, (c) =>
       c.query(
-        `SELECT COALESCE(MAX(policy_version), 1) AS v FROM oweibo.kf_tenant_policies WHERE tenant_id = $1::uuid`,
+        `SELECT COALESCE(MAX(policy_version), 0) AS v FROM oweibo.kf_tenant_policies WHERE tenant_id = $1::uuid`,
         [tenantId],
       ),
     );
-    return String(r.rows[0]?.v ?? '1');
+    return String(r.rows[0]?.v ?? '0');
   }
 
-  private async classify(req: PolicyChangeRequest): Promise<ChangeClass> {
-    const current = await this.effectivePolicy(req.tenantId);
+  private classifyAgainst(current: EffectivePolicy, req: PolicyChangeRequest): ChangeClass {
     return classifyChangeSet(
       req.changes.map((c) => ({
         oldValue: current[c.dimension] ?? POLICY_DEFAULTS[c.dimension],
@@ -105,7 +127,7 @@ export class TenantPolicyService {
    * so an admin learns the approval cost BEFORE proposing rather than at submit.
    */
   async simulate(req: PolicyChangeRequest): Promise<ImpactReport> {
-    const classification = await this.classify(req);
+    const classification = this.classifyAgainst(await this.effectivePolicy(req.tenantId), req);
     // Affected-document estimate: a tightening may orphan already-indexed content.
     let affected = 0;
     if (classification === 'tightening') {
@@ -132,108 +154,116 @@ export class TenantPolicyService {
    * and must go through `applyApprovedRelaxation` with quorum.
    */
   async propose(req: PolicyChangeRequest): Promise<ApplyResult> {
-    const classification = await this.classify(req);
-    if (classification === 'no_change') return { kind: 'no_change' };
-    if (requiresDualControl(classification)) {
-      return {
-        kind: 'needs_dual_control',
-        classification,
-        quorum: POLICY_RELAXATION_FLOOR.quorum,
-      };
+    const r = await this.commit(req, { kind: 'pending' });
+    if (r.kind === 'rejected') {
+      // Unreachable: 'pending' auth yields needs_dual_control, never rejected.
+      throw new Error(`propose: unexpected rejection: ${r.reason}`);
     }
-    return this.commit(req, classification);
+    return r;
   }
 
   /**
    * §3.4 — apply a relaxation that reached quorum. Quorum is over DISTINCT
    * principals with the proposer counting as at most one, so the proposer alone
-   * can never satisfy it.
+   * can never satisfy it. If the change re-classifies as a tightening against
+   * the current policy, it applies regardless (quorum is a ceiling, not a gate,
+   * for tightenings).
    */
   async applyApprovedRelaxation(
     req: PolicyChangeRequest,
     votes: readonly RelaxationVote[],
-  ): Promise<ApplyResult | { readonly kind: 'rejected'; readonly reason: string }> {
-    const classification = await this.classify(req);
-    if (classification === 'no_change') return { kind: 'no_change' };
-    if (!requiresDualControl(classification)) return this.commit(req, classification);
-
+  ): Promise<RelaxationOutcome> {
     const verdict = evaluateQuorum(req.proposerId, votes, POLICY_RELAXATION_FLOOR.quorum);
-    if (verdict.kind === 'vetoed') {
-      return { kind: 'rejected', reason: `dissent veto by ${verdict.by}` };
-    }
-    if (verdict.kind === 'pending') {
-      return { kind: 'needs_dual_control', classification, quorum: POLICY_RELAXATION_FLOOR.quorum };
-    }
-    return this.commit(req, classification);
+    const auth: RelaxationAuth =
+      verdict.kind === 'approved' ? { kind: 'approved' }
+      : verdict.kind === 'vetoed' ? { kind: 'vetoed', by: verdict.by }
+      : { kind: 'pending' };
+    return this.commit(req, auth);
   }
 
   /**
-   * The ONLY write path. Value + version bump in one transaction (§1), then the
-   * event AFTER the durable write (INV-5).
+   * The ONLY write path. Classification, value change, and version bump all in
+   * ONE transaction (§1), serialized per tenant by an advisory lock; the event
+   * goes in the same transaction, AFTER the durable write (INV-5).
    */
-  private async commit(req: PolicyChangeRequest, classification: ChangeClass): Promise<ApplyResult> {
-    const backfillRequired = requiresBackfill(classification);
-    const version = await this.withTenant(req.tenantId, async (c) => {
-      await c.query('BEGIN');
-      try {
-        const cur = await c.query(
-          `SELECT COALESCE(MAX(policy_version), 0) AS v FROM oweibo.kf_tenant_policies WHERE tenant_id = $1::uuid`,
-          [req.tenantId],
-        );
-        const next = BigInt(cur.rows[0]?.v ?? 0) + 1n;
+  private async commit(req: PolicyChangeRequest, auth: RelaxationAuth): Promise<RelaxationOutcome> {
+    return this.withTenant(req.tenantId, async (c) => {
+      // Serialize commits per tenant: classification and the version bump are
+      // both read-then-write. Without this, a change classified as a tightening
+      // against a stale policy could commit as a relaxation of the current one.
+      await c.query(
+        `SELECT pg_advisory_xact_lock(hashtext('kf_tenant_policies'), hashtext($1))`,
+        [req.tenantId],
+      );
 
-        for (const ch of req.changes) {
-          await c.query(
-            `INSERT INTO oweibo.kf_tenant_policies
-               (tenant_id, dimension, category, value, policy_version, effective_from, updated_by)
-             VALUES ($1::uuid, $2, $3, $4::jsonb, $5, NOW(), $6::uuid)
-             ON CONFLICT (tenant_id, dimension) DO UPDATE
-               SET value = EXCLUDED.value,
-                   policy_version = EXCLUDED.policy_version,
-                   effective_from = EXCLUDED.effective_from,
-                   updated_by = EXCLUDED.updated_by`,
-            [
-              req.tenantId,
-              ch.dimension,
-              isCompliance(ch.dimension) ? 'compliance' : 'operational',
-              JSON.stringify(ch.value),
-              next.toString(),
-              req.proposerId,
-            ],
-          );
+      const current = await this.effectivePolicyWith(c, req.tenantId);
+      const classification = this.classifyAgainst(current, req);
+      if (classification === 'no_change') return { kind: 'no_change' } as const;
+      if (requiresDualControl(classification)) {
+        if (auth.kind === 'vetoed') {
+          return { kind: 'rejected', reason: `dissent veto by ${auth.by}` } as const;
         }
+        if (auth.kind !== 'approved') {
+          return {
+            kind: 'needs_dual_control',
+            classification,
+            quorum: POLICY_RELAXATION_FLOOR.quorum,
+          } as const;
+        }
+      }
+      const backfillRequired = requiresBackfill(classification);
 
-        // Every dimension shares the tenant's monotonic version, so a bump
-        // invalidates the whole cache namespace (§4: over-invalidation is a
-        // performance cost; under-invalidation is a correctness bug).
-        await c.query(
-          `UPDATE oweibo.kf_tenant_policies SET policy_version = $2 WHERE tenant_id = $1::uuid`,
-          [req.tenantId, next.toString()],
-        );
+      const cur = await c.query(
+        `SELECT COALESCE(MAX(policy_version), 0) AS v FROM oweibo.kf_tenant_policies WHERE tenant_id = $1::uuid`,
+        [req.tenantId],
+      );
+      const next = BigInt(cur.rows[0]?.v ?? 0) + 1n;
 
-        // INV-5: the event goes in the SAME transaction as the durable write,
-        // never before it.
+      for (const ch of req.changes) {
         await c.query(
-          `INSERT INTO oweibo.outbox (subject, payload) VALUES ('PolicyChanged', $1::jsonb)`,
+          `INSERT INTO oweibo.kf_tenant_policies
+             (tenant_id, dimension, category, value, policy_version, effective_from, updated_by)
+           VALUES ($1::uuid, $2, $3, $4::jsonb, $5, NOW(), $6::uuid)
+           ON CONFLICT (tenant_id, dimension) DO UPDATE
+             SET value = EXCLUDED.value,
+                 policy_version = EXCLUDED.policy_version,
+                 effective_from = EXCLUDED.effective_from,
+                 updated_by = EXCLUDED.updated_by`,
           [
-            JSON.stringify({
-              tenantId: req.tenantId,
-              policyVersion: next.toString(),
-              classification,
-              backfillRequired,
-              dimensions: req.changes.map((c2) => c2.dimension),
-            }),
+            req.tenantId,
+            ch.dimension,
+            isCompliance(ch.dimension) ? 'compliance' : 'operational',
+            JSON.stringify(ch.value),
+            next.toString(),
+            req.proposerId,
           ],
         );
-
-        await c.query('COMMIT');
-        return next.toString();
-      } catch (e) {
-        await c.query('ROLLBACK');
-        throw e;
       }
-    });
 
-    return { kind: 'applied', policyVersion: version, backfillRequired };
+      // Every dimension shares the tenant's monotonic version, so a bump
+      // invalidates the whole cache namespace (§4: over-invalidation is a
+      // performance cost; under-invalidation is a correctness bug).
+      await c.query(
+        `UPDATE oweibo.kf_tenant_policies SET policy_version = $2 WHERE tenant_id = $1::uuid`,
+        [req.tenantId, next.toString()],
+      );
+
+      // INV-5: the event goes in the SAME transaction as the durable write,
+      // never before it.
+      await c.query(
+        `INSERT INTO oweibo.outbox (subject, payload) VALUES ('PolicyChanged', $1::jsonb)`,
+        [
+          JSON.stringify({
+            tenantId: req.tenantId,
+            policyVersion: next.toString(),
+            classification,
+            backfillRequired,
+            dimensions: req.changes.map((c2) => c2.dimension),
+          }),
+        ],
+      );
+
+      return { kind: 'applied', policyVersion: next.toString(), backfillRequired } as const;
+    });
   }
 }

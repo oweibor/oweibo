@@ -185,4 +185,14 @@ describe('ADR-006 §3.4 — dual control floor', () => {
     expect(v.kind).toBe('vetoed');
     if (v.kind === 'vetoed') expect(v.by).toBe('admin-b');
   });
+
+  it("a principal's later dissent overrides their own earlier approval — dissent cannot be raced out", () => {
+    const v = evaluateQuorum('admin-a', [
+      { principalId: 'admin-b', approve: true },
+      { principalId: 'admin-a', approve: true },
+      { principalId: 'admin-b', approve: false }, // b withdraws
+    ]);
+    expect(v.kind).toBe('vetoed');
+    if (v.kind === 'vetoed') expect(v.by).toBe('admin-b');
+  });
 });

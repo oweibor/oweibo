@@ -2,7 +2,8 @@
 // Full startup sequence — wires all services and starts the API server + channel gateway.
 // @ts-nocheck
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import 'dotenv/config';
+// Env is loaded by the launcher via Node's --env-file (see the root
+// `dev:engine` / `start:engine` scripts). No runtime dotenv dependency.
 import { SecretsManager }          from './secrets/SecretsManager.js';
 import { NullVaultClient }         from './infrastructure/VaultClient.js';
 import { DistributedContextStore } from './agentic/DistributedContextStore.js';
@@ -95,6 +96,7 @@ import { DomainDepthMetrics }        from './domain/DomainDepthMetrics.js';
 import { SmeFeedbackAggregator }     from './domain/SmeFeedbackAggregator.js';
 import { SmeReviewService }          from './domain/SmeReviewService.js';
 import { runWithAdvisoryLock }       from './infrastructure/runWithAdvisoryLock.js';
+import { PartitionMaintenance }      from './infrastructure/PartitionMaintenance.js';
 import {
   HmacSnapshotSigner,
   HmacSnapshotVerifier,
@@ -102,7 +104,7 @@ import {
 }                                    from './action/HmacSnapshotVerifier.js';
 import { PromptRegistry }          from '@oweibo/prompt-registry';
 import { PromptAssembler }         from '@oweibo/prompt-registry';
-import { createServer }            from './api/server.js';
+import { startServer }             from './api/server.js';
 import { DocGeneratorPipeline }    from './doc-generator/DocGeneratorPipeline.js';
 import { DocGeneratorQueue }       from './doc-generator/queue/DocGeneratorQueue.js';
 import { DocGeneratorWorker }      from './doc-generator/queue/DocGeneratorWorker.js';
@@ -234,8 +236,38 @@ async function main(): Promise<void> {
   let shadowExecutor: ShadowExecutor | undefined;
   let multiPartyApproval: MultiPartyApprovalService | undefined;
   let quotaService: QuotaService | undefined;
+  // Hoisted to function scope: these are constructed inside the DATABASE_URL
+  // block below but referenced unconditionally at the startServer() call (the
+  // route-mount spreads treat `undefined` as "route disabled"). Declaring them
+  // with block scope inside the `if` made them out-of-scope at startServer —
+  // a ReferenceError that @ts-nocheck hid and that stopped the API listening.
+  let slaService: ApprovalSlaService | undefined;
+  let rateLimitPolicyResolver: RateLimitPolicyResolver | undefined;
+  let tenantDomainLookup: PgTenantDomainBindingLookup | undefined;
+  let domainRegistry: DomainRegistry | undefined;
+  let tenantDomainBindings: TenantDomainBindingService | undefined;
+  let complianceEvaluations: PgComplianceEvaluationReader | undefined;
+  let calibrationService: CalibrationService | undefined;
+  let domainDepthMetrics: DomainDepthMetrics | undefined;
+  let smeReviewService: SmeReviewService | undefined;
+  let lineageRecorder: LineageRecorder | undefined;
+  let connectorRegistry: ConnectorRegistry | undefined;
+  let tenantConnectorService: PgTenantConnectorService | undefined;
+  let tenantTemplateRegistry: TenantTemplateRegistry | undefined;
+  let hitlHandoff: HitlHandoffService | undefined;
+  let forensicStorage: import('@oweibo/core-contracts').IForensicPacketStorage | undefined;
+  let rollbackOrchestrator: RollbackOrchestrator | undefined;
+  let tenantPolicyService: import('./fabric/policy/TenantPolicyService.js').TenantPolicyService | undefined;
+  let connectorUpgradeService: import('./fabric/upgrade/ConnectorUpgradeService.js').ConnectorUpgradeService | undefined;
   if (process.env['DATABASE_URL']) {
     pgPool = new Pool({ connectionString: process.env['DATABASE_URL'] });
+
+    // K.9: connector-fabric governance services (tenant policy + rollout).
+    // Pool-only construction; the fabric routes mount when both exist.
+    const { TenantPolicyService } = await import('./fabric/policy/TenantPolicyService.js');
+    const { ConnectorUpgradeService } = await import('./fabric/upgrade/ConnectorUpgradeService.js');
+    tenantPolicyService = new TenantPolicyService(pgPool);
+    connectorUpgradeService = new ConnectorUpgradeService(pgPool);
     const promptRegistry = new PromptRegistry(
       pgPool,
       process.env['LANGFUSE_SECRET_KEY'],
@@ -257,7 +289,7 @@ async function main(): Promise<void> {
     // integration is constructed but its tryConsume/preflight/evaluate
     // short-circuits to allow/no_grant/pass — the gate stays
     // byte-identical-to-today when ACTION_TRUST_LADDER_ENABLED=false.
-    const slaService = new ApprovalSlaService(pgPool);
+    slaService = new ApprovalSlaService(pgPool);
     multiPartyApproval = new MultiPartyApprovalService(pgPool);
     quotaService = new QuotaService(pgPool);
     const budgetEstimator = new BudgetEstimator(pgPool);
@@ -274,7 +306,7 @@ async function main(): Promise<void> {
     // F.4.4: RateLimitPolicyResolver backs both the gate-side hot path
     // (via RateLimiter, which can resolve internally) and the admin
     // /actions/policies/ratelimit surface introduced here.
-    const rateLimitPolicyResolver = new RateLimitPolicyResolver(pgPool);
+    rateLimitPolicyResolver = new RateLimitPolicyResolver(pgPool);
     const contentInspectors = new ContentInspectorRegistry();
     contentInspectors.register(new GenericPiiInspector());
     contentInspectors.register(new EmailContentInspector());
@@ -290,7 +322,7 @@ async function main(): Promise<void> {
     // The evaluator's default bypass resolver is scopeBasedBypassResolver
     // (declared in ComplianceRuleEvaluator.ts) — it reads
     // ctx.principalScopes and matches against rule.bypassPolicy.
-    const tenantDomainLookup = new PgTenantDomainBindingLookup(pgPool);
+    tenantDomainLookup = new PgTenantDomainBindingLookup(pgPool);
     const compliancePackRegistry = new ComplianceRulePackRegistry(undefined, {
       tenantDomainLookup: (t) => tenantDomainLookup.forTenant(t),
     });
@@ -299,9 +331,9 @@ async function main(): Promise<void> {
     // surface. Registry is the canonical taxonomy (v1 bundled catalog);
     // bindingService writes tenant_domain_binding rows; evaluationsReader
     // surfaces compliance_rule_evaluations rows for the audit page.
-    const domainRegistry            = new DomainRegistry();
-    const tenantDomainBindings      = new TenantDomainBindingService(pgPool);
-    const complianceEvaluations     = new PgComplianceEvaluationReader(pgPool);
+    domainRegistry            = new DomainRegistry();
+    tenantDomainBindings      = new TenantDomainBindingService(pgPool);
+    complianceEvaluations     = new PgComplianceEvaluationReader(pgPool);
 
     // ── F.3.1: CalibrationService + snapshot signer/verifier ───────────────
     //
@@ -324,7 +356,7 @@ async function main(): Promise<void> {
       console.warn('[oweibo] snapshot signer/verifier dormant:',
         err instanceof Error ? err.message : String(err));
     }
-    const calibrationService = new CalibrationService(pgPool, {
+    calibrationService = new CalibrationService(pgPool, {
       ...(snapshotSigner ? { snapshotSigner } : {}),
     });
     // F.4.6: calibrationService now flows into createServer below for
@@ -368,13 +400,13 @@ async function main(): Promise<void> {
     // review flow can take them via runtime composition, but no periodic
     // tick is wired for them.
     const domainCurrencyMonitor    = new DomainCurrencyMonitor(pgPool);
-    const domainDepthMetrics       = new DomainDepthMetrics(pgPool);
+    domainDepthMetrics       = new DomainDepthMetrics(pgPool);
     const smeFeedbackAggregator    = new SmeFeedbackAggregator(pgPool);
     // F.3.4: SmeReviewService handles the per-queue-item review lifecycle
     // (enqueue → reviewers vote → aggregation via SmeFeedbackAggregator).
     // Constructed here so the F.4 /domains/sme-review admin routes can
     // take it via runtime composition.
-    const smeReviewService         = new SmeReviewService(pgPool);
+    smeReviewService         = new SmeReviewService(pgPool);
     // domainDepthMetrics + smeReviewService now flow into createServer
     // for the F.4.5 /tenants/:tenantId/domains/* surface.
     void smeFeedbackAggregator;     // event-driven; no admin-web route consumes it directly
@@ -405,6 +437,40 @@ async function main(): Promise<void> {
       console.log(`[oweibo] DomainCurrencyMonitor cron scheduled: ${cronExpr}`);
     }
 
+    // Daily partition-maintenance tick (000063): keeps audit_log +
+    // action_lineage monthly partitions created ahead of rollover so the
+    // 000062 DEFAULT partitions stay empty. Idempotent DDL behind a
+    // SECURITY DEFINER function; the advisory lock only de-dupes replicas.
+    const partitionCronExpr = process.env['PARTITION_MAINTENANCE_CRON'] ?? '30 2 * * *';  // daily 02:30 UTC
+    if (partitionCronExpr.toLowerCase() === 'off' || partitionCronExpr === '') {
+      console.log('[oweibo] PartitionMaintenance cron disabled (PARTITION_MAINTENANCE_CRON=off)');
+    } else {
+      const partitionMaintenance = new PartitionMaintenance(pgPool);
+      const partitionTick = (): void => {
+        void runWithAdvisoryLock(pgPool!, 'partition_maintenance_tick', async () => {
+          const r = await partitionMaintenance.tick();
+          console.log('[oweibo] PartitionMaintenance.tick():', {
+            ensured: r.rows.length,
+            created: r.created,
+            skippedDefaultRows: r.skippedDefaultRows,
+            skippedLockTimeout: r.skippedLockTimeout,
+          });
+        }).catch((err: unknown) => {
+          console.error('[oweibo] PartitionMaintenance.tick() failed:',
+            err instanceof Error ? err.message : String(err));
+        });
+      };
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const cron = require('node-cron') as { schedule(expr: string, fn: () => void): unknown };
+      cron.schedule(partitionCronExpr, partitionTick);
+      // Boot tick: a fixed-time daily cron never fires on a process that
+      // isn't running at that time (dev machines, spot workers). Running
+      // once at startup guarantees the window is ensured on every boot;
+      // the advisory lock de-dupes replicas booting together.
+      partitionTick();
+      console.log(`[oweibo] PartitionMaintenance cron scheduled: ${partitionCronExpr} (+boot tick)`);
+    }
+
     actionTrustLadder = new ActionTrustLadder(pgPool, {
       slaAttacher: slaService,
       rateLimiter: { tryConsume: (t, c) => rateLimiter.tryConsume(t, c) },
@@ -422,13 +488,12 @@ async function main(): Promise<void> {
     // Write-side wiring is the responsibility of ActionTrustLadder + the
     // execution path; this construction supplies the read API the admin
     // surface needs in /tenants/:tenantId/lineage/*.
-    const lineageRecorder = new LineageRecorder(pgPool);
+    lineageRecorder = new LineageRecorder(pgPool);
 
     // ── F.4.7: connectors + templates admin surfaces ──────────────────────
     // ConnectorRegistry loads the platform catalog from disk; degrades
     // to an empty registry when the directory is missing (the route
     // still mounts and surfaces 'unknown_connector' on install).
-    let connectorRegistry: ConnectorRegistry;
     try {
       connectorRegistry = await ConnectorRegistry.loadFromDirectory(
         ConnectorRegistry.defaultDirectory(),
@@ -438,8 +503,12 @@ async function main(): Promise<void> {
         err instanceof Error ? err.message : String(err));
       connectorRegistry = ConnectorRegistry.fromEntries([]);
     }
-    const tenantConnectorService = new PgTenantConnectorService(pgPool);
-    const tenantTemplateRegistry = new TenantTemplateRegistry(pgPool);
+    // K.2 (arch §9.5): install-order enforcement — content connectors
+    // refuse to install until an identity connector is active.
+    tenantConnectorService = new PgTenantConnectorService(pgPool, {
+      identityConnectorIds: ['google-workspace-idp'],
+    });
+    tenantTemplateRegistry = new TenantTemplateRegistry(pgPool);
 
     // ── F.2.3: forensic packet pipeline + HITL handoff ────────────────────
     //
@@ -450,8 +519,6 @@ async function main(): Promise<void> {
     // infra/forensic-signer in Vault (CALIBRATION_SIGNING_KEY equivalent
     // for packets); without it we skip construction with a startup warning.
     let forensicBuilder: ForensicPacketBuilder | undefined;
-    let hitlHandoff:     HitlHandoffService     | undefined;
-    let forensicStorage: import('@oweibo/core-contracts').IForensicPacketStorage | undefined;
     try {
       forensicStorage = resolveForensicStorageFromEnv();
       if (forensicStorage) {
@@ -524,7 +591,7 @@ async function main(): Promise<void> {
     }));
     rollbackRegistry.register(new GenericWebhookRollbackAdapter());
 
-    const rollbackOrchestrator = new RollbackOrchestrator(pgPool, rollbackRegistry, {
+    rollbackOrchestrator = new RollbackOrchestrator(pgPool, rollbackRegistry, {
       onRollbackSuccess: async ({ tenantId, proposalId }) => {
         await postExecVerifier.supersedeForProposal(tenantId, proposalId);
       },
@@ -660,7 +727,9 @@ async function main(): Promise<void> {
   void docGenWorker.start();
 
   // ── HTTP server ───────────────────────────────────────────────────────────
-  await createServer({
+  // startServer builds the app AND binds the port (createServer only builds
+  // it). main.ts previously called createServer, so the API never listened.
+  await startServer({
     secrets,
     intentPipeline: intentPipeline as any,
     taskEventBus:   eventBus as any,
@@ -710,6 +779,11 @@ async function main(): Promise<void> {
     connectorRegistry,
     tenantConnectorService,
     tenantTemplateRegistry,
+    // K.9: fabric governance surface (policy + rollout) — mounts when both
+    // services exist (i.e. whenever DATABASE_URL is configured).
+    ...(tenantPolicyService && connectorUpgradeService
+      ? { tenantPolicyService, connectorUpgradeService }
+      : {}),
     // F.5.9 server: enables POST /api/v1/_internal/memories/seed when both
     // the token AND a memory orchestrator are available. The token is the
     // shared internal secret -- workers (tenant-bootstrap-worker) hold

@@ -1071,14 +1071,14 @@ model QuotaPolicy {
   tenantId               String   @map("tenant_id") @db.Uuid
   quotaKind              String   @map("quota_kind")
   scope                  String   @default("*")
-  window                 String
+  windowKind             String   @map("window_kind")
   limitValue             BigInt   @map("limit_value")
   coldStartLimit         BigInt?  @map("cold_start_limit")
   coldStartDurationDays  Int      @default(30) @map("cold_start_duration_days")
   enforcementMode        String   @default("hard") @map("enforcement_mode")
   updatedAt              DateTime @default(now()) @map("updated_at") @db.Timestamptz
 
-  @@id([tenantId, quotaKind, scope, window])
+  @@id([tenantId, quotaKind, scope, windowKind])
   @@map("quota_policies")
   @@schema("oweibo")
 }
@@ -1088,13 +1088,13 @@ model QuotaConsumption {
   tenantId     String   @map("tenant_id") @db.Uuid
   quotaKind    String   @map("quota_kind")
   scope        String   @default("*")
-  window       String
+  windowKind   String   @map("window_kind")
   windowStart  DateTime @map("window_start") @db.Date
   consumed     BigInt   @default(0)
   updatedAt    DateTime @default(now()) @map("updated_at") @db.Timestamptz
 
-  @@id([tenantId, quotaKind, scope, window, windowStart])
-  @@index([tenantId, quotaKind, scope, window, windowStart(sort: Desc)])
+  @@id([tenantId, quotaKind, scope, windowKind, windowStart])
+  @@index([tenantId, quotaKind, scope, windowKind, windowStart(sort: Desc)])
   @@map("quota_consumption")
   @@schema("oweibo")
 }

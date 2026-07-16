@@ -43,8 +43,12 @@ function requirePlatformAdmin(
   res: Response,
   next: NextFunction,
 ): void {
-  // Prefer scope-based check (identity-service tokens include scopes[])
-  if (req.scopes.includes('platform:admin')) {
+  // Prefer scope-based check (identity-service tokens include scopes[]).
+  // platform:config:write is granted only to platform_admin (see
+  // apps/identity/src/policy.ts) — the correct gate for platform mutations.
+  // NOTE: 'platform:admin' used previously is not a real scope in the catalog,
+  // so this guard rejected every identity token.
+  if (req.scopes.includes('platform:config:write')) {
     next();
     return;
   }

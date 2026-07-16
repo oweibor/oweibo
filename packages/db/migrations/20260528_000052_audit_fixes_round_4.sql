@@ -36,11 +36,16 @@ BEGIN
   END IF;
 END $$;
 
--- ── D.6: FK on tenant_domain_binding.domain_slug → domain_registry ─────
+-- ── D.6: FK on tenant_domain_binding.domain_slug → domain_catalog ──────
 -- The TenantDomainBindingService now validates slugs against the
 -- registry at write time, but the DB had no constraint — ad-hoc SQL
 -- could still create dead bindings. Add the FK so unknown slugs are
 -- rejected by the database itself.
+--
+-- Defect fix (2026-07-10): the registry table is oweibo.domain_catalog
+-- (created by 000032), not oweibo.domain_registry. The original name made
+-- this migration unappliable on any database, so no environment has the FK
+-- or the S.0 column above — the correction is compat-safe by construction.
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -53,11 +58,11 @@ BEGIN
     -- only writer.
     DELETE FROM oweibo.tenant_domain_binding b
      WHERE NOT EXISTS (
-       SELECT 1 FROM oweibo.domain_registry r WHERE r.slug = b.domain_slug
+       SELECT 1 FROM oweibo.domain_catalog r WHERE r.slug = b.domain_slug
      );
     ALTER TABLE oweibo.tenant_domain_binding
       ADD CONSTRAINT tenant_domain_binding_slug_fkey
-        FOREIGN KEY (domain_slug) REFERENCES oweibo.domain_registry(slug)
+        FOREIGN KEY (domain_slug) REFERENCES oweibo.domain_catalog(slug)
           ON DELETE RESTRICT;
   END IF;
 END $$;

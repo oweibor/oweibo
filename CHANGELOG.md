@@ -9,6 +9,40 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added — local platform bring-up kit (web-UI-first MVP)
+
+The platform (identity + core-engine + admin-web + Postgres) had no automated,
+correct way to be stood up from scratch — the documented flow applied only
+`001` and relied on `prisma migrate deploy` (which reads a non-existent
+`prisma/migrations/`). This adds a reproducible bring-up path to the login
+screen at http://localhost:3120.
+
+- `docker-compose.dev.yml` (new): minimal dev data plane — Postgres 16 + Redis 7 — separate from the legacy agent stack in `docker-compose.yml`
+- `.env.dev.example` (new): canonical dev env (git-ignored `.env.dev`), loaded per-service via Node `--env-file`
+- `scripts/gen-jwt-keys.sh` (new): generates an RS256 keypair into `.env.dev` (identity requires `JWT_PRIVATE_KEY`/`JWT_PUBLIC_KEY`; nothing generated them before)
+- `scripts/db-setup.ts` (new): creates `betterauth.*` tables via a scoped `prisma db push`, then applies every `packages/db/migrations/*.sql` in order, tracked in `public.schema_migrations` (idempotent, re-runnable). Wraps only migrations that do not self-manage a transaction or use `CREATE INDEX CONCURRENTLY`
+- `packages/db/prisma/betterauth.prisma` (new): betterauth-only schema used by `db-setup` step 1, so those tables get the exact columns BetterAuth queries without a full `prisma db push` (which cannot express the oweibo RLS/partitioned tables)
+- `scripts/seed-admin.ts` (new): signs up the first user via BetterAuth and grants `platform_admin` in `oweibo.users` (previously required manual SQL, or login was impossible)
+- Root `package.json` scripts: `dev:up`, `dev:down`, `gen:keys`, `db:setup`, `seed:admin`, `dev:identity`, `dev:engine`, `dev:web`
+- `packages/core-engine` `dev`/`start` scripts
+- `README.md`: replaced the stale "Getting started" (apply-only-`001` + `prisma migrate deploy`) with the working web-UI quick start, plus the core-engine bring-up
+
+### Fixed
+
+- `packages/db/migrations/001_initial_schema.sql`: `oweibo.tenants.created_by` referenced `oweibo.users(id)` inline, but `oweibo.users` is created later in the same migration — `001` failed on a fresh database. The FK is now added after `oweibo.users` exists (idempotently)
+- `apps/identity/src/services/betterAuth.ts`: force UUID primary keys (`advanced.database.generateId: 'uuid'`). The `betterauth_user_sync` trigger casts `NEW.id::uuid`; BetterAuth's default non-UUID ids would have made every sign-up fail
+- **core-engine could never boot as a service** (`packages/core-engine/src/main.ts`, `@ts-nocheck`, so none of this was caught):
+  - imported `dotenv/config` (not a dependency) — removed; env is loaded via `--env-file`
+  - called `createServer(...)` (builds the app but never binds a port) instead of `startServer(...)` — the API never listened
+  - `hitlHandoff`, `forensicStorage`, `lineageRecorder`, `rollbackOrchestrator`, `domainRegistry`, and ~11 other services were declared with block scope inside `if (DATABASE_URL)` but referenced unconditionally at the `startServer` call → `ReferenceError` on boot; hoisted to function scope
+- `packages/core-engine/src/api/server.ts`: `getInfraCredentials('jwt')` returns `null` under the dev NullVaultClient — guarded so boot doesn't crash on deref
+- `packages/core-engine/src/api/middleware/authenticate.ts`: replaced the legacy **HS256 shared-secret** verifier with **RS256 JWKS** verification against identity's `/.well-known/jwks.json` (kid-allowlisted, iss/aud/exp checked; tenant read from `ctx.tenantId`). identity mints RS256 tokens, so the old verifier rejected every one of them. Output shape (`req.userId/tenantId/scopes`) unchanged — no route edits. Uses node:crypto + global `fetch` (no new dependency)
+- core-engine per-route authorization: added `packages/core-engine/src/api/middleware/authorize.ts` (`requireScopes`, method-aware — read methods checked against `read` scopes, mutating methods against `write`) and applied it at every `/api/v1` mount in `server.ts`, so scope enforcement is even across `tasks`, `hitl`, `skills`, `actions`, the `/tenants/:tenantId/*` surfaces, and `/platform`. Previously most routes only authenticated; the one existing scope check (`platform.routes.ts`) tested `'platform:admin'` — not a scope in the catalog — so it rejected every real token; now checks `platform:config:write`. `platform_admin`/`tenant_admin` tokens carry the full scope set, so admin flows are unaffected; `tenant_developer`/`tenant_viewer` are limited per role
+
+### Security
+
+- **Closed the action-trust-ladder "pin floor" bypass.** High-risk classes (`financial.payment`, `personnel.access_grant`/`access_revoke`, `irreversible.delete_resource`/`public_publish`) are meant to always require human approval, but the invariant was only enforced on the gate's defaults + auto-promotion — the operator "pin" write path (`DryRunRegistry.pin`, reachable via `POST /actions/trust-matrix/pin`) had no floor check, so a tenant could pin `financial.payment → execute` and grant the agent standing, unattended authority to move money. New `packages/core-engine/src/action/ActionClassFloor.ts` centralises the floor (`isFloorClass` / `pinViolatesFloor` / `PinFloorViolationError`); `DryRunRegistry.pin` now rejects any pin of a floor class to `execute` (→ 403 `pin_below_action_class_floor`), and `ActionTrustLadder` consumes the same module. The floor is extensible via `ACTION_PIN_FLOOR_CLASSES` (add-only). Pin/unpin routes were also raised from `tasks:write` to `tenant:settings:write` (tenant-admin), since pinning changes how autonomously the agent may act. Covered by `ActionClassFloor.test.ts` (6 cases)
+
 ### Pending (Phase 7–8)
 
 - Launch hardening: k6 load test (500 RPS sustained), chaos testing, DR rehearsal, external pentest

@@ -17,6 +17,7 @@
 import { Router, type Response } from 'express';
 import { z } from 'zod';
 import type { AuthenticatedRequest } from '../middleware/authenticate.js';
+import { requireScopes } from '../middleware/authorize.js';
 import type { ActionTrustLadder } from '../../action/ActionTrustLadder.js';
 import type { DryRunRegistry } from '../../action/DryRunRegistry.js';
 import type { ShadowExecutor } from '../../action/ShadowExecutor.js';
@@ -98,7 +99,10 @@ export function createActionsRouter(deps: ActionsRouterDeps): Router {
     }
   });
 
-  router.post('/trust-matrix/pin', async (req, res) => {
+  // Pinning a trust mode is tenant-governance: it can loosen how autonomously
+  // the agent acts. Require a tenant-admin-level scope (tenant:settings:write),
+  // not the tasks:write that the rest of /actions uses.
+  router.post('/trust-matrix/pin', requireScopes(['tenant:settings:write']), async (req, res) => {
     const r = req as unknown as AuthenticatedRequest;
     const parsed = PinBody.safeParse(req.body);
     if (!parsed.success) {
@@ -118,7 +122,7 @@ export function createActionsRouter(deps: ActionsRouterDeps): Router {
     }
   });
 
-  router.post('/trust-matrix/unpin', async (req, res) => {
+  router.post('/trust-matrix/unpin', requireScopes(['tenant:settings:write']), async (req, res) => {
     const r = req as unknown as AuthenticatedRequest;
     const parsed = UnpinBody.safeParse(req.body);
     if (!parsed.success) {
@@ -197,6 +201,10 @@ export function createActionsRouter(deps: ActionsRouterDeps): Router {
 
 function handleError(err: unknown, res: Response): void {
   const message = err instanceof Error ? err.message : 'internal_error';
+  if (err instanceof Error && (err as { code?: string }).code === 'pin_below_action_class_floor') {
+    res.status(403).json({ error: 'pin_below_action_class_floor', message });
+    return;
+  }
   if (/already\s/.test(message)) {
     res.status(409).json({ error: 'conflict', message });
     return;

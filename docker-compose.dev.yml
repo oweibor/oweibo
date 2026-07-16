@@ -1,0 +1,55 @@
+# docker-compose.dev.yml — minimal data plane for local platform bring-up.
+#
+# This is deliberately separate from docker-compose.yml (the legacy kilo/agent
+# stack). It provides only what the platform services (apps/identity,
+# core-engine, apps/admin-web) need to boot and reach the login screen:
+#   - Postgres 16  (betterauth.* + oweibo.* schemas, RLS)
+#   - Redis 7      (idempotency, rate-limit, JWKS cache, event bus)
+#
+# Bring up:   docker compose -f docker-compose.dev.yml up -d
+# Tear down:  docker compose -f docker-compose.dev.yml down          (keeps data)
+#             docker compose -f docker-compose.dev.yml down -v       (wipes data)
+#
+# The connection string this exposes matches DATABASE_URL in .env.dev.
+# The `postgres` superuser is used in dev so the betterauth_user_sync trigger
+# (SECURITY DEFINER) can bypass FORCE ROW LEVEL SECURITY when mirroring users.
+
+name: oweibo-dev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: oweibo-dev-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: oweibo
+    volumes:
+      - oweibo_dev_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d oweibo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: oweibo-dev-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - oweibo_dev_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  oweibo_dev_pg:
+  oweibo_dev_redis:

@@ -42,8 +42,17 @@ export function validateBundle(bundle: ConnectorBundle): ValidationReport {
   if (!isJsonSchemaLike(spec.credentialSchema)) {
     v.push({ path: 'spec.credentialSchema', message: 'must be a JSONSchema-like object' });
   }
-  if (spec.capabilities.length === 0) {
-    v.push({ path: 'spec.capabilities', message: 'at least one capability is required' });
+  // K.2 amendment (ADR-012 §3.2 + arch §9.5): a source-adapter-only
+  // connector — the IdP connector is the canonical case: identity-only,
+  // "no content/action capabilities in the manifest sense" — is legal.
+  // What is NOT legal is a connector with no surface at all: zero
+  // capabilities AND zero port bindings.
+  const boundPorts = Object.values(spec.ports ?? {}).filter((p) => p !== undefined).length;
+  if (spec.capabilities.length === 0 && boundPorts === 0) {
+    v.push({
+      path: 'spec.capabilities',
+      message: 'at least one capability or one port binding is required (a connector must have SOME surface)',
+    });
   }
   for (const [i, cap] of spec.capabilities.entries()) {
     const base = `spec.capabilities[${i}]`;

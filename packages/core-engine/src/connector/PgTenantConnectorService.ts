@@ -55,6 +55,16 @@ export interface PgTenantConnectorServiceOptions {
    * CredentialResolver. Omit in dev / tests where Vault is absent.
    */
   vault?: IVaultClient;
+  /**
+   * K.2 (ADR-010 §3.6 / arch §9.5): install-order enforcement. When set,
+   * installing any connector NOT in this list is refused until the
+   * tenant has at least one listed identity connector in status
+   * 'active' (= Healthy — validateConnection promoted it). The one
+   * explicit ordering dependency; deliberately not a general dependsOn
+   * model. Wire with ['google-workspace-idp'] (plus future SAML/OIDC
+   * IdP connector ids) in main.ts; omit in contexts that predate K.2.
+   */
+  identityConnectorIds?: readonly string[];
 }
 
 export class CredentialNotResolvableError extends Error {
@@ -73,11 +83,26 @@ export class DuplicateConnectorInstanceError extends Error {
   }
 }
 
+export class IdpConnectorRequiredError extends Error {
+  public readonly code = 'install_blocked_idp_required' as const;
+  constructor(public readonly connectorId: string, identityConnectorIds: readonly string[]) {
+    super(
+      `install_blocked_idp_required: installing '${connectorId}' requires an active identity ` +
+      `connector first (one of: ${identityConnectorIds.join(', ')}). The IdP supplies the ` +
+      `principals and group memberships every permission check evaluates against — install ` +
+      `and activate it, then retry (arch §9.5).`,
+    );
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 export class PgTenantConnectorService {
   private readonly vault: IVaultClient | undefined;
+  private readonly identityConnectorIds: readonly string[] | undefined;
 
   constructor(private readonly pool: Pool, opts: PgTenantConnectorServiceOptions = {}) {
     this.vault = opts.vault;
+    this.identityConnectorIds = opts.identityConnectorIds;
   }
 
   async listForTenant(tenantId: string): Promise<readonly InstalledConnectorRow[]> {
@@ -125,6 +150,23 @@ export class PgTenantConnectorService {
       }
     }
     return this.tx(req.tenantId, async (client) => {
+      // K.2 install-order gate: content/action connectors wait for an
+      // active IdP. Identity connectors themselves always install (they
+      // ARE the dependency). Checked inside the transaction so the
+      // just-installed IdP row is visible to an immediate follow-up.
+      if (this.identityConnectorIds && !this.identityConnectorIds.includes(req.connectorId)) {
+        const idp = await client.query(
+          `SELECT 1 FROM oweibo.tenant_connectors
+            WHERE tenant_id = $1::uuid
+              AND connector_id = ANY($2::text[])
+              AND status = 'active'
+            LIMIT 1`,
+          [req.tenantId, [...this.identityConnectorIds]],
+        );
+        if (idp.rowCount === 0) {
+          throw new IdpConnectorRequiredError(req.connectorId, this.identityConnectorIds);
+        }
+      }
       let r;
       try {
         r = await client.query<{

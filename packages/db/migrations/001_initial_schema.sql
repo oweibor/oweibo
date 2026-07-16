@@ -47,7 +47,10 @@ CREATE TABLE IF NOT EXISTS oweibo.tenants (
   }',
   home_region       TEXT        NOT NULL DEFAULT 'us-east-1',
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  created_by        UUID        REFERENCES oweibo.users(id)
+  -- FK to oweibo.users(id) is added below, AFTER oweibo.users exists.
+  -- An inline REFERENCES here fails on a fresh database because
+  -- oweibo.users is created later in this same migration.
+  created_by        UUID
 );
 
 -- No tenant_id column; platform_admin_bypass is the only non-owner policy
@@ -85,6 +88,19 @@ CREATE POLICY self_read ON oweibo.users
   USING (id::text = current_setting('app.user_id', true));
 
 GRANT SELECT, INSERT, UPDATE ON oweibo.users TO oweibo_app;
+
+-- ── Deferred FK: oweibo.tenants.created_by → oweibo.users(id) ───────────────
+-- Declared here rather than inline in oweibo.tenants above, because that
+-- table is created before oweibo.users. Idempotent so re-running 001 is safe.
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'tenants_created_by_fkey'
+  ) THEN
+    ALTER TABLE oweibo.tenants
+      ADD CONSTRAINT tenants_created_by_fkey
+      FOREIGN KEY (created_by) REFERENCES oweibo.users(id);
+  END IF;
+END $$;
 
 -- ── BetterAuth ↔ oweibo.users sync trigger ─────────────────────────────────
 

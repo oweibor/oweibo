@@ -85,19 +85,28 @@ describeOrSkip('usage_records RLS lockdown', () => {
     await pool.end();
   });
 
-  it('oweibo_app under app.tenant_id=A sees only tenant A rows', async () => {
+  it('oweibo_app cannot SELECT raw usage rows at all — even under its own tenant context', async () => {
+    // Design decision in migration 000015, stated verbatim there: "No SELECT
+    // grant — tenants do not read raw usage rows; cross-tenant rollups go
+    // through the SECURITY DEFINER aggregation function." The original
+    // version of this test asserted tenant-scoped SELECT worked, which
+    // contradicts the very migration this suite is named after (found
+    // 2026-07-10 when the suite first ran against a live migrated DB).
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
       await client.query(`SELECT set_config('app.tenant_id', $1, true)`, [tenantAId]);
-      const result = await client.query<{ tenant_id: string }>(
-        `SELECT tenant_id FROM oweibo.usage_records WHERE tenant_id IN ($1::uuid, $2::uuid)`,
-        [tenantAId, tenantBId],
-      );
-      await client.query('COMMIT');
-      expect(result.rows).toHaveLength(1);
-      expect(result.rows[0]!.tenant_id).toBe(tenantAId);
+      await expect(
+        client.query(
+          `SELECT tenant_id FROM oweibo.usage_records WHERE tenant_id IN ($1::uuid, $2::uuid)`,
+          [tenantAId, tenantBId],
+        ),
+      ).rejects.toThrow(/permission denied/i);
     } finally {
+      // The failed statement leaves the transaction aborted — roll back
+      // before releasing so the pooled connection is not poisoned for the
+      // next test.
+      await client.query('ROLLBACK').catch(() => undefined);
       client.release();
     }
   });

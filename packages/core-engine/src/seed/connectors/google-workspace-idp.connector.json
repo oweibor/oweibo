@@ -1,0 +1,25 @@
+{
+  "connectorId": "google-workspace-idp",
+  "displayName": "Google Workspace (Identity)",
+  "category": "identity",
+  "description": "Foundational identity connector: principals, groups, and nested-group membership from Google Workspace via the Admin SDK Directory API. Identity-only — no content, indexing, or action capabilities; content connectors cannot be installed until this (or another IdP connector) is active.",
+  "catalogVersion": "1.0.0",
+  "credentialSchema": {
+    "$schema": "https://json-schema.org/draft-07/schema",
+    "type": "object",
+    "required": ["client_email", "private_key", "impersonation_subject"],
+    "properties": {
+      "client_email": { "type": "string", "description": "Service-account email" },
+      "private_key": { "type": "string", "description": "Service-account private key (PEM)" },
+      "impersonation_subject": { "type": "string", "description": "Workspace super-admin the service account impersonates (domain-wide delegation)" },
+      "customer_id": { "type": "string", "description": "Directory customer id; defaults to my_customer" }
+    }
+  },
+  "capabilities": [],
+  "recommendedFor": ["*"],
+  "certification": "community",
+  "sdkVersion": "1.1.0",
+  "enablementTier": 0,
+  "heartbeatSeconds": 300,
+  "supports": { "principals": true, "groups": true }
+}

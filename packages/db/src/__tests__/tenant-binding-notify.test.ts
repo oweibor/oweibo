@@ -9,6 +9,7 @@
  * Requires: TEST_DATABASE_URL pointing at a Postgres with all migrations
  * applied and oweibo_app credentials.
  */
+import './test-env.js'; // MUST precede withTenantContext (hoisted PrismaClient reads DATABASE_URL)
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Pool } from 'pg';
 import {

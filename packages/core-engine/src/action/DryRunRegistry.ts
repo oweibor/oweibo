@@ -12,6 +12,7 @@
  */
 import type { Pool, PoolClient } from 'pg';
 import type { GatePrincipal } from '@oweibo/core-contracts';
+import { pinViolatesFloor, PinFloorViolationError } from './ActionClassFloor.js';
 
 export interface ProposalSummary {
   id: string;
@@ -248,6 +249,17 @@ export class DryRunRegistry {
     mode: 'execute' | 'dry_run' | 'shadow' | 'require_approval' | 'forbidden',
     reason: string,
   ): Promise<void> {
+    // Platform floor (write-path guard): a high-risk class
+    // (financial/irreversible/personnel-access, plus any
+    // ACTION_PIN_FLOOR_CLASSES) may never be pinned to `execute`. The gate's
+    // defaults and auto-promotion already respect the floor, but a direct pin
+    // previously bypassed it — letting an operator grant standing, unattended
+    // authority for e.g. financial.payment. Enforced here so every caller of
+    // pin() is covered, not just the HTTP route.
+    if (pinViolatesFloor(actionClass, mode)) {
+      throw new PinFloorViolationError(actionClass, mode);
+    }
+
     const tenantId = principal.ctx.tenantId ?? '';
     const client = await this.pool.connect();
     try {

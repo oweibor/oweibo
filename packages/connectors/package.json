@@ -1,0 +1,30 @@
+{
+  "name": "@oweibo/connectors",
+  "version": "0.1.0",
+  "private": true,
+  "description": "K-series first-party connectors. One package, many connectors; each connector directory depends ONLY on @oweibo/connector-sdk (INV-17, enforced by dependency-cruiser); src/index.ts is the composition root the platform loads bundles through.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "type-check": "tsc --noEmit",
+    "clean": "rimraf dist",
+    "test": "jest --passWithNoTests"
+  },
+  "dependencies": {
+    "@oweibo/connector-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.12",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.4",
+    "typescript": "^5.5.4"
+  }
+}

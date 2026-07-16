@@ -1104,6 +1104,29 @@ export const openapiSpec = {
     '/tenants/{tenantId}/templates/{slug}': {
       get: { summary: 'Template detail', operationId: 'getTemplate', tags: ['Templates'], parameters: [tenantIdParam(), { name: 'slug', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'OK', content: { 'application/json': { schema: { $ref: '#/components/schemas/TenantTemplate' } } } } } },
     },
+
+    // ── K.9 fabric governance (ADR-006 policy + ADR-004 §3.7 rollout) ─────
+    '/tenants/{tenantId}/fabric/policy': {
+      get: { summary: 'Effective tenant policy (all dimensions) + monotonic version', operationId: 'getFabricPolicy', tags: ['Fabric'], parameters: [tenantIdParam()], responses: { '200': { description: 'OK' } } },
+    },
+    '/tenants/{tenantId}/fabric/policy/simulate': {
+      post: { summary: 'Dry-run a policy change: classification, dual-control and backfill impact', operationId: 'simulateFabricPolicy', tags: ['Fabric'], parameters: [tenantIdParam()], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object' } } } }, responses: { '200': { description: 'Impact report' }, '400': { description: 'Invalid change set' } } },
+    },
+    '/tenants/{tenantId}/fabric/policy/propose': {
+      post: { summary: 'Propose a policy change: a tightening applies; a relaxation needs dual control', operationId: 'proposeFabricPolicy', tags: ['Fabric'], parameters: [tenantIdParam()], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object' } } } }, responses: { '200': { description: 'Applied or no-change' }, '400': { description: 'Invalid change set' }, '409': { description: 'Relaxation requires a second authorized approver' } } },
+    },
+    '/tenants/{tenantId}/fabric/connectors/{connectorId}/deployment': {
+      get: { summary: 'Connector rollout state + the version new jobs mint at', operationId: 'getFabricDeployment', tags: ['Fabric'], parameters: [tenantIdParam(), connectorIdParam()], responses: { '200': { description: 'OK' }, '404': { description: 'Connector not registered' } } },
+    },
+    '/tenants/{tenantId}/fabric/connectors/{connectorId}/rollout/canary': {
+      post: { summary: 'Begin a cohort canary at a target version', operationId: 'beginFabricCanary', tags: ['Fabric'], parameters: [tenantIdParam(), connectorIdParam()], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['targetVersion', 'canaryCohort'], properties: { targetVersion: { type: 'string' }, canaryCohort: { type: 'string' } } } } } }, responses: { '200': { description: 'Canary begun' }, '404': { description: 'Not registered' }, '409': { description: 'Illegal rollout transition' } } },
+    },
+    '/tenants/{tenantId}/fabric/connectors/{connectorId}/rollout/promote': {
+      post: { summary: 'Promote the canary target to active', operationId: 'promoteFabricRollout', tags: ['Fabric'], parameters: [tenantIdParam(), connectorIdParam()], responses: { '200': { description: 'Promoted' }, '404': { description: 'Not registered' }, '409': { description: 'Illegal rollout transition' } } },
+    },
+    '/tenants/{tenantId}/fabric/connectors/{connectorId}/rollout/rollback': {
+      post: { summary: 'Roll back: re-tag queued jobs to the prior version, spare leased', operationId: 'rollbackFabricRollout', tags: ['Fabric'], parameters: [tenantIdParam(), connectorIdParam()], responses: { '200': { description: 'Rolled back (returns retagged count)' }, '404': { description: 'Not registered' }, '409': { description: 'Illegal rollout transition' } } },
+    },
   },
 } as const;
 
@@ -1113,6 +1136,9 @@ function tenantIdParam() {
 }
 function idParam() {
   return { name: 'id', in: 'path', required: true, schema: { type: 'string' } } as const;
+}
+function connectorIdParam() {
+  return { name: 'connectorId', in: 'path', required: true, schema: { type: 'string' } } as const;
 }
 function policyDomainParam() {
   return { name: 'domain', in: 'path', required: true, schema: { type: 'string', enum: ['sla', 'multiparty', 'ratelimit', 'quota'] } } as const;

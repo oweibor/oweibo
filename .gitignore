@@ -6,6 +6,8 @@ Thumbs.db
 .env
 *.env
 !config.env.template
+!.env.dev.example
+.env.dev
 config.env.bak
 .kilocodemodes
 *.bak

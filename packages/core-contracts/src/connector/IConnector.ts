@@ -94,6 +94,35 @@ export interface ConnectorCatalogEntry {
    * 'ml-research') — match by exact equality.
    */
   readonly applicableIndustries?: readonly string[];
+
+  // ── K.1 (ADR-012 §3.1) additive manifest extension ────────────────────
+  // All optional: pre-K.1 catalog JSONs keep loading unchanged. The static
+  // catalog surface is deliberately permissive (Record<string, boolean>);
+  // the SDK-side spec types (connector-sdk) carry the strict unions.
+
+  /** SDK compatibility declaration; checked at load within the N/N−1 window. */
+  readonly sdkVersion?: string;
+  /**
+   * §10.4 tenant-install axis (0/1/2). NOT the certification tier — the
+   * two axes are never merged (ADR-012 §3.4). Tier 2 triggers the
+   * cost/scope confirmation step at install.
+   */
+  readonly enablementTier?: 0 | 1 | 2;
+  /** Liveness cadence in seconds, handed to the scheduler (ADR-013). */
+  readonly heartbeatSeconds?: number;
+  /** Region constraint (§18.3); carried here, enforced by governance. */
+  readonly dataResidency?: string;
+  /**
+   * The manifest's capability claim set (INV-15): a flag is true iff the
+   * corresponding port/capability is implemented AND passes certification.
+   * A declared-but-undemonstrated flag fails certification.
+   */
+  readonly supports?: Readonly<Record<string, boolean>>;
+  /**
+   * Freshness-class assignment per field. The manifest only *carries*
+   * these values; what a freshness class means is ADR-008's contract.
+   */
+  readonly freshnessClasses?: Readonly<Record<string, string>>;
 }
 
 /** A per-tenant installed instance, as stored in oweibo.tenant_connectors. */

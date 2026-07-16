@@ -178,9 +178,9 @@ export class QuotaService implements IQuotaService {
           const windowStart = windowStartFor(window, now);
           await client.query(
             `INSERT INTO oweibo.quota_consumption
-               (tenant_id, quota_kind, scope, window, window_start, consumed, updated_at)
+               (tenant_id, quota_kind, scope, window_kind, window_start, consumed, updated_at)
              VALUES ($1::uuid, $2, $3, $4, $5::date, $6, NOW())
-             ON CONFLICT (tenant_id, quota_kind, scope, window, window_start) DO UPDATE
+             ON CONFLICT (tenant_id, quota_kind, scope, window_kind, window_start) DO UPDATE
                SET consumed = oweibo.quota_consumption.consumed + EXCLUDED.consumed,
                    updated_at = NOW()`,
             [args.tenantId, inc.kind, inc.scope, window, windowStart, inc.delta],
@@ -224,7 +224,7 @@ export class QuotaService implements IQuotaService {
         enforcement_mode: 'hard' | 'soft' | null;
       }>(
         `SELECT
-           c.quota_kind, c.scope, c.window, c.window_start::text AS window_start,
+           c.quota_kind, c.scope, c.window_kind AS window, c.window_start::text AS window_start,
            c.consumed::text AS consumed,
            p.limit_value::text AS limit_value,
            p.cold_start_limit::text AS cold_start_limit,
@@ -235,9 +235,9 @@ export class QuotaService implements IQuotaService {
            ON p.tenant_id = c.tenant_id
           AND p.quota_kind = c.quota_kind
           AND p.scope = c.scope
-          AND p.window = c.window
+          AND p.window_kind = c.window_kind
          WHERE c.tenant_id = $1::uuid ${filter}
-         ORDER BY c.window, c.quota_kind, c.scope
+         ORDER BY c.window_kind, c.quota_kind, c.scope
          LIMIT 500`,
         params,
       );
@@ -282,11 +282,11 @@ export class QuotaService implements IQuotaService {
   async listPolicies(tenantId: string): Promise<readonly QuotaPolicy[]> {
     return this.tx(tenantId, async (client) => {
       const r = await client.query<PolicyRow>(
-        `SELECT tenant_id, quota_kind, scope, window, limit_value,
+        `SELECT tenant_id, quota_kind, scope, window_kind AS window, limit_value,
                 cold_start_limit, cold_start_duration_days, enforcement_mode
            FROM oweibo.quota_policies
           WHERE tenant_id = $1::uuid
-          ORDER BY scope, window, quota_kind`,
+          ORDER BY scope, window_kind, quota_kind`,
         [tenantId],
       );
       return r.rows.map<QuotaPolicy>((row) => ({
@@ -313,10 +313,10 @@ export class QuotaService implements IQuotaService {
     return this.tx(tenantId, async (client) => {
       await client.query(
         `INSERT INTO oweibo.quota_policies
-           (tenant_id, quota_kind, scope, window, limit_value,
+           (tenant_id, quota_kind, scope, window_kind, limit_value,
             cold_start_limit, cold_start_duration_days, enforcement_mode, updated_at)
          VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, NOW())
-         ON CONFLICT (tenant_id, quota_kind, scope, window) DO UPDATE
+         ON CONFLICT (tenant_id, quota_kind, scope, window_kind) DO UPDATE
            SET limit_value              = EXCLUDED.limit_value,
                cold_start_limit         = EXCLUDED.cold_start_limit,
                cold_start_duration_days = EXCLUDED.cold_start_duration_days,
@@ -347,7 +347,7 @@ export class QuotaService implements IQuotaService {
            WHERE tenant_id = $1::uuid
              AND quota_kind = $2
              AND scope = $3
-             AND window = $4`,
+             AND window_kind = $4`,
         [tenantId, key.quotaKind, key.scope, key.window],
       );
       return (r.rowCount ?? 0) > 0;
@@ -359,7 +359,7 @@ export class QuotaService implements IQuotaService {
   private async loadMatchingPolicies(tenantId: string, actionClass: ActionClass): Promise<QuotaPolicy[]> {
     return this.tx(tenantId, async (client) => {
       const r = await client.query<PolicyRow>(
-        `SELECT tenant_id, quota_kind, scope, window, limit_value,
+        `SELECT tenant_id, quota_kind, scope, window_kind AS window, limit_value,
                 cold_start_limit, cold_start_duration_days, enforcement_mode
            FROM oweibo.quota_policies
           WHERE tenant_id = $1::uuid AND scope IN ($2, '*')`,
@@ -389,7 +389,7 @@ export class QuotaService implements IQuotaService {
         `SELECT consumed::text
            FROM oweibo.quota_consumption
           WHERE tenant_id = $1::uuid AND quota_kind = $2 AND scope = $3
-            AND window = $4 AND window_start = $5::date
+            AND window_kind = $4 AND window_start = $5::date
           FOR UPDATE`,
         [tenantId, policy.quotaKind, policy.scope, policy.window, windowStart],
       );

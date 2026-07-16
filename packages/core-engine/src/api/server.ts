@@ -152,6 +152,9 @@ export async function createServer(
      *  both planes. */
     tenantPolicyService?: import('../fabric/policy/TenantPolicyService.js').TenantPolicyService;
     connectorUpgradeService?: import('../fabric/upgrade/ConnectorUpgradeService.js').ConnectorUpgradeService;
+    /** ADR-006 §3.4: relaxation ballots through the multi-party vote ledger.
+     *  Optional — without it the fabric routes stay fail-closed on relaxations. */
+    policyRelaxationFlow?: import('../fabric/policy/PolicyRelaxationFlow.js').PolicyRelaxationFlow;
   },
   config: Partial<ServerConfig> = {},
 ): Promise<{ app: import('express').Application; port: number }> {
@@ -316,6 +319,7 @@ export async function createServer(
     v1.use('/tenants/:tenantId/fabric', requireScopes({ read: ['tenant:settings:read'], write: ['tenant:settings:write'] }), createFabricRouter({
       policy:  deps.tenantPolicyService,
       upgrade: deps.connectorUpgradeService,
+      ...(deps.policyRelaxationFlow ? { relaxations: deps.policyRelaxationFlow } : {}),
     }));
   }
 

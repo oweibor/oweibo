@@ -61,6 +61,10 @@ const DEFAULT_MATRIX: ReadonlyArray<{ prefix: string; policy: DefaultPolicy }> =
   // financial.* — quorum 2 only for material moves; the threshold is enforced
   // in the policy resolver via tenant override since it depends on payload.
   { prefix: 'financial.payment',          policy: { quorum: 2, dissentVetoes: true,  allowGrants: false, maxGrantDurationSeconds: HOUR,     maxGrantActionCount: 10,  allowDelegation: false } },
+  // ADR-006 §3.4 reserved class: without this row the FALLBACK_DEFAULT
+  // (quorum 1, grants + delegation allowed) would apply — precisely the
+  // "shipped defaults reintroduce §22's gap" hazard the ADR's A-2 records.
+  { prefix: 'governance.policy_relaxation', policy: { quorum: 2, dissentVetoes: true, allowGrants: false, maxGrantDurationSeconds: HOUR,  maxGrantActionCount: 1,   allowDelegation: false } },
   { prefix: 'financial.',                 policy: { quorum: 1, dissentVetoes: true,  allowGrants: true,  maxGrantDurationSeconds: 4*HOUR,   maxGrantActionCount: 50,  allowDelegation: true  } },
   { prefix: 'personnel.access_grant',     policy: { quorum: 2, dissentVetoes: true,  allowGrants: false, maxGrantDurationSeconds: HOUR,     maxGrantActionCount: 5,   allowDelegation: false } },
   { prefix: 'personnel.access_revoke',    policy: { quorum: 1, dissentVetoes: true,  allowGrants: true,  maxGrantDurationSeconds: 4*HOUR,   maxGrantActionCount: 20,  allowDelegation: true  } },
@@ -345,6 +349,17 @@ export class MultiPartyApprovalService implements IMultiPartyApprovalService {
    * already authenticated that `grantedByUserIds` covers the class's quorum.
    */
   async createGrant(req: CreateGrantRequest): Promise<TimeWindowedGrant> {
+    // ADR-006 §3.4 rule 1 — hard platform guard, independent of any policy
+    // row: a grant for the reserved relaxation class is pre-approval, and
+    // pre-approved dual control is single control. Not tenant-configurable.
+    if (req.actionClass.startsWith(POLICY_RELAXATION_RESERVED_CLASS)) {
+      throw new PolicyBelowFloorError('multiparty', req.actionClass, [{
+        field: 'allowGrants',
+        message: `${req.actionClass}: grants are prohibited at the platform floor (ADR-006 §3.4)`,
+        floor: 0,
+        supplied: 1,
+      }]);
+    }
     const policy = await this.resolvePolicy(req.tenantId, req.actionClass);
     if (!policy.allowGrants) {
       throw new Error(`grants disabled for ${req.actionClass} in tenant ${req.tenantId}`);
@@ -770,12 +785,20 @@ export class MultiPartyApprovalService implements IMultiPartyApprovalService {
  */
 export const MULTI_PARTY_PLATFORM_MIN_MATRIX = {
   /** Classes whose floors apply. Anything outside this set is unfloored. */
-  flooredClassPrefixes: ['irreversible.', 'financial.payment'] as const,
+  flooredClassPrefixes: ['irreversible.', 'financial.payment', 'governance.policy_relaxation'] as const,
   /** Minimum quorum for floored classes. */
   quorumMin: 2,
   /** Maximum allowed grant duration for floored classes (seconds). */
   maxGrantDurationSecondsMax: 24 * 60 * 60,
 } as const;
+
+/**
+ * ADR-006 §3.4: the reserved policy-relaxation class carries a STRICTER
+ * floor than the general floored set — grants and delegation are pinned
+ * false outright. A grant is pre-approval, and pre-approved dual control is
+ * single control; delegated approval lets one admin hold both votes.
+ */
+export const POLICY_RELAXATION_RESERVED_CLASS = 'governance.policy_relaxation';
 
 export function multiPartyFloorsApplyTo(actionClass: string): boolean {
   return MULTI_PARTY_PLATFORM_MIN_MATRIX.flooredClassPrefixes.some((p) => actionClass.startsWith(p));
@@ -783,10 +806,31 @@ export function multiPartyFloorsApplyTo(actionClass: string): boolean {
 
 export function checkMultiPartyPolicyAgainstFloor(
   actionClass: string,
-  policy: Pick<MultiPartyApprovalPolicy, 'quorum' | 'maxGrantDurationSeconds'>,
+  policy: Pick<MultiPartyApprovalPolicy, 'quorum' | 'maxGrantDurationSeconds'>
+    & Partial<Pick<MultiPartyApprovalPolicy, 'allowGrants' | 'allowDelegation'>>,
 ): PolicyFloorViolation[] {
   if (!multiPartyFloorsApplyTo(actionClass)) return [];
   const violations: PolicyFloorViolation[] = [];
+  // Reserved-class extras (ADR-006 §3.4 rules 1–2): grants and delegation
+  // MUST be false, enforced here so no tenant policy row can re-enable them.
+  if (actionClass.startsWith(POLICY_RELAXATION_RESERVED_CLASS)) {
+    if (policy.allowGrants === true) {
+      violations.push({
+        field: 'allowGrants',
+        message: `${actionClass}: grants are pre-approval; pre-approved dual control is single control (ADR-006 §3.4)`,
+        floor: 0,
+        supplied: 1,
+      });
+    }
+    if (policy.allowDelegation === true) {
+      violations.push({
+        field: 'allowDelegation',
+        message: `${actionClass}: delegated approval lets one admin hold both votes (ADR-006 §3.4)`,
+        floor: 0,
+        supplied: 1,
+      });
+    }
+  }
   if (policy.quorum < MULTI_PARTY_PLATFORM_MIN_MATRIX.quorumMin) {
     violations.push({
       field: 'quorum',

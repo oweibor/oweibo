@@ -949,7 +949,7 @@ async function tryAutoPromote(
 /** Helper used by callers to construct a deterministic actionId from inputs. */
 export function deriveActionId(parts: readonly string[]): string {
   const hash = createHash('sha256');
-  for (const p of parts) hash.update(p).update(' ');
+  for (const p of parts) hash.update(p).update('\u0000');
   return hash.digest('hex').slice(0, 32);
 }
 

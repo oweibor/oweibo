@@ -5,18 +5,20 @@
  *
  *   GET  /policy                                — effective policy + version (ADR-006 §3.1)
  *   POST /policy/simulate                       — §3.6 dry-run impact report (pure read)
- *   POST /policy/propose                        — apply a tightening / refuse a relaxation
+ *   POST /policy/propose                        — tightening applies; relaxation opens a ballot
+ *   GET  /policy/relaxations                    — pending relaxation ballots
+ *   GET  /policy/relaxations/:proposalId        — one ballot + its vote tally
+ *   POST /policy/relaxations/:proposalId/votes  — cast the AUTHENTICATED principal's vote
  *   GET  /connectors/:connectorId/deployment    — rollout state + effective mint version
  *   POST /connectors/:connectorId/rollout/canary   — begin cohort canary (ADR-004 §3.7)
  *   POST /connectors/:connectorId/rollout/promote  — target becomes active
  *   POST /connectors/:connectorId/rollout/rollback — re-tag queued, spare leased
  *
- * Deliberately ABSENT: an HTTP path that applies a relaxation. A route whose
- * body carries the approval votes would let one caller fabricate its own
- * "second approver" — dual control defeated by a JSON array (§22). Propose
- * answers `needs_dual_control` for relaxations; the apply leg ships when it
- * is wired through the MultiPartyApprovalService ballot flow, where each vote
- * is cast by its own authenticated principal. Fail-closed until then.
+ * Dual-control shape (ADR-006 §3.4): there is still NO route that applies a
+ * relaxation directly, and the vote route carries NO voter identity and NO
+ * onBehalfOf — each vote is the JWT principal's own, so a "second approver"
+ * can only ever be a second authenticated human. The apply happens server-
+ * side inside PolicyRelaxationFlow when the floor quorum is reached.
  *
  * The proposer is ALWAYS the authenticated principal (JWT userId), never a
  * body field — quorum arithmetic counts the proposer as at most one vote, so
@@ -27,6 +29,7 @@ import { z } from 'zod';
 import type { AuthenticatedRequest } from '../middleware/authenticate.js';
 import { requireTenantParamMatchesJwt } from '../middleware/tenantParam.js';
 import type { TenantPolicyService } from '../../fabric/policy/TenantPolicyService.js';
+import type { PolicyRelaxationFlow } from '../../fabric/policy/PolicyRelaxationFlow.js';
 import type { ConnectorUpgradeService } from '../../fabric/upgrade/ConnectorUpgradeService.js';
 import { DIMENSION_CATEGORY, type PolicyDimension } from '../../fabric/policy/contract.js';
 import { effectiveJobVersion } from '../../fabric/upgrade/rolloutContract.js';
@@ -60,6 +63,11 @@ const CanaryBody = z.object({
   canaryCohort: z.string().min(1).max(128),
 });
 
+const VoteBody = z.object({
+  vote: z.enum(['approve', 'reject']),
+  comment: z.string().max(2000).optional(),
+});
+
 /** dimension must be a real dimension AND match its value's kind — a mismatch
  *  would let a value be classified under one lattice and stored under another. */
 function validateChanges(body: z.infer<typeof ChangeSetBody>):
@@ -83,6 +91,9 @@ function validateChanges(body: z.infer<typeof ChangeSetBody>):
 export interface FabricRouterDeps {
   readonly policy: TenantPolicyService;
   readonly upgrade: ConnectorUpgradeService;
+  /** When absent, propose still refuses relaxations (409) and the ballot
+   *  endpoints answer 503 — fail-closed, never fail-open. */
+  readonly relaxations?: PolicyRelaxationFlow;
 }
 
 export function createFabricRouter(deps: FabricRouterDeps): Router {
@@ -146,6 +157,21 @@ export function createFabricRouter(deps: FabricRouterDeps): Router {
       return;
     }
     try {
+      // With the ballot flow wired, a relaxation opens a durable ballot the
+      // second approver can vote on. Without it, fail-closed 409 as before.
+      if (deps.relaxations) {
+        const result = await deps.relaxations.propose({
+          tenantId: r.tenantId,
+          proposerId: r.userId,
+          changes: v.changes,
+        });
+        if (result.kind === 'pending_approval') {
+          res.status(202).json(result);
+          return;
+        }
+        res.json(result);
+        return;
+      }
       const result = await deps.policy.propose({
         tenantId: r.tenantId,
         proposerId: r.userId,
@@ -158,9 +184,86 @@ export function createFabricRouter(deps: FabricRouterDeps): Router {
           classification: result.classification,
           quorum: result.quorum,
           detail:
-            'Relaxations require a second authorized approver (ADR-006 §3.4). ' +
-            'The HTTP apply leg ships with the multi-party ballot wiring.',
+            'Relaxations require a second authorized approver (ADR-006 §3.4); ' +
+            'the ballot flow is not configured on this deployment.',
         });
+        return;
+      }
+      res.json(result);
+    } catch (err) {
+      handleError(err, res);
+    }
+  });
+
+  // ── Relaxation ballots (ADR-006 §3.4, through the shipped vote ledger) ──
+
+  router.get('/policy/relaxations', async (req, res) => {
+    const r = req as unknown as AuthenticatedRequest;
+    if (!deps.relaxations) {
+      res.status(503).json({ error: 'relaxation_flow_unconfigured' });
+      return;
+    }
+    try {
+      const pending = await deps.relaxations.listPending(r.tenantId);
+      res.json({ proposals: pending, count: pending.length });
+    } catch (err) {
+      handleError(err, res);
+    }
+  });
+
+  router.get('/policy/relaxations/:proposalId', async (req, res) => {
+    const r = req as unknown as AuthenticatedRequest;
+    if (!deps.relaxations) {
+      res.status(503).json({ error: 'relaxation_flow_unconfigured' });
+      return;
+    }
+    try {
+      const status = await deps.relaxations.status(r.tenantId, req.params['proposalId'] ?? '');
+      if (!status) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      res.json(status);
+    } catch (err) {
+      handleError(err, res);
+    }
+  });
+
+  router.post('/policy/relaxations/:proposalId/votes', async (req, res) => {
+    const r = req as unknown as AuthenticatedRequest;
+    if (!deps.relaxations) {
+      res.status(503).json({ error: 'relaxation_flow_unconfigured' });
+      return;
+    }
+    // §3.4 rule 2 — no delegation on this surface, structurally: the field
+    // is rejected outright rather than ignored, so a client cannot even
+    // BELIEVE it voted on someone's behalf.
+    if (req.body && typeof req.body === 'object' && 'onBehalfOf' in req.body) {
+      res.status(400).json({
+        error: 'delegation_prohibited',
+        detail: 'Relaxation votes are cast only as the authenticated principal (ADR-006 §3.4).',
+      });
+      return;
+    }
+    const parsed = VoteBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_body', detail: parsed.error.issues });
+      return;
+    }
+    try {
+      const result = await deps.relaxations.vote({
+        tenantId: r.tenantId,
+        proposalId: req.params['proposalId'] ?? '',
+        voterUserId: r.userId, // ALWAYS the JWT principal — never a body field
+        vote: parsed.data.vote,
+        ...(parsed.data.comment !== undefined ? { comment: parsed.data.comment } : {}),
+      });
+      if (result.kind === 'not_found') {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (result.kind === 'already_resolved') {
+        res.status(409).json({ error: 'already_resolved', state: result.state });
         return;
       }
       res.json(result);

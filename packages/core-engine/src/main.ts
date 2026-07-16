@@ -257,8 +257,17 @@ async function main(): Promise<void> {
   let hitlHandoff: HitlHandoffService | undefined;
   let forensicStorage: import('@oweibo/core-contracts').IForensicPacketStorage | undefined;
   let rollbackOrchestrator: RollbackOrchestrator | undefined;
+  let tenantPolicyService: import('./fabric/policy/TenantPolicyService.js').TenantPolicyService | undefined;
+  let connectorUpgradeService: import('./fabric/upgrade/ConnectorUpgradeService.js').ConnectorUpgradeService | undefined;
   if (process.env['DATABASE_URL']) {
     pgPool = new Pool({ connectionString: process.env['DATABASE_URL'] });
+
+    // K.9: connector-fabric governance services (tenant policy + rollout).
+    // Pool-only construction; the fabric routes mount when both exist.
+    const { TenantPolicyService } = await import('./fabric/policy/TenantPolicyService.js');
+    const { ConnectorUpgradeService } = await import('./fabric/upgrade/ConnectorUpgradeService.js');
+    tenantPolicyService = new TenantPolicyService(pgPool);
+    connectorUpgradeService = new ConnectorUpgradeService(pgPool);
     const promptRegistry = new PromptRegistry(
       pgPool,
       process.env['LANGFUSE_SECRET_KEY'],
@@ -770,6 +779,11 @@ async function main(): Promise<void> {
     connectorRegistry,
     tenantConnectorService,
     tenantTemplateRegistry,
+    // K.9: fabric governance surface (policy + rollout) — mounts when both
+    // services exist (i.e. whenever DATABASE_URL is configured).
+    ...(tenantPolicyService && connectorUpgradeService
+      ? { tenantPolicyService, connectorUpgradeService }
+      : {}),
     // F.5.9 server: enables POST /api/v1/_internal/memories/seed when both
     // the token AND a memory orchestrator are available. The token is the
     // shared internal secret -- workers (tenant-bootstrap-worker) hold

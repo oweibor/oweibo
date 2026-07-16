@@ -47,6 +47,7 @@ const ROUTE_FILE_MOUNTS: readonly MountSpec[] = [
   { file: 'policies.routes.ts',        mount: '/tenants/{tenantId}/actions/policies' },
   { file: 'connectors.routes.ts',      mount: '/tenants/{tenantId}/connectors' },
   { file: 'templates.routes.ts',       mount: '/tenants/{tenantId}/templates' },
+  { file: 'fabric.routes.ts',          mount: '/tenants/{tenantId}/fabric' },
   // Mounted under /api/v1/platform (admin-only); not in the customer-
   // facing OpenAPI surface.
   { file: 'platform.routes.ts',        mount: '/platform', multipleMounts: true },

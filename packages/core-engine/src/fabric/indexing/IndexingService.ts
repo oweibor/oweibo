@@ -23,6 +23,7 @@
 import { createHash } from 'crypto';
 import type { Pool, PoolClient } from 'pg';
 import { JobQueue } from '../scheduler/index.js';
+import type { CompliancePolicyGate } from '../policy/CompliancePolicyGate.js';
 import {
   compareRevisions,
   gapRange,
@@ -60,7 +61,7 @@ export interface IndexDocumentInput<Ctx> {
   readonly freshnessClasses?: Readonly<Record<string, string>>;
 }
 
-export type IndexOutcome = 'indexed' | 'purged' | 'ignored' | 'dead_lettered';
+export type IndexOutcome = 'indexed' | 'purged' | 'ignored' | 'dead_lettered' | 'blocked';
 
 /** A chunk's identity + content, surfaced so the K.5 embedding layer re-embeds ONLY what changed. */
 export interface ChangedChunk {
@@ -85,8 +86,32 @@ export interface IndexDocumentResult {
   readonly detail?: string;
 }
 
+export interface IndexingServiceOptions {
+  /**
+   * ADR-006 §3.2 / INV-4: when wired, EVERY index write traverses the
+   * compliance gate before the sole-writer transaction. A block returns
+   * outcome 'blocked' (the gate itself audits) — never a silent drop and
+   * never a pass-through. Batteries that exercise pre-policy behavior
+   * construct the service without a gate.
+   */
+  readonly complianceGate?: CompliancePolicyGate;
+  /** The region this deployment's stores live in — checked against a residency pin. */
+  readonly targetRegion?: string;
+}
+
+/** Classification tags ride on the content fields under `tags` (string array). */
+function classificationTags(fields: Readonly<Record<string, unknown>>): readonly string[] | undefined {
+  const raw = fields['tags'];
+  if (!Array.isArray(raw)) return undefined;
+  const tags = raw.filter((t): t is string => typeof t === 'string');
+  return tags.length > 0 ? tags : undefined;
+}
+
 export class IndexingService {
-  constructor(private readonly pool: Pool) {}
+  constructor(
+    private readonly pool: Pool,
+    private readonly opts: IndexingServiceOptions = {},
+  ) {}
 
   async indexDocument<Ctx>(input: IndexDocumentInput<Ctx>): Promise<IndexDocumentResult> {
     if (input.kind === 'deleted') return this.purge(input);
@@ -120,6 +145,23 @@ export class IndexingService {
     }
     const contentResult = await input.content.fetchContent(input.ctx, input.documentId);
     const aclResult = await input.acl.fetchAcl(input.ctx, input.documentId);
+
+    // ── 2b. compliance gate (INV-4) — AFTER content (tags live on it),
+    //        BEFORE any store write. Purges/tombstones are never gated:
+    //        removal is always compliant. The gate records its own audit
+    //        row; the outcome names the dimension so the block is visible.
+    if (this.opts.complianceGate) {
+      const verdict = await this.opts.complianceGate.check({
+        tenantId: input.tenantId,
+        connectorId: input.connectorId,
+        tags: classificationTags(contentResult.fields),
+        targetRegion: this.opts.targetRegion,
+        persistsContent: true, // chunk rows persist content bodies
+      });
+      if (verdict.kind === 'block') {
+        return { outcome: 'blocked', detail: `${verdict.dimension}: ${verdict.reason}` };
+      }
+    }
 
     // ── 3. the sole-writer transaction ───────────────────────────────────
     return this.withTenant(input.tenantId, async (c) => {

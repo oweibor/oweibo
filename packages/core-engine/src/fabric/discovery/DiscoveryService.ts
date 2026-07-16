@@ -39,8 +39,21 @@ export interface DiscoveryPollResult {
   readonly nextCursor: string | null;
 }
 
+export interface DiscoveryServiceOptions {
+  /**
+   * ADR-004 §3.7 blue/green mint: when wired (ConnectorUpgradeService
+   * .jobVersionFor at composition), every enqueued indexing job carries the
+   * connector version whose worker must process it. Absent, jobs enqueue
+   * untagged (legacy, any-worker) — pre-K.9 behavior.
+   */
+  readonly jobVersionFor?: (tenantId: string, connectorId: string) => Promise<string | null>;
+}
+
 export class DiscoveryService {
-  constructor(private readonly pool: Pool) {}
+  constructor(
+    private readonly pool: Pool,
+    private readonly opts: DiscoveryServiceOptions = {},
+  ) {}
 
   async poll<Ctx>(input: {
     readonly tenantId: string;
@@ -68,6 +81,11 @@ export class DiscoveryService {
     if (events.length === 0) {
       return { discovered: 0, deleted: 0, jobsEnqueued: 0, nextCursor: cursor };
     }
+
+    // Blue/green mint (outside the txn — a rollout that lands mid-poll
+    // re-tags queued jobs itself, so a slightly stale read here is safe).
+    const connectorVersion =
+      (await this.opts.jobVersionFor?.(input.tenantId, input.connectorId)) ?? undefined;
 
     const client = await this.pool.connect();
     let discovered = 0;
@@ -101,6 +119,7 @@ export class DiscoveryService {
           jobClass: e.kind === 'deleted' || e.kind === 'acl_changed' ? 1 : 3,
           idempotencyKey: `index:${e.ref}:${e.kind}:${revision}`,
           checkpoint: { documentId: e.ref, kind: e.kind, sourceRevision: Number(revision) },
+          ...(connectorVersion !== undefined ? { connectorVersion } : {}),
         });
         if (r.enqueued) jobsEnqueued += 1;
         if (e.kind === 'deleted') deleted += 1;

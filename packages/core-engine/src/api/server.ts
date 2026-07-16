@@ -23,6 +23,7 @@ import { createCalibrationRouter } from './routes/calibration.routes.js';
 import { createPoliciesRouter } from './routes/policies.routes.js';
 import { createConnectorsRouter } from './routes/connectors.routes.js';
 import { createTemplatesRouter } from './routes/templates.routes.js';
+import { createFabricRouter } from './routes/fabric.routes.js';
 import { createInternalRouter } from './routes/internal.routes.js';
 import { createAuthMiddleware } from './middleware/authenticate.js';
 import { requireScopes } from './middleware/authorize.js';
@@ -146,6 +147,11 @@ export async function createServer(
      *  HttpDomainClassifier caller. Worker keeps its Postgres state machine
      *  local and outsources only the classification step. */
     domainIntakeService?: import('../seed/DomainIntakeService.js').DomainIntakeService;
+    /** K.9: enables /api/v1/tenants/:tenantId/fabric/* (policy governance +
+     *  connector rollout). Both services are required — the router serves
+     *  both planes. */
+    tenantPolicyService?: import('../fabric/policy/TenantPolicyService.js').TenantPolicyService;
+    connectorUpgradeService?: import('../fabric/upgrade/ConnectorUpgradeService.js').ConnectorUpgradeService;
   },
   config: Partial<ServerConfig> = {},
 ): Promise<{ app: import('express').Application; port: number }> {
@@ -302,6 +308,14 @@ export async function createServer(
       ...(deps.tenantDomainBindingLookup
         ? { bindingLookup: deps.tenantDomainBindingLookup }
         : {}),
+    }));
+  }
+
+  // K.9: connector-fabric governance surface (tenant policy + rollouts).
+  if (deps.tenantPolicyService && deps.connectorUpgradeService) {
+    v1.use('/tenants/:tenantId/fabric', requireScopes({ read: ['tenant:settings:read'], write: ['tenant:settings:write'] }), createFabricRouter({
+      policy:  deps.tenantPolicyService,
+      upgrade: deps.connectorUpgradeService,
     }));
   }
 

@@ -30,6 +30,7 @@ const TENANT_NAV: NavItem[] = [
   { label: 'Quarantine', href: id => `/t/${id}/quarantine` },
   { label: 'Actions',    href: id => `/t/${id}/actions/pending` },
   { label: 'Connectors', href: id => `/t/${id}/connectors` },
+  { label: 'Fabric',     href: id => `/t/${id}/fabric` }, // K.9 policy + rollout governance
   { label: 'Org',        href: id => `/t/${id}/org` },
   { label: 'Lineage',    href: id => `/t/${id}/lineage` }, // T.9
   {

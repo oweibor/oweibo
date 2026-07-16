@@ -25,6 +25,7 @@ import { planRestore, restoreIsComplete, storesByClass } from '../dr/backupClass
 import { McpServerFace, type McpBackend, type McpPrincipalBinding } from '../mcp/McpServerFace';
 import { TenantPolicyService } from '../policy/TenantPolicyService';
 import { CompliancePolicyGate } from '../policy/CompliancePolicyGate';
+import { IndexingService } from '../indexing/IndexingService';
 
 const TEST_DB_URL = process.env['TEST_DATABASE_URL'];
 const describeOrSkip = TEST_DB_URL ? describe : describe.skip;
@@ -167,5 +168,47 @@ describeOrSkip('K.9 hardening + scale-out battery', () => {
     const verdict = await gate.check({ tenantId: tenant, connectorId: 'google-drive', tags: ['Confidential'] });
     expect(verdict.kind).toBe('block');
     if (verdict.kind === 'block') expect(verdict.dimension).toBe('classification_exclusions');
+  });
+
+  it('(6) INV-4 wired: IndexingService refuses the write when the gate blocks — nothing lands in any store', async () => {
+    const svc = new IndexingService(pool, {
+      complianceGate: new CompliancePolicyGate(
+        async () => ({
+          connector_enablement: { kind: 'connector_enablement', enabled: { 'google-drive': true } },
+          classification_exclusions: { kind: 'classification_exclusions', excludeTags: ['Confidential'] },
+        }),
+      ),
+    });
+    const ports = {
+      content: {
+        fetchContent: async () => ({
+          fields: { text: 'quarterly comp bands', tags: ['Confidential'] },
+          revision: '1',
+        }),
+      },
+      acl: { fetchAcl: async () => ({ aclVersion: 'sha256:x', principals: [] }) },
+    };
+    const result = await svc.indexDocument({
+      tenantId: tenant, connectorId: 'google-drive', source: 'google-drive',
+      documentId: 'k9-gated-doc-1', sourceRevision: 1, kind: 'created',
+      content: ports.content, acl: ports.acl, ctx: {},
+    });
+    expect(result.outcome).toBe('blocked');
+    expect(result.detail).toContain('classification_exclusions');
+
+    // The block happened BEFORE the sole-writer transaction: no object row.
+    const rows = await withTenant((c) => c.query(
+      `SELECT COUNT(*)::int AS n FROM oweibo.kf_knowledge_objects
+        WHERE tenant_id = $1::uuid AND document_id = 'k9-gated-doc-1'`, [tenant]));
+    expect(rows.rows[0].n).toBe(0);
+
+    // The same write without the excluded tag indexes normally.
+    const clean = await svc.indexDocument({
+      tenantId: tenant, connectorId: 'google-drive', source: 'google-drive',
+      documentId: 'k9-gated-doc-2', sourceRevision: 1, kind: 'created',
+      content: { fetchContent: async () => ({ fields: { text: 'public roadmap' }, revision: '1' }) },
+      acl: ports.acl, ctx: {},
+    });
+    expect(clean.outcome).toBe('indexed');
   });
 });

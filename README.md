@@ -2,7 +2,9 @@
 
 **Agent-as-a-Service (AaaS) platform.** Multi-tenant autonomous software engineering, delivered as a SaaS. Customers submit multi-stage directions — market research, website builds, feature work, bug fixes, codebase Q&A, PR proposals — and the platform acts on them end-to-end, in parallel, per tenant, with full memory across tasks.
 
-Comparable reference points: Manus (autonomous task execution) × Claude Code (CLI-native dev agent) × a multi-tenant SaaS. The key difference is that every tenant gets their own isolated agent instance with scoped memory, sandbox, trust mode, and quota.
+On top of the agent runtime sits a **connector fabric**: a permission-aware knowledge plane (think Glean × Claude connectors) that crawls, indexes, and retrieves tenant content from external systems — Google Workspace, Drive, Slack, GitHub, and tenant-registered custom connectors — under per-document ACLs, tenant compliance policy, and a dual-controlled governance model.
+
+Comparable reference points: Manus (autonomous task execution) × Claude Code (CLI-native dev agent) × Glean (permission-aware enterprise search) × a multi-tenant SaaS. The key difference is that every tenant gets their own isolated agent instance with scoped memory, sandbox, trust mode, quota, and connector policy.
 
 ---
 
@@ -13,18 +15,22 @@ Comparable reference points: Manus (autonomous task execution) × Claude Code (C
 3. [Services and ports](#services-and-ports)
 4. [Identity and authorization](#identity-and-authorization)
 5. [Data plane](#data-plane)
-6. [Agentic pipeline](#agentic-pipeline)
-7. [Memory tiers](#memory-tiers)
-8. [Module factory](#module-factory)
-9. [Channel gateway](#channel-gateway)
-10. [Browser tool](#browser-tool)
-11. [Infrastructure stack](#infrastructure-stack)
-12. [Getting started](#getting-started)
-13. [Environment variables](#environment-variables)
-14. [Development workflow](#development-workflow)
-15. [Testing](#testing)
-16. [Architectural boundaries](#architectural-boundaries)
-17. [Implementation status](#implementation-status)
+6. [Connector fabric](#connector-fabric)
+7. [Fabric governance](#fabric-governance)
+8. [Custom connectors](#custom-connectors)
+9. [Action safety](#action-safety)
+10. [Agentic pipeline](#agentic-pipeline)
+11. [Memory tiers](#memory-tiers)
+12. [Module factory](#module-factory)
+13. [Channel gateway](#channel-gateway)
+14. [Browser tool](#browser-tool)
+15. [Infrastructure stack](#infrastructure-stack)
+16. [Getting started](#getting-started)
+17. [Environment variables](#environment-variables)
+18. [Development workflow](#development-workflow)
+19. [Testing](#testing)
+20. [Architectural boundaries](#architectural-boundaries)
+21. [Implementation status](#implementation-status)
 
 ---
 
@@ -38,17 +44,17 @@ Comparable reference points: Manus (autonomous task execution) × Claude Code (C
                        │                          │
       ┌────────────────┼──────────────┐           │
       ▼                ▼             ▼            ▼
-apps/identity    kilo-pipeline   core-engine   apps/admin-web
-(port 3110)      API (3100)      API (3101)    (port 3120, Next.js)
+apps/identity    core-engine     kilo-pipeline  apps/admin-web
+(port 3110)      API (3100)      (legacy orch.) (port 3120, Next.js)
       │                │             │            │
       └────────────────┴─────────────┴────────────┘
                        │ shared infrastructure (self-hosted)
       ┌────────────────┼────────────────────────────────┐
       ▼                ▼           ▼        ▼           ▼
    Postgres 16      Redis       NATS JS   Qdrant      MinIO
- (betterauth.*   (idempotency, (task bus, (4-tier    (artifacts,
-  oweibo.* RLS)   RL, JWKS      outbox)   memory)   checkpoints,
-                  cache)                            audit cold)
+ (betterauth.*   (idempotency, (task bus, (memory +  (artifacts,
+  oweibo.* RLS)   RL, JWKS      outbox)   fabric     checkpoints,
+                  cache)                  vectors)   audit cold)
                        │
               Ollama / OpenAI / Anthropic / DeepSeek / OpenRouter
                   Langfuse (LLM tracing)   Vault OSS (secrets, KMS)
@@ -65,54 +71,64 @@ oweibo/
 ├── apps/
 │   ├── identity/          BetterAuth IdP, RS256 JWKS, JWT mint/verify
 │   │                      Platform and tenant management REST endpoints (port 3110)
-│   └── admin-web/         Next.js 15 RSC admin UI (port 3120) — Phase 5
+│   ├── admin-web/         Next.js 15 RSC admin UI (port 3120)
+│   │                      Route groups serve /platform/* and /t/<tenantId>/*
+│   ├── approval-lifecycle-worker/  SLA timers for pending approvals
+│   ├── tenant-bootstrap-worker/    Tenant onboarding step machine
+│   └── …                  aggregators (pattern, platform-priors, long-horizon),
+│                          gepa-optimizer, seed-catalog-reconciler, identity tools
 │
 ├── packages/
-│   ├── core-contracts/    Zero-dependency TypeScript contracts — the only legal
-│   │                      import for module-* packages (IModuleGenerator, events, types)
-│   ├── core-engine/       Agentic pipeline, swarm coordinator, general-coding
-│   │                      intelligence, skill registry, doc-generator, ingestion
-│   ├── db/                Prisma schema (betterauth.* + oweibo.*), withTenantContext
-│   │                      chokepoint, RLS migrations, appendAudit helper
+│   ├── core-contracts/    Zero-dependency TypeScript contracts — connector,
+│   │                      action, domain, and event types; the only legal
+│   │                      import for module-* packages
+│   ├── core-engine/       The API + engine (port 3100):
+│   │     ├── api/         Express server, JWKS auth, tenant-scoped routers,
+│   │     │                OpenAPI spec (self-enforcing drift test)
+│   │     ├── fabric/      The connector fabric (see below): scheduler,
+│   │     │                discovery, indexing, retrieval, permissions,
+│   │     │                semantic cache, live path, knowledge graph,
+│   │     │                policy governance, MCP faces, upgrade rollout,
+│   │     │                health/SLO, DR classes
+│   │     ├── connector/   Platform catalog, install service, certification,
+│   │     │                custom connector manifests
+│   │     ├── action/      Action trust ladder, dry-run/shadow proposals,
+│   │     │                multi-party approvals, grants, quotas, rollback,
+│   │     │                forensics, lineage
+│   │     └── agentic/     Cognitive engine, swarm coordinator, 4-tier memory
+│   ├── connector-sdk/     Connector authoring surface: declareConnector,
+│   │                      port contracts (changeFeed/content/acl/principals),
+│   │                      certification runner, connector simulator
+│   ├── connectors/        First-party connector bundles: Google Workspace IdP,
+│   │                      Google Drive, Slack, GitHub (Tier-0)
+│   ├── db/                Prisma schema (betterauth.*), raw SQL migrations
+│   │                      (oweibo.*), withTenantContext chokepoint, RLS +
+│   │                      store-scope conformance tests
 │   ├── cli/               oweibo CLI — task, staging, quarantine, scrape, ledger, HITL
-│   ├── channel-contracts/ Zero-dependency channel platform types (Telegram, Discord, …)
+│   ├── channel-contracts/ Zero-dependency channel platform types
 │   ├── channel-gateway/   Multi-tenant social channel gateway (9 platform adapters)
 │   ├── browser-tool/      51 atomic browser actions, multi-backend stealth, vision loop
 │   ├── browser-extension/ Standalone Chrome extension (zero server imports)
-│   ├── module-auth/       Output-app generator: BetterAuth / Auth.js / Zitadel-native
-│   ├── module-codegen/    Output-app generator: code generation
-│   ├── module-compliance/ Output-app generator: compliance layer
-│   ├── module-datalayer/  Output-app generator: data layer (Prisma + migrations)
-│   ├── module-export/     Output-app generator: export pipeline
-│   ├── module-observability/ Output-app generator: observability stack
-│   └── module-scaffolding/  Output-app generator: project scaffolding
+│   ├── api-middleware/    Shared HTTP auth/authz middleware (JWKS-based)
+│   ├── observability/     GenAI OTel conventions, span helpers, pino logger
+│   ├── prompt-registry/   Versioned prompt slots + cohort routing
+│   ├── gepa-core/         GEPA optimization primitives
+│   └── module-*/          Output-app generators (auth, codegen, compliance,
+│                          datalayer, export, observability, scaffolding)
 │
 ├── kilo/
-│   └── pipeline/          Core orchestration service (port 3100) — architect, orchestrate,
-│                          gates (G1–G10), recovery, writers (W1–W5), promotion engine,
-│                          curriculum learning, idle reflection, memory decay
+│   └── pipeline/          Legacy orchestration service — architect, orchestrate,
+│                          gates (G1–G10), recovery, writers (W1–W5), promotion
+│                          (set KILO_PIPELINE_PORT if run alongside core-engine)
 │
-├── infra/
-│   ├── sandbox/           Hardened Docker image for agent task execution
-│   │                      (CapDrop=ALL, ReadonlyRootfs=true, User=node)
-│   ├── deploy/            Helm charts and compose files
-│   ├── nginx/             Reverse proxy config
-│   └── zitadel/           Reserved (not deleted) — future OIDC option
-│
-├── scripts/
-│   ├── assert-tests-exist.ts    CI gate: every src file has a test file
-│   ├── verify-contract-tests.ts Gate: every module-* has a *.contract.test.ts
-│   ├── check-rls.ts             Gate: every tenantId Prisma model has RLS migration
-│   └── eslint-rules/
-│       └── no-direct-prisma.js  ESLint rule: bans prisma.* outside packages/db
-│
-├── monitoring/
-│   ├── prometheus/        Scrape configs
-│   └── grafana/           Dashboard definitions
-│
-├── docker-compose.yml     Single-command dev stack
-├── .dependency-cruiser.js Architectural boundary enforcement (19 rules)
-├── .secretlintrc.json     Secret-pattern scanning config
+├── infra/                 Sandbox image, Helm/compose, reverse proxy, zitadel (reserved)
+├── scripts/               CI gates: assert-tests-exist, verify-contract-tests,
+│                          check-rls, check-sole-writer-map, db-setup, seed-admin,
+│                          gen-jwt-keys, eslint-rules/no-direct-prisma
+├── monitoring/            Prometheus scrape configs, Grafana dashboards
+├── docker-compose.dev.yml Dev data plane (Postgres 16 + Redis 7)
+├── docker-compose.yml     Agent/execution stack (Ollama, Qdrant, SearXNG, o11y)
+├── .dependency-cruiser.js Architectural boundary enforcement
 └── pnpm-workspace.yaml    Monorepo workspace definition
 ```
 
@@ -123,20 +139,16 @@ oweibo/
 | Service | Port | Owns |
 |---|---|---|
 | `apps/identity` | 3110 | BetterAuth sessions, JWKS, JWT mint/verify, platform/tenant management |
-| `kilo-pipeline` | 3100 | Tasks, staging, quarantine, scrape, ledger, status, health |
-| `core-engine` | 3101 | Tasks, HITL, skills, SSE events |
-| `apps/admin-web` | 3120 | Next.js RSC platform + tenant management UI |
+| `core-engine` | 3100 | The platform API: tasks, HITL, skills, actions, approvals, domains, connectors (catalog + custom), fabric governance, forensics, lineage, OpenAPI docs at `/api/v1/docs` |
+| `kilo-pipeline` | 3100 (default; set `KILO_PIPELINE_PORT` to co-run) | Legacy orchestration: gates, recovery, writers, promotion |
+| `apps/admin-web` | 3120 | Next.js RSC platform (`/platform/*`) + tenant (`/t/<id>/*`) UI |
 | Caddy/Traefik | 443 | TLS termination, basic rate-limiting, path routing |
 | Ollama | 11434 | Local LLM inference |
-| Qdrant | 6333/6334 | Vector database (4-tier memory) |
+| Qdrant | 6333/6334 | Vector database (memory tiers + fabric embeddings) |
 | Redis | 6379 | Idempotency, rate-limiting, JWKS cache, token revocations |
 | NATS JetStream | 4222 | Task bus, audit outbox drain |
 | Postgres 16 | 5432 | `betterauth.*` + `oweibo.*` (RLS enforced) |
-| Prometheus | 9090 | Metrics backend (remote write from OTel collector) |
-| Grafana | 3000 | Unified observability UI (traces, metrics, logs) |
-| Tempo | 3200 | Distributed tracing backend |
-| Alertmanager | 9093 | Alert routing (P0 → Matrix, P2+ → email) |
-| OTel Collector | 4317/4318 | OTLP receiver; fans out to Tempo, Prometheus, Loki |
+| Prometheus / Grafana / Tempo / Loki / Alertmanager / OTel | 9090 / 3000 / 3200 / — / 9093 / 4317 | Observability stack |
 | Langfuse | — | LLM call tracing and prompt management (external) |
 
 Internal ports (5432, 6379, 4222, 6333, 9100) are bound to localhost or the internal network only. Only Caddy/Traefik is exposed on 443.
@@ -187,6 +199,8 @@ All role-to-scope expansion lives in [`apps/identity/src/policy.ts`](apps/identi
 | `tenant_developer` | `tasks:*`, `staging:read`, `scrape:read/write`, `memory:read` |
 | `tenant_viewer` | Read-only across tasks, staging, scrape, memory |
 
+Tenant-scoped API routes are mounted at `/api/v1/tenants/:tenantId/*`. Every router cross-checks the URL tenant against the JWT tenant claim (`tenant_mismatch` 403 on divergence) — a token issued for tenant A is unusable against tenant B's surface even with the wrong URL pasted.
+
 ### Trust modes
 
 Trust mode is scope-gated, not a free-form client override:
@@ -214,7 +228,7 @@ Trust mode is scope-gated, not a free-form client override:
 One Postgres 16 instance; two schemas:
 
 - **`betterauth.*`** — managed exclusively by the BetterAuth library. The `oweibo_app` role may read `betterauth.users.id` for FK joins but not write directly.
-- **`oweibo.*`** — all tables have `ENABLE ROW LEVEL SECURITY` + `FORCE ROW LEVEL SECURITY`. Access only via `withTenantContext()`.
+- **`oweibo.*`** — all tenant tables have `ENABLE ROW LEVEL SECURITY` + `FORCE ROW LEVEL SECURITY`. Access only via `withTenantContext()` (Prisma path) or per-service transactional `set_config('app.tenant_id', …, true)` (fabric services).
 
 ### Row-level security
 
@@ -230,36 +244,142 @@ CREATE POLICY platform_admin_bypass ON oweibo.<table>
 
 `audit_log` has no `INSERT`/`UPDATE`/`DELETE` policy — all writes go through the `oweibo.append_audit()` `SECURITY DEFINER` function; direct mutations are rejected at the DB layer.
 
+A living **store-scope registry** ([`packages/db/src/__tests__/kf-store-scope.test.ts`](packages/db/src/__tests__/kf-store-scope.test.ts)) declares every fabric table tenant-scoped or platform-scoped and asserts via `pg_tables`/`pg_policies` introspection that every tenant-scoped table actually has RLS forced with a `tenant_isolation` policy. Adding a fabric table without classifying it fails CI.
+
 ### `withTenantContext` chokepoint
 
-All application queries must flow through [`packages/db/src/withTenantContext.ts`](packages/db/src/withTenantContext.ts):
-
-```ts
-await withTenantContext(principal, async tx => {
-  // SET LOCAL app.tenant_id = '...' runs before your query
-  return tx.task.findMany({ ... });
-});
-```
-
-`SET LOCAL` scopes the session parameters to the current transaction, so they do not leak across connections in PgBouncer transaction-pool mode.
-
-An ESLint rule (`scripts/eslint-rules/no-direct-prisma.js`) fails the build if any file outside `packages/db/src/` imports `@prisma/client` directly.
+All Prisma queries flow through [`packages/db/src/withTenantContext.ts`](packages/db/src/withTenantContext.ts). `SET LOCAL` scopes the tenant parameter to the current transaction, so it does not leak across connections in PgBouncer transaction-pool mode. An ESLint rule (`scripts/eslint-rules/no-direct-prisma.js`) fails the build if any file outside `packages/db/src/` imports `@prisma/client` directly.
 
 ### BetterAuth ↔ oweibo.users sync
 
-A Postgres trigger on `betterauth.users` keeps `oweibo.users` in sync:
+A Postgres trigger on `betterauth.users` keeps `oweibo.users` in sync (INSERT → mirrored active row; UPDATE → email; DELETE → soft-delete). `betterauth.users.id` is the authoritative user ID.
 
-- `INSERT` → creates a mirrored row with status `active`
-- `UPDATE` → updates email
-- `DELETE` → sets status to `deleted` (soft delete)
+---
 
-Single source of truth: `betterauth.users.id` is the authoritative user ID.
+## Connector fabric
+
+The fabric (`packages/core-engine/src/fabric/`) is the permission-aware knowledge plane. It was built as a conformance-first system: every subsystem ships with pure contract predicates plus a live integration battery against real Postgres, and a set of structural invariants (INV-1 … INV-17) that are enforced by construction wherever possible — not by convention.
+
+### The pipeline
+
+```text
+  ChangeFeedPort ──► DiscoveryService ──► kf_jobs (scheduler) ──► IndexingService
+   (connector)        outbox events        priority classes         │
+                                           blue/green tags          ├─ CompliancePolicyGate (INV-4)
+                                                                    ├─ kf_knowledge_objects / kf_chunks
+                                                                    ├─ kf_revision_vectors (monotonic merge)
+                                                                    └─ kf_acl_snapshots (§6.2 grant hash)
+                                                                            │
+  Query ──► ExecutionPlanner ──► RetrievalService ── ACL filter BEFORE ranking (INV-2)
+             (index vs live)        │                 semantic cache (identity+policy-versioned key)
+                                    └─► LivePathService — field-level freshness, fail-closed
+```
+
+### Subsystems
+
+| Area | What it does |
+|---|---|
+| `scheduler/` | Durable job queue (`kf_jobs`) with priority classes (permission-correctness jobs are never shed), fencing-token worker leases (`kf_leases`), checkpointed resume, full-jitter retry, dead-lettering |
+| `discovery/` | Drains a connector's change feed into outbox events + indexing jobs (idempotent by `(document, revision)`); mints the blue/green `connector_version` tag |
+| `indexing/` | Sole writer of the knowledge stores: revision-vector comparison (out-of-order and duplicate events are no-ops), chunk-diff (only changed chunks re-embed), ACL snapshot versioning, tombstone-preserving deletes; every write traverses the compliance gate |
+| `permissions/` | Group-closure ACL evaluation; withholding semantics — a denied document is indistinguishable from a nonexistent one |
+| `retrieval/` | Permission-filtered retrieval: ACL check **before** ranking; hybrid rank (lexical + vector + graph proximity); revision re-check for transactional/critical documents |
+| `semantic/` | Full-content embeddings, permission-aware semantic cache — the cache key includes canonical identity **and** tenant policy version, so a policy change structurally invalidates the namespace |
+| `live/` | Live-path reads with per-field freshness classes; Critical fields are never cached and **withhold on failure** rather than stale-serve |
+| `graph/` | Knowledge graph + identity resolution: confidence = MAX of signal weights (never sum), provisional identities hedge responses and never grant access, rejected merges retract asynchronously |
+| `policy/` | Tenant policy system — see [Fabric governance](#fabric-governance) |
+| `mcp/` | Outbound MCP server face (mount Oweibo as ONE connector: `oweibo.search/fetch/act`, authored-constant tool descriptions, tenant always from the token, no existence oracle, credential-leak deep scan) and inbound gating (manifest is authority; server-advertised-but-undeclared tools are dropped and flagged) |
+| `upgrade/` | Connector software rollout: blue/green job tagging (a version-tagged job is claimable only by a matching worker — enforced in the claim SQL), cohort canary, rollback that re-tags queued work and never touches leased work |
+| `health/` | 0–100 composite health score (auth + ACL-refresh weighted heaviest); below 60 the planner biases fan-out to the index path before the lifecycle machine ever degrades |
+| `dr/` | Backup-class registry: re-derivable stores (index, embeddings, graph, ACL cache) vs must-backup (policy, config, identity merges, **crawl checkpoints** — losing checkpoints turns an hours-scale delta resume into a days-scale cold crawl) |
+
+### Connector SDK and first-party connectors
+
+`packages/connector-sdk` is the authoring surface: `declareConnector` + typed port contracts (`changeFeed`, `content`, `acl`, `principals`), a certification runner, and a connector-agnostic **simulator** that drives crawl → index → ACL snapshot → mutation → delta-resume end-to-end. `packages/connectors` ships the Tier-0 bundles: Google Workspace IdP (identity ground truth), Google Drive, Slack, GitHub — each roughly 380 lines of connector-specific translation over the SDK.
+
+Install order is enforced: content/action connectors refuse to install until an identity connector is active (identity is the substrate ACL evaluation depends on).
+
+---
+
+## Fabric governance
+
+Governance is structural, not procedural — the mechanisms make violations unrepresentable rather than merely detectable.
+
+### Tenant policy (eight dimensions, two categories)
+
+| Dimension | Category | Enforced by |
+|---|---|---|
+| `data_persistence`, `indexing_scope`, `connector_enablement`, `operation_permissions`, `data_residency`, `classification_exclusions` | **compliance** | Storage-layer gate — block, log, alert; never pass-through |
+| `freshness_sla`, `retrieval_preference` | operational | Planner input — soft |
+
+The category is a property of the *dimension*, CHECKed in the schema — an admin cannot re-declare residency as "operational" to demote it to a planner hint. `CompliancePolicyGate` is a pure function of `(policy, write, region)` with **no planner parameter**: the planner cannot influence a compliance verdict even in principle.
+
+`connector_enablement` reads an absent key as **disabled**: no connector writes to the knowledge stores until it is explicitly policy-enabled, and every index write is gated.
+
+### The relaxation lattice and dual control
+
+A policy change is classified against a per-dimension restrictiveness order:
+
+- provably **tighter** → applies immediately (single admin) with a *mandatory* backfill over affected indexed content;
+- anything else — looser or **incomparable** — is a **relaxation** and requires a second authorized approver. Incomparable is deliberately fail-closed: swapping excluded tags `{HR}` → `{Legal}` is neither tighter nor looser, and it unprotects HR.
+
+Relaxations flow through a real ballot: the proposal is a durable `governance.policy_relaxation` action proposal, votes go through the multi-party approval ledger (one vote per authenticated principal — no delegation, no body-supplied voter identity, no HTTP path that applies a relaxation directly), and quorum is evaluated against a **platform floor** (quorum ≥ 2, grants prohibited, delegation prohibited) that the tenant cannot weaken — the control exists to defend against a tenant admin, so its adversary must not configure it. Every applied change bumps a tenant-monotonic `policy_version` in the same transaction, which invalidates the semantic-cache namespace by construction.
+
+The admin UI (`/t/<tenantId>/fabric`) drives all of it: effective policy with category badges, dry-run simulation, propose, pending ballots with approve/veto, and connector rollout controls (canary / promote / rollback).
+
+---
+
+## Custom connectors
+
+Tenants are not limited to the platform catalog. A tenant admin can register a **custom connector manifest** — via the Connectors admin page or `POST /api/v1/tenants/:tenantId/connectors/custom` — and install it through the same flow as a catalog entry.
+
+```jsonc
+// POST /api/v1/tenants/:tenantId/connectors/custom
+{
+  "connectorId": "custom.acme-tracker",      // 'custom.' prefix is mandatory
+  "displayName": "Acme Tracker",
+  "category": "custom",                       // closed ConnectorCategory enum
+  "description": "Internal issue tracker.",
+  "catalogVersion": "1.0.0",
+  "credentialSchema": { "type": "object", "required": ["api_key"],
+                        "properties": { "api_key": { "type": "string" } } },
+  "capabilities": [
+    { "capabilityId": "create_ticket", "summary": "Create a ticket",
+      "actionClass": "write.external_api.nonprod" }
+  ],
+  "mcpServerUrl": "https://mcp.acme.internal/tracker",   // optional
+  "declaredTools": ["tracker.search", "tracker.create"]  // authority set
+}
+```
+
+**What a manifest may not claim** (validated as a pure contract, violations returned field-by-field):
+
+- ids without the `custom.` prefix — a tenant manifest can never collide with or shadow a platform catalog id, and the prefix marks tenant provenance on every downstream row (jobs, deployments, policy keys);
+- a category outside the closed enum;
+- a capability without an `actionClass` (an ungateable action), or one in the reserved `governance.*` plane;
+- a certification tier — custom connectors are pinned `experimental`; `verified`/`enterprise` are earned through platform certification, never asserted;
+- MCP tools without a server URL, or a server URL without declared tools — the **manifest** is the authority for what an MCP server may expose; advertised-but-undeclared tools are dropped at discovery and flagged as a truthfulness divergence.
+
+**Governance is unchanged downstream — that is the point.** A custom connector still waits for an active identity connector to install, still cannot write to the knowledge stores until `connector_enablement` policy explicitly enables it (a dual-controlled relaxation), still participates in blue/green deployment, and its credentials live only behind a Vault path. Disabling a custom connector is soft: new installs are refused, existing instances remain visible for audit.
+
+---
+
+## Action safety
+
+Every side-effecting action a connector or agent proposes flows through the **action trust ladder** (`packages/core-engine/src/action/`):
+
+- **Trust modes per (tenant, action class)**: `execute` / `dry_run` / `shadow` / `require_approval` / `forbidden`, resolved from calibration (account age, per-class success scores) or an operator pin. Floor classes (`financial.payment`, `personnel.*`, `irreversible.*`) can never be pinned to `execute`.
+- **Content is never a gate input** (injection safety is structural): the action class comes from the connector capability's declaration, not from payload or retrieved content; content inspectors can only *tighten* a verdict, never loosen it.
+- **Multi-party approvals**: N-of-M vote ledger with dissent veto, time-windowed grants (scope-filtered, capped), delegation — all floor-checked so tenants cannot weaken below platform minimums.
+- **Quotas, rate limits, budget insurance, rollback orchestration, forensic packets, and action lineage** complete the surface, each with its own tenant-scoped admin pages.
+
+The outbound MCP face routes external tool calls through this same ladder — an external MCP client gets trust-ladder verdicts, never raw source responses.
 
 ---
 
 ## Agentic pipeline
 
-The pipeline runs inside `kilo/pipeline` (port 3100). Each task traverses a fixed stage sequence:
+The legacy orchestration pipeline runs inside `kilo/pipeline`. Each task traverses a fixed stage sequence:
 
 ```text
 memory_retrieval → architect → orchestrate
@@ -273,18 +393,14 @@ memory_retrieval → architect → orchestrate
               promotion engine
 ```
 
-### Stages
-
 | Stage | Description |
 |---|---|
 | `memory_retrieval` | 4-tier recall — semantic search (Qdrant) + project/STM context |
 | `architect` | LLM generates a structured plan; sandboxed via kilo-proxy |
 | `orchestrate` | Executes the plan; produces `changedFiles`; routes to `gates`, `error_recovery`, or `convergence` |
 | `gates G1–G7` | Static invariant checks (format, lint, type safety) |
-| `gate G8A` | Deterministic invariant evaluation against project invariants |
-| `gate G8B` | Semantic invariant evaluation (LLM-scored) |
-| `gate G9` | ADR (Architecture Decision Record) compliance check |
-| `gate G10` | Context consistency check |
+| `gate G8A/G8B` | Deterministic + semantic invariant evaluation |
+| `gate G9/G10` | ADR compliance + context consistency |
 | `error_recovery` | Canonicalize → ledger lookup → 4× wall check → classify → search route |
 | `convergence` | Convergence ladder: advance strategy index or quarantine |
 | `writers W1–W5` | Extract ADRs, invariants, reasoning, summary, context into memory |
@@ -292,26 +408,7 @@ memory_retrieval → architect → orchestrate
 
 ### Sandbox security profile
 
-Agent processes run in a purpose-built Docker image (`infra/sandbox/Dockerfile`):
-
-```text
-CapDrop: ['ALL']
-ReadonlyRootfs: true
-User: node (uid 1000, never root)
-SecurityOpt: ['no-new-privileges:true']
-```
-
-Agent tokens (not static secrets) are injected via env. Egress is filtered by an outbound HTTP proxy allowlist.
-
-### Recovery pipeline
-
-Failed tasks enter a structured recovery pipeline:
-
-1. **Canonicalize** — normalise error to a deterministic hash
-2. **Ledger** — look up failure history; apply 4× wall (quarantine after repeated identical failures)
-3. **Classify** — `SIMPLE` | `COMPLEX` | `DEPENDENCY` | `ENVIRONMENT`
-4. **Route** — select search strategy (web, documentation, source)
-5. **Convergence ladder** — advance strategy index per iteration; halt or quarantine at ceiling
+Agent processes run in a purpose-built Docker image (`infra/sandbox/Dockerfile`): `CapDrop: ALL`, `ReadonlyRootfs: true`, `User: node`, `no-new-privileges`. Agent tokens (not static secrets) are injected via env. Egress is filtered by an outbound HTTP proxy allowlist.
 
 ### Self-improvement loops
 
@@ -334,7 +431,7 @@ Four-tier memory architecture, scoped by `(tenantId, taskId)` or `(tenantId, ses
 | 3 — Project | `ProjectRegistry` | Redis | `(tenantId)` | Project lifetime |
 | 4 — Semantic | `KiloSemanticAdapter` via `TenantSafeQdrant` | Qdrant | `(tenantId)` + vector similarity | Permanent (decay-managed) |
 
-Qdrant access is wrapped by `TenantSafeQdrant`, which injects a mandatory `tenant_id` filter on every query. Direct `QdrantClient` imports outside `packages/qdrant-tenant` fail the ESLint build.
+Qdrant access is wrapped by `TenantSafeQdrant`, which injects a mandatory `tenant_id` filter on every query.
 
 ---
 
@@ -368,14 +465,7 @@ The gateway is a fan-in layer only. It may import from `core-contracts` and may 
 
 ## Browser tool
 
-`packages/browser-tool` provides 51 atomic browser actions including:
-
-- Multi-backend stealth (Playwright + Puppeteer + CDP)
-- Vision loop (screenshot + LLM perception)
-- Persistent browser profiles per tenant
-- Chrome extension bridge (`packages/browser-extension`)
-
-`browser-tool` depends only on `core-contracts`. It is blocked from importing `core-engine` or `channel-gateway`.
+`packages/browser-tool` provides 51 atomic browser actions including multi-backend stealth (Playwright + Puppeteer + CDP), a vision loop (screenshot + LLM perception), persistent per-tenant browser profiles, and a Chrome extension bridge. It depends only on `core-contracts`.
 
 ---
 
@@ -395,12 +485,9 @@ All components are self-hosted. No cloud-subscription services.
 | Secrets / KMS | Vault OSS (Transit engine for per-tenant encryption keys) |
 | LLM inference | Ollama (local) + OpenAI / Anthropic / DeepSeek / OpenRouter |
 | LLM tracing | Langfuse |
-| Metrics | Prometheus + Grafana |
-| Logs | Loki (Phase 6) |
-| Traces | Tempo (Phase 6) |
+| Metrics / logs / traces | Prometheus + Grafana / Loki / Tempo |
 | Alerting | Alertmanager → email / matrix / webhook |
-| Web discovery | SearXNG (privacy-preserving metasearch) |
-| Crawler | Crawl4AI |
+| Web discovery / crawling | SearXNG + Crawl4AI |
 | TLS | Caddy / Traefik with Let's Encrypt |
 
 ### Cost ceiling (v1, single node)
@@ -454,7 +541,7 @@ pnpm dev:web
 ```
 
 Open http://localhost:3120, sign in with the seeded admin, and you land on the
-platform **Tenants** page.
+platform **Tenants** page (`/platform/tenants`).
 
 > **Note:** the legacy `docker-compose.yml` (Ollama, Qdrant, SearXNG,
 > observability) is the agent/execution stack and is **not** required to reach
@@ -462,22 +549,32 @@ platform **Tenants** page.
 > `.env.dev` is loaded per-service via Node's `--env-file` (see the `dev:*`
 > scripts). `.env.dev` is git-ignored — never commit real secrets.
 
-### The core-engine API (tenant + task pages, CLI, REST)
+### The core-engine API (tenant pages, fabric, CLI, REST)
 
-The tenant-scoped pages (tasks, actions, domains) and the CLI/REST surfaces
-call the **core-engine API** on port 3100 (`packages/core-engine/src/main.ts`).
-It uses the same `.env.dev` (`DATABASE_URL`, `REDIS_URL`, and the `IDENTITY_URL`
-/ `JWT_ISSUER` / `JWT_AUDIENCE` / `JWT_KEY_ID` used to verify RS256 tokens
-against identity's JWKS). Start it as a fourth process:
+The tenant-scoped pages (tasks, actions, connectors, domains, **fabric**) and
+the CLI/REST surfaces call the **core-engine API** on port 3100
+(`packages/core-engine/src/main.ts`). It uses the same `.env.dev`
+(`DATABASE_URL`, `REDIS_URL`, and the `IDENTITY_URL` / `JWT_ISSUER` /
+`JWT_AUDIENCE` / `JWT_KEY_ID` used to verify RS256 tokens against identity's
+JWKS). Start it as a fourth process:
 
 ```bash
 # 4th terminal — identity must be up (core-engine fetches its JWKS)
 pnpm dev:engine
 ```
 
-Then, in the admin UI, use the tenant switcher to select a tenant and the
-tenant-scoped pages will load from core-engine. The CLI and REST API use the
-same tokens:
+Then use the tenant switcher in the admin UI. Notable tenant pages:
+
+| Page | What you can drive |
+|---|---|
+| `/t/<id>/connectors` | Installed instances, **register/disable custom connectors**, install (catalog or custom id) |
+| `/t/<id>/fabric` | Effective tenant policy + version, simulate/propose policy changes, **pending relaxation ballots (approve/veto)**, connector rollout (canary/promote/rollback) |
+| `/t/<id>/actions/*` | Pending proposals, trust matrix, quotas, history |
+| `/t/<id>/approvals/*` | Grants, multi-party policies |
+| `/t/<id>/domains/*` | Domain bindings, SME review, depth, compliance |
+| `/t/<id>/forensics`, `/lineage` | Forensic packets + replay, action lineage |
+
+The CLI and REST API use the same tokens:
 
 ```bash
 # CLI — stores credentials in ~/.oweibo/credentials
@@ -491,9 +588,8 @@ curl -X POST http://localhost:3100/api/v1/tasks \
   -d '{"instruction": "Add a /healthz endpoint to the Express app"}'
 ```
 
-> core-engine verifies tokens against identity's JWKS (RS256) — there is no
-> shared JWT secret. It fetches `IDENTITY_URL/.well-known/jwks.json` lazily on
-> the first authenticated request, so identity should be running first.
+Interactive OpenAPI docs are served at `http://localhost:3100/api/v1/docs`; the
+spec is drift-checked against the mounted Express routes in CI.
 
 ### CLI quick-reference
 
@@ -550,10 +646,12 @@ oweibo ledger list [--date 2026-04-29]
 |---|---|---|
 | `DATABASE_URL` | Postgres connection string | — |
 | `REDIS_URL` | Redis connection string | `redis://localhost:6379` |
+| `TEST_DATABASE_URL` | Postgres for the live test batteries (RLS, fabric, governance) | — (suites skip cleanly) |
 | `KILO_API_TOKEN` | Legacy single-tenant bearer token | — |
 | `TENANT_TOKENS` | JSON map `{ "<token>": "<tenantId>" }` for multi-tenant | — |
 | `CHECKPOINT_DIR` | Base directory for task state checkpoints | — |
 | `TRUST_MODE` | Default trust mode | `supervised` |
+| `MULTI_PARTY_APPROVAL_ENABLED` | Enables time-windowed grant consumption in the trust ladder (votes work regardless; policy-relaxation grants are refused at the platform floor either way) | `false` |
 
 ### Identity service
 
@@ -581,47 +679,34 @@ oweibo ledger list [--date 2026-04-29]
 | Variable | Description | Default |
 |---|---|---|
 | `IDENTITY_URL` | Identity service base URL | `http://localhost:3110` |
-| `PIPELINE_URL` | Pipeline API base URL | `http://localhost:3100` |
+| `PIPELINE_URL` | core-engine API base URL | `http://localhost:3100/api/v1` |
 | `NODE_ENV` | `production` sets `Secure` flag on session cookies | `development` |
 
 Session cookies: `oweibo_session` (access token, 15 min, httpOnly + sameSite=strict) and `oweibo_refresh` (30 days).
 
-### CLI (Phase 4)
+### CLI
 
 | Variable | Description | Default |
 |---|---|---|
-| `OWEIBO_API_URL` | Pipeline API base URL | `http://localhost:3100/api/v1` |
+| `OWEIBO_API_URL` | core-engine API base URL | `http://localhost:3100/api/v1` |
 | `OWEIBO_IDENTITY_URL` | Identity service base URL | `http://localhost:3110` |
 | `OWEIBO_API_KEY` | Bearer token (overrides credentials file) | — |
 | `OWEIBO_TENANT_ID` | Default tenant ID | — |
 
 Credentials are stored in `~/.oweibo/credentials` (mode 0600). `login` stores both the access token (15 min) and the refresh token (30 days); the client refreshes transparently before each expired request.
 
-### Message bus and cache (Phase 3)
+### Message bus, internal, observability
 
 | Variable | Description | Default |
 |---|---|---|
 | `NATS_URL` | NATS JetStream server URL | `nats://localhost:4222` |
-| `REDIS_URL` | Redis connection URL (idempotency, RL, quotas) | `redis://localhost:6379` |
-| `AGENT_TOKEN_ENDPOINT` | Identity service internal agent-token mint URL | `http://localhost:3110/internal/agent-token` |
+| `AGENT_TOKEN_ENDPOINT` | Identity internal agent-token mint URL | `http://localhost:3110/internal/agent-token` |
 | `INTERNAL_SERVICE_KEY` | Shared secret for machine-to-machine calls (≥32 chars) | — |
-
-### Observability (Phase 6)
-
-| Variable | Description | Default |
-|---|---|---|
+| `OWEIBO_INTERNAL_API_TOKEN` | Bearer for `/_internal/*` worker routes | — |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | OTel collector gRPC endpoint | `http://otelcol:4317` |
-| `OTEL_SERVICE_NAME` | Service name attached to all spans | per-service |
-| `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | Set `false` in production (PII policy §15.6.1.4) | `false` |
-| `LANGFUSE_PUBLIC_KEY` | Langfuse project public key | — |
-| `LANGFUSE_SECRET_KEY` | Langfuse project secret key | — |
-| `LANGFUSE_BASE_URL` | Langfuse host URL | — |
-| `METRICS_TOKEN` | Bearer token protecting the `/metrics` endpoint | — |
-| `GF_GRAFANA_USER` | Grafana admin username | `admin` |
-| `GF_GRAFANA_PASSWORD` | Grafana admin password | `changeme` |
-| `SMTP_HOST` | Alertmanager SMTP relay host | `localhost:25` |
-| `MATRIX_WEBHOOK_URL` | Matrix webhook for P0 alerts | — |
-| `ONCALL_WEBHOOK_URL` | On-call webhook for P0 alerts | — |
+| `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | Set `false` in production (PII policy) | `false` |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` | Langfuse tracing | — |
+| `METRICS_TOKEN` | Bearer token protecting `/metrics` | — |
 
 ---
 
@@ -634,14 +719,28 @@ pnpm type-check
 # Run all tests
 pnpm test
 
-# Check architectural boundaries (dep-cruiser, 19 rules)
+# Check architectural boundaries (dep-cruiser)
 pnpm check-boundaries
 
 # Check RLS migration coverage
 pnpm check-rls
 
+# INV-16: the ADR-000 sole-writer map must agree with the architecture doc
+pnpm exec tsx scripts/check-sole-writer-map.ts
+
 # Full CI pipeline (build + type-check + assert-tests + check-rls + test)
 pnpm ci
+```
+
+### Database migrations (dev)
+
+`pnpm db:setup` applies every `packages/db/migrations/*.sql` in order. To apply
+a single new migration to the running dev container (DDL requires the postgres
+superuser; the `oweibo_app` runtime role deliberately has none):
+
+```bash
+docker exec -i oweibo-dev-postgres psql -U postgres -d oweibo \
+  -v ON_ERROR_STOP=1 < packages/db/migrations/<file>.sql
 ```
 
 ### Pre-commit hooks (Husky)
@@ -651,7 +750,7 @@ Every commit runs automatically:
 1. **ESLint** — all packages with a `lint` script
 2. **TypeScript type-check** — all packages
 3. **Test presence** — every source file must have a corresponding test file
-4. **dep-cruiser** — 19 architectural boundary rules; zero violations required
+4. **dep-cruiser** — architectural boundary rules; zero violations required
 5. **secretlint** — blocks real API keys, PEM blocks, and other credential patterns
 6. **Contract tests** — every `packages/module-*` must have a `*.contract.test.ts`
 7. **RLS coverage** — every Prisma model with `tenantId` must have an RLS migration
@@ -666,19 +765,27 @@ Every commit runs automatically:
 |---|---|---|
 | Unit / integration | `src/__tests__/*.test.ts` per package | `pnpm test` |
 | Contract tests | `module-*/src/__tests__/*.contract.test.ts` | `pnpm test` |
-| RLS belt-and-suspenders | `packages/db/src/__tests__/rls.test.ts` | Requires `TEST_DATABASE_URL` |
+| **Fabric conformance** | pure predicate suites per fabric subsystem (consistency, permissions, planner, policy lattice, rollout, health, DR, MCP surface) | `pnpm --filter @oweibo/core-engine test` |
+| **Fabric live batteries** | `k0…k9-battery.integration.test.ts` + governance batteries (relaxation flow, custom connectors, policy version) — real Postgres, real RLS, non-superuser role | require `TEST_DATABASE_URL` |
+| Connector certification | SDK certification runner + simulator, per bundle | `pnpm --filter @oweibo/connectors test` |
+| RLS belt-and-suspenders | `packages/db/src/__tests__/rls.test.ts` + `kf-store-scope.test.ts` (living registry of every fabric table's scope) | require `TEST_DATABASE_URL` |
 | JWT round-trip | `apps/identity/src/__tests__/jwt.test.ts` | `pnpm --filter @oweibo/identity test` |
+| Admin-web | vitest unit + Playwright e2e | `pnpm --filter @oweibo/admin-web test` / `test:e2e` |
 
-### RLS tests
+### Live batteries against the dev database
 
-Set `TEST_DATABASE_URL` to a Postgres instance with migrations applied:
+The fabric and governance suites run against real Postgres **as the
+non-superuser `oweibo_app` role** — RLS is exercised, not bypassed. With the
+dev data plane up (`pnpm dev:up`, `pnpm db:setup`):
 
 ```bash
-TEST_DATABASE_URL=postgresql://oweibo_app:pass@localhost:5432/oweibo_test \
-  pnpm --filter @oweibo/db test
+# password: whatever your docker-compose.dev.yml / .env.dev sets for oweibo_app
+TEST_DATABASE_URL=postgresql://oweibo_app:PASSWORD@localhost:5432/oweibo \
+  pnpm --filter @oweibo/core-engine test
 ```
 
-The suite verifies that RLS alone (application-layer checks bypassed) correctly blocks cross-tenant reads, rejects `UPDATE`/`DELETE` on `audit_log`, and does not leak `SET LOCAL` values across transaction boundaries.
+Suites skip cleanly when `TEST_DATABASE_URL` is unset, so `pnpm test` stays
+runnable without Docker.
 
 ---
 
@@ -690,20 +797,22 @@ Enforced by dep-cruiser (`.dependency-cruiser.js`). The build fails on any viola
 |---|---|
 | `module-cannot-import-core-engine` | `module-*` packages depend only on `core-contracts` |
 | `module-cannot-import-other-module` | Modules are boundary-isolated; inter-module comms via typed events only |
-| `core-engine-cannot-import-modules` | Factory Core Independence (Principle #1) |
+| `core-engine-cannot-import-modules` | Factory Core Independence |
+| `core-engine-cannot-import-connectors` | The engine never depends on a concrete connector — connectors are data, discovered at the composition root; engine batteries use fixtures (INV-17) |
+| `connectors-only-import-sdk` | Connector bundles depend only on `connector-sdk` (+ contracts) |
 | `core-contracts-cannot-import-core-engine` | `core-contracts` is zero-dependency |
 | `event-types-must-come-from-contracts` | Event types defined only in `core-contracts/src/events/` |
 | `channel-gateway-cannot-import-core-engine-internals` | Gateway consumes only three public ingestion interfaces |
 | `browser-extension-cannot-import-core-engine` | Extension is a standalone Chrome package with zero server imports |
-| `doc-generator-no-agentic-swarm-import` | `doc-generator` is isolated; LLM access via `ILLMClient` |
-| `doc-generator-llm-via-adapters-only` | Only `adapters/` may import `PromptBudgetEnforcer` directly |
-| `no-direct-prisma-outside-db-package` | All DB access flows through `withTenantContext()` in `packages/db` |
-| `identity-service-cannot-import-core-engine` | `apps/identity` is auth-only; no engine internals |
-| `db-package-cannot-import-identity` | No circular identity↔db dependency |
-| `api-middleware-cannot-import-core-engine` | `packages/api-middleware` is HTTP-layer only |
+| `no-direct-prisma-outside-db-package` | All Prisma access flows through `withTenantContext()` |
+| `identity-service-cannot-import-core-engine` | `apps/identity` is auth-only |
 | `api-middleware-cannot-import-identity` | JWT verification via JWKS endpoint — no direct service coupling |
-| `kilo-pipeline-cannot-import-identity` | Auth delegated to `packages/api-middleware`; no direct identity import |
-| _(+ 7 more)_ | Specialist agent isolation, SynthesisAgent isolation, browser-tool boundaries |
+| _(+ more)_ | doc-generator isolation, specialist-agent isolation, browser-tool boundaries, db↔identity acyclicity |
+
+Beyond dep-cruiser, two conformance scripts guard the data plane: `check-rls`
+(every tenant Prisma model has an RLS migration) and `check-sole-writer-map`
+(every persisted entity has exactly one writing subsystem, in agreement with
+the architecture document — INV-16).
 
 ---
 
@@ -711,14 +820,12 @@ Enforced by dep-cruiser (`.dependency-cruiser.js`). The build fails on any viola
 
 | Phase | Description | Status |
 |---|---|---|
-| **Phase 0** | P0 security hardening: path traversal defence, SSRF guard, rate limiting, sandbox hardening (CapDrop/ReadonlyRootfs), constant-time auth, Qdrant circuit breaker | **Done** |
-| **Phase 1** | Identity foundation: BetterAuth IdP, RS256 JWKS, Postgres RLS schema, `withTenantContext` chokepoint, platform/tenant management API, `check-rls` lint gate | **Done** |
-| **Phase 2** | Unified auth/authz middleware (`packages/api-middleware`); both gateways migrated; legacy token bridge; `requestId` + `traceparent` propagation | **Done** |
-| **Phase 3** | NATS JetStream event bus + file-based outbox publisher; agent JWT wiring in sandbox; Redis-backed quota service; `requireScopes` on every route; `assertSafeTarget` SSRF guard in shared middleware; internal agent-token mint endpoint | **Done** |
-| **Phase 4** | Robust CLI: all resource-family subcommands; `login`/`logout`/`whoami`; `~/.oweibo/credentials` refresh-token cache; bidirectional parity CI gate; 40+ integration tests | **Done** |
-| **Phase 5** | Web admin UI: `apps/admin-web` Next.js 15 RSC, edge-runtime RBAC middleware, tenant switcher with JWT re-issue, Playwright e2e for platform_admin + tenant_admin journeys | **Done** |
-| **Phase 6** | Audit middleware on all privileged routes (16 actions); GDPR erasure endpoint; `packages/observability` (GenAI OTel semantic conventions, span helpers, pino logger); OTel collector → Tempo + Loki + Prometheus + Grafana + Alertmanager; `no-direct-llm-call` ESLint rule; CI conformance test | **Done** |
-| **Phase 7** | CI/test pipeline hardening (ts-jest configs, build dependency chain, PythonAnalyzer CI fallback, QUARANTINE_BASE override, jwt test fixes, P2 penalise test); launch hardening remainder (k6, chaos, DR, pentest) in progress | **In progress** |
+| **Phase 0–7** | Security hardening, identity foundation, unified auth middleware, NATS event bus, CLI, admin web UI, audit + observability, CI hardening | **Done** |
+| **Action safety (T/S/F series)** | Action trust ladder (dry-run/shadow/approval modes, calibration, pins + floors), multi-party approvals + grants + delegation, quotas + budget insurance, rate limits, rollback orchestration, forensic packets + replay, action lineage, HITL SLA lifecycle, injection-safe content-trust boundary | **Done** |
+| **Connector fabric (K series)** | Scheduler + `kf_*` schema; connector SDK + certification + simulator; Google Workspace IdP, Drive, Slack, GitHub connectors; discovery → indexing → retrieval with ACL-before-ranking; consistency contracts; query planner; full-content embeddings + hybrid rank + permission-aware semantic cache; live path with field freshness (fail-closed); knowledge graph + identity resolution; tenant policy system with relaxation lattice + dual-control ballots; outbound/inbound MCP faces; blue/green connector rollout; health/SLO; DR backup classes | **Done** |
+| **Fabric web surface** | `/tenants/:id/fabric` + `/connectors` HTTP routes, admin pages (policy governance, relaxation ballots, rollout controls, custom connector registration), enforcement wired into the write path | **Done** |
+| **Custom connectors** | Tenant-authored manifests (`custom.*` ids, experimental tier, validation-gated), installable alongside the catalog with unchanged downstream governance | **Done** |
+| Fabric runtime residuals | Worker daemon loops (crawl→index automation), real MCP JSON-RPC transport, production Redis token buckets, real Slack/GitHub API clients (in-memory fixtures today), search UI over RetrievalService | In progress |
 | Phase 8 | Legacy `TENANT_TOKENS` sunset: 60-day migration window, import as real `api_keys` rows | Pending |
 | Phase 10+ | Firecracker microVMs, Postgres hash-partitioning, multi-region, self-hosted edge tier | Deferred |
 

@@ -260,6 +260,7 @@ async function main(): Promise<void> {
   let tenantPolicyService: import('./fabric/policy/TenantPolicyService.js').TenantPolicyService | undefined;
   let connectorUpgradeService: import('./fabric/upgrade/ConnectorUpgradeService.js').ConnectorUpgradeService | undefined;
   let policyRelaxationFlow: import('./fabric/policy/PolicyRelaxationFlow.js').PolicyRelaxationFlow | undefined;
+  let customConnectorService: import('./connector/CustomConnectorService.js').CustomConnectorService | undefined;
   if (process.env['DATABASE_URL']) {
     pgPool = new Pool({ connectionString: process.env['DATABASE_URL'] });
 
@@ -524,6 +525,12 @@ async function main(): Promise<void> {
       identityConnectorIds: ['google-workspace-idp'],
     });
     tenantTemplateRegistry = new TenantTemplateRegistry(pgPool);
+    // Custom connectors: tenant-authored manifests the install flow accepts
+    // alongside the platform catalog (validation-gated, 'custom.' ids only).
+    {
+      const { CustomConnectorService } = await import('./connector/CustomConnectorService.js');
+      customConnectorService = new CustomConnectorService(pgPool);
+    }
 
     // ── F.2.3: forensic packet pipeline + HITL handoff ────────────────────
     //
@@ -794,6 +801,7 @@ async function main(): Promise<void> {
     connectorRegistry,
     tenantConnectorService,
     tenantTemplateRegistry,
+    ...(customConnectorService ? { customConnectorService } : {}),
     // K.9: fabric governance surface (policy + rollout) — mounts when both
     // services exist (i.e. whenever DATABASE_URL is configured).
     ...(tenantPolicyService && connectorUpgradeService

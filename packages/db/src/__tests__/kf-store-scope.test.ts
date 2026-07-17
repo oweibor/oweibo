@@ -55,6 +55,8 @@ const TENANT_SCOPED: string[] = [
   'kf_tenant_policies',
   // ADR-004 §3.7 armed (K.9) — connector upgrade rollout
   'kf_connector_deployments',
+  // Custom connectors — tenant-authored manifests (Integration Runtime)
+  'custom_connector_manifests',
 ];
 
 const PLATFORM_SCOPED: string[] = ['processed_outbox_events'];

@@ -63,10 +63,27 @@ function makeStubs() {
     invalidate: jest.fn(),
     invalidateAll: jest.fn(),
   };
-  return { catalog, tenantConnectors, bindingLookup };
+  const CUSTOM = {
+    id: 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb',
+    connectorId: 'custom.acme-tracker',
+    displayName: 'Acme Tracker',
+    category: 'custom',
+    status: 'registered',
+    certificationTarget: 'experimental',
+  };
+  const customConnectors = {
+    register:    jest.fn().mockResolvedValue(CUSTOM),
+    list:        jest.fn().mockResolvedValue([CUSTOM]),
+    get:         jest.fn().mockResolvedValue(CUSTOM),
+    // Default FALSE so the long-standing unknown-connector 404 pin holds;
+    // the custom-install test flips it per-case.
+    installable: jest.fn().mockResolvedValue(false),
+    disable:     jest.fn().mockResolvedValue(true),
+  };
+  return { catalog, tenantConnectors, bindingLookup, customConnectors };
 }
 
-function makeApp(jwtTenant: string, withBindings = true) {
+function makeApp(jwtTenant: string, withBindings = true, withCustom = true) {
   const stubs = makeStubs();
   const app = express();
   app.use(express.json());
@@ -76,6 +93,9 @@ function makeApp(jwtTenant: string, withBindings = true) {
     tenantConnectors: stubs.tenantConnectors as unknown as Parameters<typeof createConnectorsRouter>[0]['tenantConnectors'],
     ...(withBindings
       ? { bindingLookup: stubs.bindingLookup as unknown as Parameters<typeof createConnectorsRouter>[0]['bindingLookup'] }
+      : {}),
+    ...(withCustom
+      ? { customConnectors: stubs.customConnectors as unknown as NonNullable<Parameters<typeof createConnectorsRouter>[0]['customConnectors']> }
       : {}),
   }));
   return { app, ...stubs };
@@ -242,5 +262,74 @@ describe('F.4.7: connectors routes', () => {
     expect(tenantConnectors.listForTenant).not.toHaveBeenCalled();
     expect(tenantConnectors.install).not.toHaveBeenCalled();
     expect(catalog.recommendForDomain).not.toHaveBeenCalled();
+  });
+
+  // ── Custom connectors ──────────────────────────────────────────────────
+
+  it('POST /connectors/custom registers a manifest as the JWT principal', async () => {
+    const supertest = (await import('supertest')).default;
+    const { app, customConnectors } = makeApp(TENANT);
+    const res = await supertest(app)
+      .post(`/tenants/${TENANT}/connectors/custom`)
+      .send({
+        connectorId: 'custom.acme-tracker', displayName: 'Acme Tracker',
+        category: 'custom', description: 'Internal tracker', catalogVersion: '1.0.0',
+        credentialSchema: { type: 'object' },
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.connector.connectorId).toBe('custom.acme-tracker');
+    expect(customConnectors.register).toHaveBeenCalledWith(
+      expect.objectContaining({ tenantId: TENANT, createdBy: 'cccccccc-3333-4333-c333-cccccccccccc' }),
+    );
+  });
+
+  it('GET /connectors/custom lists; GET /custom/:id details; DELETE disables', async () => {
+    const supertest = (await import('supertest')).default;
+    const { app, customConnectors } = makeApp(TENANT);
+    expect((await supertest(app).get(`/tenants/${TENANT}/connectors/custom`)).body.count).toBe(1);
+    expect((await supertest(app).get(`/tenants/${TENANT}/connectors/custom/custom.acme-tracker`)).status).toBe(200);
+    expect((await supertest(app).delete(`/tenants/${TENANT}/connectors/custom/custom.acme-tracker`)).status).toBe(204);
+
+    customConnectors.get.mockResolvedValueOnce(null);
+    expect((await supertest(app).get(`/tenants/${TENANT}/connectors/custom/custom.nope`)).status).toBe(404);
+    customConnectors.disable.mockResolvedValueOnce(false);
+    expect((await supertest(app).delete(`/tenants/${TENANT}/connectors/custom/custom.nope`)).status).toBe(404);
+  });
+
+  it('POST / (install) accepts a REGISTERED custom id the catalog does not know', async () => {
+    const supertest = (await import('supertest')).default;
+    const { app, customConnectors, tenantConnectors } = makeApp(TENANT);
+    customConnectors.installable.mockResolvedValueOnce(true);
+    const res = await supertest(app)
+      .post(`/tenants/${TENANT}/connectors`)
+      .send({
+        connectorId: 'custom.acme-tracker', catalogVersion: '1.0.0',
+        instanceLabel: 'primary', vaultPath: 'tenants/x/connectors/acme',
+      });
+    expect(res.status).toBe(201);
+    expect(tenantConnectors.install).toHaveBeenCalledWith(
+      expect.objectContaining({ connectorId: 'custom.acme-tracker' }),
+    );
+  });
+
+  it('POST / (install) still 404s an unregistered/disabled custom id — installable() is the gate', async () => {
+    const supertest = (await import('supertest')).default;
+    const { app, tenantConnectors } = makeApp(TENANT); // installable defaults false
+    const res = await supertest(app)
+      .post(`/tenants/${TENANT}/connectors`)
+      .send({
+        connectorId: 'custom.not-registered', catalogVersion: '1.0.0',
+        instanceLabel: 'primary', vaultPath: 'tenants/x/connectors/z',
+      });
+    expect(res.status).toBe(404);
+    expect(tenantConnectors.install).not.toHaveBeenCalled();
+  });
+
+  it('custom endpoints answer 503 fail-closed when the service is not wired', async () => {
+    const supertest = (await import('supertest')).default;
+    const { app } = makeApp(TENANT, true, false);
+    expect((await supertest(app).post(`/tenants/${TENANT}/connectors/custom`).send({})).status).toBe(503);
+    expect((await supertest(app).get(`/tenants/${TENANT}/connectors/custom`)).status).toBe(503);
+    expect((await supertest(app).delete(`/tenants/${TENANT}/connectors/custom/x`)).status).toBe(503);
   });
 });

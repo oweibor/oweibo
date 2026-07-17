@@ -133,6 +133,9 @@ export async function createServer(
     /** F.4.7: enables /api/v1/tenants/:tenantId/connectors/* + /templates/* routes. */
     connectorRegistry?: import('../connector/ConnectorRegistry.js').ConnectorRegistry;
     tenantConnectorService?: import('../connector/PgTenantConnectorService.js').PgTenantConnectorService;
+    /** Custom connectors: enables /connectors/custom/* and lets install accept
+     *  registered `custom.*` ids. Absent → 503 on those paths (fail-closed). */
+    customConnectorService?: import('../connector/CustomConnectorService.js').CustomConnectorService;
     tenantTemplateRegistry?: import('../seed/TenantTemplateRegistry.js').TenantTemplateRegistry;
     /** F.5.9 server side: enables POST /api/v1/_internal/memories/seed for the
      *  HttpMemoryWriter caller. When the token + orchestrator are absent the
@@ -310,6 +313,9 @@ export async function createServer(
       tenantConnectors: deps.tenantConnectorService,
       ...(deps.tenantDomainBindingLookup
         ? { bindingLookup: deps.tenantDomainBindingLookup }
+        : {}),
+      ...(deps.customConnectorService
+        ? { customConnectors: deps.customConnectorService }
         : {}),
     }));
   }
